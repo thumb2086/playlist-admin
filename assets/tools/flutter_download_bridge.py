@@ -800,7 +800,7 @@ def cmd_youtube_subs(args):
         emit_json({'type': 'error', 'message': f'搜尋失敗: {e}'})
         return
 
-    # Step 2: Download subtitles
+    # Step 2: Download subtitles (with retry for 429)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     # Replace only the final extension. String-wide .replace('.wav', '')
     # would also strip '.wav' from the podcast folder name (e.g.
@@ -811,7 +811,9 @@ def cmd_youtube_subs(args):
     if not os.path.exists(cookie_file):
         cookie_file = ''
 
-    try:
+    max_retries = 3
+    for attempt in range(max_retries):
+      try:
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
@@ -849,10 +851,20 @@ def cmd_youtube_subs(args):
                 os.replace(srt_found, srt_path)
             emit_json({'type': 'log', 'message': f'  ✅ 字幕已儲存: {srt_path}'})
             emit_json({'type': 'complete', 'path': srt_path})
+            return
         else:
             emit_json({'type': 'not_found', 'message': '下載字幕失敗（無可用字幕）'})
-    except Exception as e:
+            return
+      except Exception as e:
+        err_str = str(e)
+        if '429' in err_str or 'Too Many Requests' in err_str:
+            if attempt < max_retries - 1:
+                wait = 10 * (attempt + 1)
+                emit_json({'type': 'log', 'message': f'  ⚠️ YouTube 限流，等 {wait} 秒後重試 ({attempt+1}/{max_retries})...'})
+                time.sleep(wait)
+                continue
         emit_json({'type': 'error', 'message': f'下載字幕異常: {e}'})
+        return
 
 
 def _rag_script(name):

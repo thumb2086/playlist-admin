@@ -25,20 +25,20 @@ class PodcastPipeline {
   String get _cachePath =>
       '${ConfigService.instance.config.cachePath}\\podcast\\podcast_processed_cache.json';
 
-  Map<String, Map<String, dynamic>> _loadCache() {
+  Future<Map<String, Map<String, dynamic>>> _loadCacheAsync() async {
     try {
       final f = File(_cachePath);
-      if (!f.existsSync()) return {};
-      final json = jsonDecode(f.readAsStringSync()) as Map<String, dynamic>;
+      if (!await f.exists()) return {};
+      final json = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
       return json.map((k, v) => MapEntry(k, (v as Map<String, dynamic>)));
     } catch (_) {
       return {};
     }
   }
 
-  void _saveCache(Map<String, Map<String, dynamic>> cache) {
+  Future<void> _saveCacheAsync(Map<String, Map<String, dynamic>> cache) async {
     try {
-      File(_cachePath).writeAsStringSync(jsonEncode(cache), flush: true);
+      await File(_cachePath).writeAsString(jsonEncode(cache), flush: true);
     } catch (_) {}
   }
 
@@ -113,7 +113,7 @@ class PodcastPipeline {
 
   Future<void> _processPodcast(
       String podcastName, String rssUrl, bool hasGroq, int stepIndex) async {
-    final cache = _loadCache();
+    final cache = await _loadCacheAsync();
     final podDir = PodcastService.instance.podcastDir(podcastName);
     final ext = 'mp3';
 
@@ -132,7 +132,7 @@ class PodcastPipeline {
       final name = PodcastService.normalizeFileName(epTitle);
       final txtPath = '$podDir\\$name.txt';
       final txtExists = File(txtPath).existsSync();
-      final srtExists = _findSrt(podDir, name) != null;
+      final srtExists = await _findSrtAsync(podDir, name) != null;
       if (entry['txt'] == true && !txtExists) {
         entry['txt'] = false;
         entry['status'] = '';
@@ -150,7 +150,7 @@ class PodcastPipeline {
     }
     if (staleCount > 0) {
       onLog('  ⚠️ 修正 $staleCount 筆過期 cache（檔案已消失）');
-      _saveCache(cache);
+      await _saveCacheAsync(cache);
     }
 
     onLog('  讀取 RSS Feed...');
@@ -190,7 +190,7 @@ class PodcastPipeline {
       final ep = episodes[i];
       final key = '$podcastName|${ep.title}';
       final name = PodcastService.normalizeFileName(ep.title);
-      var srtPath = _findSrt(podDir, name);
+      var srtPath = await _findSrtAsync(podDir, name);
       final txtPath = '$podDir\\$name.txt';
       var hasSrt = srtPath != null;
       var hasTxt = File(txtPath).existsSync();
@@ -201,8 +201,8 @@ class PodcastPipeline {
         final match = canonicalToStem[canonical];
         if (match != null) {
           hasTxt = File('$podDir\\$match.txt').existsSync();
-          hasSrt = File('$podDir\\$match.srt').existsSync() || _findSrt(podDir, match) != null;
-          if (hasSrt) srtPath = _findSrt(podDir, match);
+          hasSrt = File('$podDir\\$match.srt').existsSync() || await _findSrtAsync(podDir, match) != null;
+          if (hasSrt) srtPath = await _findSrtAsync(podDir, match);
         }
       }
       // EP number fallback.
@@ -220,7 +220,7 @@ class PodcastPipeline {
           await _srtToTxt(srtPath!, txtPath);
           // _srtToTxt deletes garbage subtitles (<50 chars): re-detect so the
           // episode is queued for a retry instead of being marked done.
-          srtPath = _findSrt(podDir, name);
+          srtPath = await _findSrtAsync(podDir, name);
           hasSrt = srtPath != null;
           hasTxt = File(txtPath).existsSync();
         }
@@ -241,7 +241,7 @@ class PodcastPipeline {
         tasks.add(_PodTask(index: i, episode: ep, key: key));
       }
     }
-    _saveCache(cache);
+    await _saveCacheAsync(cache);
 
     if (tasks.isEmpty) {
       onLog('  無新集數 (${alreadyHave} 集已處理過)');
@@ -260,7 +260,7 @@ class PodcastPipeline {
         // fire and forget: continue processing queue while this runs
         unawaited(_runGroq(t, podcastName, podDir, ext, cache, onLog, state).then((_) {
           groqActive--;
-          _saveCache(cache);
+          _saveCacheAsync(cache);
           _tryGroq(); // kick next
         }));
       }
@@ -278,7 +278,7 @@ class PodcastPipeline {
         batchFutures.add(_processOne(e, podcastName, rssUrl, podDir, ext, cache, onLog, state));
       }
       final results = await Future.wait(batchFutures);
-      _saveCache(cache);
+      await _saveCacheAsync(cache);
       if (hasGroq) {
         for (int j = 0; j < batch.length; j++) {
           if (results[j] && j < batch.length) {
@@ -307,14 +307,14 @@ class PodcastPipeline {
   /// Resolve the actual SRT file for an episode. yt-dlp may save
   /// subtitles as `name.srt` or with a language suffix such as
   /// `name.zh-TW.srt` / `name.zh-Hans.srt`. Returns null when none exists.
-  String? _findSrt(String podDir, String name) {
+  Future<String?> _findSrtAsync(String podDir, String name) async {
     final plain = '$podDir\\$name.srt';
-    if (File(plain).existsSync()) return plain;
+    if (await File(plain).exists()) return plain;
     final dir = Directory(podDir);
-    if (!dir.existsSync()) return null;
+    if (!await dir.exists()) return null;
     try {
       final prefix = '$name.';
-      for (final f in dir.listSync()) {
+      await for (final f in dir.list()) {
         final fn = f.uri.pathSegments.last;
         if (fn.startsWith(prefix) && fn.toLowerCase().endsWith('.srt')) {
           return f.path;
@@ -425,7 +425,7 @@ class PodcastPipeline {
     if (state.isCancelled) return false;
     final name = PodcastService.normalizeFileName(t.episode.title);
     final audioPath = '$podDir\\$name.$ext';
-    final srtPath = _findSrt(podDir, name);
+    var srtPath = await _findSrtAsync(podDir, name);
     final txtPath = '$podDir\\$name.txt';
 
     // Download audio if missing
@@ -451,7 +451,7 @@ class PodcastPipeline {
         await _srtToTxt(srtPath, txtPath);
         // Garbage subtitle? _srtToTxt deleted both files — reflect reality
         // so the episode is re-queued on the next run.
-        final srtStill = _findSrt(podDir, name) != null;
+        final srtStill = await _findSrtAsync(podDir, name) != null;
         final txtStill = await File(txtPath).exists();
         cache[t.key] = {'srt': srtStill, 'txt': txtStill, 'yt_status': srtStill ? 'found' : '', 'status': 'ok'};
       }
@@ -479,11 +479,11 @@ class PodcastPipeline {
     final subResult = await PodcastService.instance.downloadSubtitles(t.episode.title, podcastName,
       onLog: (msg) => onLog('      $msg'),
     );
-    final srtAfter = _findSrt(podDir, name);
+    final srtAfter = await _findSrtAsync(podDir, name);
     if (subResult == PodcastSubtitleResult.found && srtAfter != null) {
       await _srtToTxt(srtAfter, txtPath);
       // Re-check: _srtToTxt deletes garbage subtitles (<50 chars).
-      final srtStill = _findSrt(podDir, name) != null;
+      final srtStill = await _findSrtAsync(podDir, name) != null;
       final txtStill = await File(txtPath).exists();
       cache[t.key] = {'srt': srtStill, 'txt': txtStill, 'yt_status': srtStill ? 'found' : '', 'status': 'ok'};
       return false; // SRT found, no Groq needed
@@ -506,7 +506,7 @@ class PodcastPipeline {
     if (state.isCancelled) return;
     final name = PodcastService.normalizeFileName(t.episode.title);
     final audioPath = '$podDir\\$name.$ext';
-    final srtPath = _findSrt(podDir, name);
+    final srtPath = await _findSrtAsync(podDir, name);
     final txtPath = '$podDir\\$name.txt';
     if (!await File(audioPath).exists()) return;
     if (srtPath != null || await File(txtPath).exists()) return;

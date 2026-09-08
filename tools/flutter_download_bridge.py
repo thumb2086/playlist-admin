@@ -163,7 +163,7 @@ def cmd_download_youtube(args):
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': audio_format,
-            'preferredquality': '0',
+            'preferredquality': '320',
         }],
         'progress_hooks': [progress_hook],
         'keepvideo': False,
@@ -184,207 +184,6 @@ def cmd_download_youtube(args):
                 emit_json({'type': 'complete', 'path': os.path.join(dir_path, candidates[0])})
             else:
                 emit_json({'type': 'error', 'message': 'Output file not found'})
-    except Exception as e:
-        emit_json({'type': 'error', 'message': str(e)})
-
-
-def cmd_stream_resolve(args):
-    """Resolve a playable audio URL for a song query via yt-dlp.
-
-    Prints a JSON line with the resolved direct audio URL (bestaudio).
-    The Dart side serves it through a local HTTP proxy (or plays directly).
-    """
-    query = args[0]
-    import yt_dlp
-
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'no_warnings': True,
-        'noplaylist': True,
-    }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(f'ytsearch1:{query}', download=False)
-            entry = info['entries'][0] if info.get('entries') else info
-            # 1. Direct URL field (works for most formats).
-            url = entry.get('url')
-            # 2. From formats list — find bestaudio with a usable URL.
-            if not url:
-                formats = entry.get('formats', [])
-                for fmt in reversed(formats):
-                    furl = fmt.get('url')
-                    if furl and fmt.get('acodec', 'none') != 'none':
-                        url = furl
-                        break
-            # 3. Last resort: try ffmpeg_url (manifest-based formats).
-            if not url:
-                url = entry.get('manifest_url')
-            if not url:
-                emit_json({'type': 'error', 'message': f'no stream URL for: {query}'})
-                return
-            emit_json({
-                'type': 'complete',
-                'url': url,
-                'title': entry.get('title', ''),
-                'ext': entry.get('ext', ''),
-                'duration': entry.get('duration', 0),
-            })
-    except Exception as e:
-        emit_json({'type': 'error', 'message': str(e)})
-
-
-def cmd_stream_download(args):
-    """Download a song via yt-dlp with ranking (Spotube-style algorithm)."""
-    query = args[0]
-    output_path = args[1]
-    isrc = args[2] if len(args) > 2 else ''
-
-    import yt_dlp
-    import re
-
-    # Parse query: "Title - Artist" or just "Title"
-    parts = query.split(' - ', 1)
-    track_title = parts[0].strip().lower()
-    track_artist = parts[1].strip().lower() if len(parts) > 1 else ''
-
-    # Spotube-style ranking regex
-    official_re = re.compile(r'official\s*(video|audio|music|lyric|visualizer)', re.I)
-
-    def rank(entries):
-        scored = []
-        for e in entries:
-            score = 0
-            title = (e.get('title') or '').lower()
-            channel = (e.get('channel') or e.get('uploader') or '').lower()
-            duration = e.get('duration') or 0
-            # Penalize very short (<30s) or very long (>600s) — likely not the song.
-            if duration and (duration < 30 or duration > 600):
-                score -= 3
-            # Penalize non-music channels (news, clips, talk).
-            non_music_re = re.compile(r'新聞|news|clip|shorts|民視|TVBS|中天|東森', re.I)
-            if non_music_re.search(channel) or non_music_re.search(title):
-                score -= 5
-            # +3 if title contains track name (fuzzy: remove spaces/punct for CJK).
-            clean_title = re.sub(r'[\s\-_·・]', '', title)
-            clean_track = re.sub(r'[\s\-_·・]', '', track_title)
-            if clean_track and clean_track in clean_title:
-                score += 3
-            # +1 if uploader matches artist
-            if track_artist and track_artist in channel:
-                score += 1
-            # +1 per artist name in title
-            if track_artist and track_artist in title:
-                score += 1
-            # +1 official flag
-            if official_re.search(title):
-                score += 1
-            # +2 bonus: official + title match
-            if official_re.search(title) and clean_track in clean_title:
-                score += 2
-            scored.append((e, score))
-        scored.sort(key=lambda x: -x[1])
-        return [e for e, s in scored if s >= 2]  # minimum score threshold
-
-    # Search strategy: try multiple queries, pick best match.
-    search_queries = []
-    if isrc:
-        search_queries.append(f'ytsearch5:{isrc}')
-    # Full query (title - artist)
-    search_queries.append(f'ytsearch5:{query}')
-    # Title only (YouTube struggles with "title artist" for CJK)
-    search_queries.append(f'ytsearch5:{track_title} official audio')
-    search_queries.append(f'ytsearch5:{track_title} official')
-    # Artist + title order swap
-    if track_artist:
-        search_queries.append(f'ytsearch5:{track_artist} {track_title}')
-
-    ydl_opts = {
-        'format': 'bestaudio',
-        'outtmpl': output_path + '.%(ext)s',
-        'quiet': True,
-        'no_warnings': True,
-        'noplaylist': True,
-        'extract_audio': False,
-        'postprocessors': [],
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'ios'],
-            }
-        },
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0',
-        },
-        'socket_timeout': 60,
-        'retries': 2,
-    }
-
-    best = None
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            for sq in search_queries:
-                info = ydl.extract_info(sq, download=False)
-                entries = info.get('entries', [])
-                if not entries:
-                    continue
-                ranked = rank(entries)
-                # Try each ranked result until one downloads successfully.
-                for candidate in ranked:
-                    url = candidate.get('webpage_url') or candidate.get('url', '')
-                    title = candidate.get('title', '')
-                    try:
-                        ydl.download([url])
-                        best = candidate
-                        break
-                    except Exception as dl_err:
-                        emit_json({'type': 'log', 'message': f'skip: {title[:40]} ({dl_err})'})
-                        continue
-                if best:
-                    break
-            if not best:
-                emit_json({'type': 'error', 'message': f'no downloadable result for: {query}'})
-                return
-            title = best.get('title', '')
-            emit_json({'type': 'log', 'message': f'downloaded: {title[:50]}'})
-
-        # Find the downloaded raw file.
-        raw_path = ''
-        for ext in ['.webm', '.m4a', '.opus', '.mp4', '.mp3', '.ogg']:
-            if os.path.exists(output_path + ext):
-                raw_path = output_path + ext
-                break
-        if not raw_path:
-            emit_json({'type': 'error', 'message': 'downloaded file not found'})
-            return
-
-        mp3_path = output_path + '.mp3'
-        # If already mp3, done.
-        if raw_path == mp3_path:
-            emit_json({'type': 'complete', 'path': mp3_path, 'title': title})
-            return
-
-        # Convert to mp3 with ffmpeg (-ac 2 for stereo).
-        import subprocess
-        ffmpeg = 'ffmpeg'
-        for p in [r'C:\ffmpeg\bin\ffmpeg.exe', r'C:\tools\ffmpeg.exe']:
-            if os.path.exists(p):
-                ffmpeg = p
-                break
-        try:
-            result = subprocess.run([
-                ffmpeg, '-y', '-i', raw_path,
-                '-vn', '-acodec', 'libmp3lame', '-q:a', '0', '-ac', '2',
-                mp3_path,
-            ], capture_output=True, timeout=120)
-            if result.returncode == 0 and os.path.exists(mp3_path):
-                os.remove(raw_path)
-                emit_json({'type': 'complete', 'path': mp3_path, 'title': title})
-                return
-        except Exception as e:
-            emit_json({'type': 'log', 'message': f'ffmpeg convert failed: {e}'})
-
-        # Fallback: return raw file as-is.
-        emit_json({'type': 'complete', 'path': raw_path, 'title': title})
     except Exception as e:
         emit_json({'type': 'error', 'message': str(e)})
 
@@ -490,6 +289,15 @@ def cmd_batch_download(args):
         emit_json({'type': 'error', 'message': 'Library path not configured'})
         return
 
+    use_dab_lossless = config.get('dab_use_lossless', False) and target_format == 'flac'
+    use_dab_metadata = config.get('dab_use_metadata', False) and target_format == 'flac'
+    dab_credentials = None
+    if use_dab_lossless:
+        dab_email = config.get('dab_email', '')
+        dab_password = config.get('dab_password', '')
+        if dab_email and dab_password:
+            dab_credentials = {'email': dab_email, 'password': dab_password}
+
     total = len(songs)
     successful = 0
     failed = 0
@@ -506,7 +314,9 @@ def cmd_batch_download(args):
         result = download_song(
             song_name, library_path, target_format, lambda msg: emit_json({
                 'type': 'log', 'message': msg
-            }), file_list=[], config=config
+            }), file_list=[], config=config,
+            use_dab_lossless=use_dab_lossless, use_dab_metadata=use_dab_metadata,
+            dab_credentials=dab_credentials
         )
 
         if result and os.path.exists(result):
@@ -908,16 +718,7 @@ def cmd_groq_transcribe(args):
             emit_json({'type': 'error', 'message': err_msg[:300]})
             # Also write to log file
             try:
-                cfg = None
-                try:
-                    from utils.config import load_config
-                    cfg = load_config()
-                except Exception:
-                    pass
-                if cfg and cfg.get('base_path'):
-                    log_dir = os.path.join(cfg['base_path'], 'logs')
-                else:
-                    log_dir = os.path.expanduser(r'~\Music\playlist-admin\logs')
+                log_dir = os.path.expanduser(r'~\Music\Spotube\logs')
                 os.makedirs(log_dir, exist_ok=True)
                 with open(os.path.join(log_dir, 'stt_errors.log'), 'a', encoding='utf-8') as lf:
                     lf.write(f'\n--- {time.strftime("%Y-%m-%d %H:%M:%S")} ---\n')
@@ -999,7 +800,7 @@ def cmd_youtube_subs(args):
         emit_json({'type': 'error', 'message': f'搜尋失敗: {e}'})
         return
 
-    # Step 2: Download subtitles
+    # Step 2: Download subtitles (with retry for 429)
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     # Replace only the final extension. String-wide .replace('.wav', '')
     # would also strip '.wav' from the podcast folder name (e.g.
@@ -1010,7 +811,9 @@ def cmd_youtube_subs(args):
     if not os.path.exists(cookie_file):
         cookie_file = ''
 
-    try:
+    max_retries = 3
+    for attempt in range(max_retries):
+      try:
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
@@ -1048,10 +851,20 @@ def cmd_youtube_subs(args):
                 os.replace(srt_found, srt_path)
             emit_json({'type': 'log', 'message': f'  ✅ 字幕已儲存: {srt_path}'})
             emit_json({'type': 'complete', 'path': srt_path})
+            return
         else:
             emit_json({'type': 'not_found', 'message': '下載字幕失敗（無可用字幕）'})
-    except Exception as e:
+            return
+      except Exception as e:
+        err_str = str(e)
+        if '429' in err_str or 'Too Many Requests' in err_str:
+            if attempt < max_retries - 1:
+                wait = 10 * (attempt + 1)
+                emit_json({'type': 'log', 'message': f'  ⚠️ YouTube 限流，等 {wait} 秒後重試 ({attempt+1}/{max_retries})...'})
+                time.sleep(wait)
+                continue
         emit_json({'type': 'error', 'message': f'下載字幕異常: {e}'})
+        return
 
 
 def _rag_script(name):
@@ -1111,7 +924,6 @@ def cmd_rag_build(args):
     cmd = [sys.executable, script]
     if '--reset' in args:
         cmd.append('--reset')
-    cmd.extend(['--batch', '64', '--workers', '8'])
     env = dict(os.environ)
     env['BASE_PATH'] = env.get('BASE_PATH', '')
     try:
@@ -1160,10 +972,6 @@ def main():
             cmd_normalize_mp3_lufs(args)
         elif command == 'youtube-subs':
             cmd_youtube_subs(args)
-        elif command == 'stream-resolve':
-            cmd_stream_resolve(args)
-        elif command == 'stream-download':
-            cmd_stream_download(args)
         elif command == 'rag-query':
             cmd_rag_query(args)
         elif command == 'rag-build':
