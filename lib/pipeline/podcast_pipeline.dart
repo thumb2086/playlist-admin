@@ -433,8 +433,11 @@ class PodcastPipeline {
       if (state.isCancelled) return false;
       onLog('  [${t.index}] ⬇️ $name');
       try {
+        // title/audioUrl 已在 RSS 抓過，直接傳入避免 downloadEpisode 重抓同一 feed。
         await PodcastService.instance.downloadEpisode(rssUrl, t.index, (pct) {},
           podcastName: podcastName,
+          knownTitle: t.episode.title,
+          knownAudioUrl: t.episode.audioUrl,
         );
       } catch (e) {
         onLog('    ❌ 下載失敗');

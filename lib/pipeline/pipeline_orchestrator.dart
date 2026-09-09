@@ -2,10 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import '../models/pipeline_step.dart';
 import '../models/config_model.dart';
-import '../services/library_index.dart';
-import '../services/audio_converter.dart';
 import '../services/spotify_scraper.dart';
-import '../services/metadata_reader.dart';
 import '../services/metadata_enricher.dart';
 import '../services/snapshot_manager.dart';
 import '../services/file_renamer.dart';
@@ -182,17 +179,6 @@ class PipelineOrchestrator {
 
     onLog('下載完成: $ok 成功, $fail 失敗 (共 $total 首)');
     progress(100);
-  }
-
-  String _findBridge() {
-    final exeDir = Directory(File(Platform.resolvedExecutable).parent.path);
-    Directory? d = exeDir;
-    while (d != null) {
-      final candidate = '${d.path}\\tools\\flutter_download_bridge.py';
-      if (File(candidate).existsSync()) return candidate;
-      d = d.parent.path == d.path ? null : d.parent;
-    }
-    return '';
   }
 
   Future<void> _stepScrape(void Function(double) progress) async {
@@ -438,7 +424,9 @@ class PipelineOrchestrator {
         onProgress: (done, total) {
           progress(total > 0 ? done / total * 100 : 0);
         },
-        concurrency: 8,
+        // 8 個全檔 ffmpeg 重編碼會吃滿 CPU；兩條 pipeline 一起跑時
+        // UI thread 會被餓死，降到 4 留一點喘息空間。
+        concurrency: 4,
         tolerance: 2.0,
         isCancelled: () => state.isCancelled,
       );
@@ -470,12 +458,4 @@ class PipelineOrchestrator {
     }
     progress(100);
   }
-}
-
-class _ConvertTask {
-  final String src;
-  final String dest;
-  final String stem;
-  final TrackMetadata meta;
-  _ConvertTask(this.src, this.dest, this.stem, this.meta);
 }

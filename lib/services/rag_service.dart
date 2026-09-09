@@ -12,8 +12,25 @@ class RagService {
   static RagService get instance => _instance ??= RagService._();
   RagService._();
 
+  /// 同一時間只允許一個 build：音樂 + Podcast 兩條 pipeline 結尾都會調 build，
+  /// 同時跑會開兩個 python 進程寫同一個 ChromaDB（SQLite lock）+ 同時打 Ollama。
+  static bool _building = false;
+
   /// 增量重建 RAG 索引；逐行回傳進度。
   Future<void> build(void Function(String line) onLog) async {
+    if (_building) {
+      onLog('RAG 已在建立中（另一條 pipeline），本次跳過，下次自動補上');
+      return;
+    }
+    _building = true;
+    try {
+      await _buildInner(onLog);
+    } finally {
+      _building = false;
+    }
+  }
+
+  Future<void> _buildInner(void Function(String line) onLog) async {
     final basePath = ConfigService.instance.config.basePath;
     final ragScript = '$basePath\\rag\\build_db.py';
     if (!File(ragScript).existsSync()) {
@@ -26,7 +43,9 @@ class RagService {
     if (basePath.isNotEmpty) env['BASE_PATH'] = basePath;
     final proc = await Process.start(
       'python',
-      ['-X', 'utf8', ragScript, '--batch', '64', '--workers', '8'],
+      // workers 4 而非 8：bge-m3 embedding 吃 CPU，兩條 pipeline 一起跑時
+      // 留一點 CPU 給 UI thread，否則介面會被餓死卡住。
+      ['-X', 'utf8', ragScript, '--batch', '64', '--workers', '4'],
       runInShell: true,
       workingDirectory: basePath.isNotEmpty ? basePath : Directory.current.path,
       environment: env,

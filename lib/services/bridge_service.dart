@@ -16,10 +16,22 @@ class BridgeService {
       return _extractedPath!;
     }
     if (_pendingExtract != null) {
-      await _pendingExtract;
-      return _extractedPath!;
+      try {
+        await _pendingExtract;
+        return _extractedPath!;
+      } catch (e) {
+        _pendingExtract = null; // 失敗不黏住，下次重試
+        rethrow;
+      }
     }
-    return _pendingExtract = _resolve();
+    final f = _resolve();
+    _pendingExtract = f;
+    try {
+      return await f;
+    } catch (e) {
+      if (identical(_pendingExtract, f)) _pendingExtract = null;
+      rethrow;
+    }
   }
 
   Future<String> _resolve() async {

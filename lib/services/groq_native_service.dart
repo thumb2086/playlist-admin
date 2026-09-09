@@ -8,6 +8,17 @@ import 'config_service.dart';
 
 final _log = Logger(printer: PrettyPrinter(methodCount: 0));
 
+/// 不可重試的 Groq HTTP 錯誤（400/401/413 等）：直接 rethrow，不進重試。
+/// （舊寫法用字串比對 status code，'0' 對任何含 0 的訊息恆真，
+/// 會把 400 也當 transient 空轉好幾分鐘。）
+class _GroqFatalException implements Exception {
+  final int status;
+  final String body;
+  _GroqFatalException(this.status, this.body);
+  @override
+  String toString() => 'Groq 失敗 $status: $body';
+}
+
 /// Groq REST API 原生 Dart 客戶端（取代 Python bridge）。
 /// 直接呼叫 api.groq.com，不需要 Python/yt-dlp。
 ///
@@ -39,8 +50,15 @@ class GroqNativeService {
   }
 
   Future<void> loadFromEnv() async {
-    const envKey = String.fromEnvironment('GROQ_API_KEY', defaultValue: '');
-    if (envKey.isNotEmpty) _keys = [envKey];
+    // String.fromEnvironment 讀的是編譯期 --dart-define，不是 OS 環境變數：
+    // 兩個都查，OS env 優先。
+    final osKey = Platform.environment['GROQ_API_KEY'] ?? '';
+    if (osKey.isNotEmpty) {
+      _keys = [osKey];
+      return;
+    }
+    const defineKey = String.fromEnvironment('GROQ_API_KEY', defaultValue: '');
+    if (defineKey.isNotEmpty) _keys = [defineKey];
   }
 
   /// 启动时 async 查 proxy（不堵塞第一次请求）。
@@ -75,6 +93,7 @@ class GroqNativeService {
   String? _cachedProxy;
   bool _proxyResolved = false;
   http.Client? _cachedClient;
+  static bool _proxyCertWarned = false;
 
   /// 從環境變數或 Windows Registry 讀取代理設定（只查一次，結果快取）。
   String? _resolveProxy() {
@@ -117,7 +136,12 @@ class GroqNativeService {
       httpClient.findProxy = (uri) {
         return 'PROXY $proxyHost:$proxyPort';
       };
-      // 忽略 SSL 憑證錯誤（代理常見問題）
+      // 忽略 SSL 憑證錯誤（代理常見問題）。注意：代理可見明文流量
+      // （含 API key），僅在信任的網路使用代理。
+      if (!_proxyCertWarned) {
+        _proxyCertWarned = true;
+        _log.w('[Groq] 代理模式略過 TLS 憑證驗證，僅信任的網路可使用代理');
+      }
       httpClient.badCertificateCallback = (cert, host, port) => true;
       _cachedClient = IOClient(httpClient);
     } catch (e) {
@@ -205,8 +229,9 @@ class GroqNativeService {
           continue;
         }
 
-        // 不可重試的錯誤（400, 401, 413 等）
-        throw Exception('Groq 轉錄失敗 $sc: $body');
+        // 不可重試的錯誤（400, 401, 413 等）：typed exception，
+        // catch 端直接 rethrow，不做字串比對。
+        throw _GroqFatalException(sc, body);
       } on TimeoutException {
         final delay = Duration(seconds: 3 + attempt * 3);
         _log.w('[Groq] 逾時，第 ${attempt + 1}/$totalAttempts 次重試');
@@ -217,16 +242,9 @@ class GroqNativeService {
         _log.w('[Groq] 網路錯誤: ${e.message}，第 ${attempt + 1}/$totalAttempts 次重試');
         await Future<void>.delayed(delay);
         lastError = Exception('Groq 網路錯誤: ${e.message}');
-      } on Exception catch (e) {
-        // 包含已解析的 HTTP 錯誤
-        final msg = e.toString();
-        if (msg.contains('Groq 轉錄失敗') && _retryableStatuses.any((s) => msg.contains('$s'))) {
-          final delay = Duration(seconds: 3 + attempt * 3);
-          _log.w('[Groq] 第 ${attempt + 1}/$totalAttempts 次重試');
-          await Future<void>.delayed(delay);
-          lastError = e;
-          continue;
-        }
+      } on _GroqFatalException {
+        // 不可重試：直接 rethrow，不做 status code 字串比對
+        //（舊寫法 '0' 恆真，會把 400 也當 transient 空轉）。
         rethrow;
       } finally {
         // cached client stays alive; do not close
@@ -273,7 +291,6 @@ class GroqNativeService {
     // 4 並行轉錄
     final texts = List<String>.filled(chunks.length, '');
     int done = 0;
-    int ok = 0;
 
     Future<void> transcribeOne(int i) async {
       _log.i('  [chunk ${i + 1}/${chunks.length}] ${chunks[i]}');
@@ -281,7 +298,6 @@ class GroqNativeService {
         final text = await transcribe(chunks[i], model: model, language: language);
         if (text.trim().isNotEmpty) {
           texts[i] = text;
-          ok++;
         }
       } catch (e) {
         _log.w('  [chunk ${i + 1}] 轉錄失敗: $e');
@@ -291,20 +307,29 @@ class GroqNativeService {
       onChunk?.call('轉錄中 $done/${chunks.length} 段…', pct);
     }
 
-    // 分 4 組並行
+    // 真 worker pool：固定 4 並發，共用 index queue。
+    // 原本 strided batching 第一批就 ceil(n/4) 全開，
+    // 60s sub-chunk 下可達數十個並發上傳 → 429 風暴 + 記憶體爆。
     const workers = 4;
-    for (int w = 0; w < workers; w++) {
-      final futures = <Future>[];
-      for (int i = w; i < chunks.length; i += workers) {
-        futures.add(transcribeOne(i));
+    int next = 0;
+    Future<void> worker() async {
+      while (true) {
+        final i = next++;
+        if (i >= chunks.length) return;
+        await transcribeOne(i);
       }
-      await Future.wait(futures);
     }
+    await Future.wait(List.generate(workers, (_) => worker()));
 
-    // 清理暫存分段檔案
+    // 清理暫存分段檔案 + temp 目錄（fallback 回傳原檔時 parent 不是
+    // temp dir，用檔名特徵 guard，不可误删原目錄）。
     for (final c in chunks) {
       try { await File(c).delete(); } catch (_) {}
     }
+    try {
+      final d = File(chunks.first).parent;
+      if (d.path.contains('groq_chunk_')) d.deleteSync(recursive: true);
+    } catch (_) {}
 
     onChunk?.call('轉錄完成', 1.0);
     return texts.where((t) => t.isNotEmpty).join('\n');
@@ -469,7 +494,7 @@ class GroqNativeService {
           continue;
         }
 
-        throw Exception('Groq chat 失敗 ${resp.statusCode}: ${resp.body}');
+        throw _GroqFatalException(resp.statusCode, resp.body);
       } on TimeoutException {
         final delay = Duration(seconds: 3 + attempt * 3);
         _log.w('[Groq chat] 逾時，第 ${attempt + 1}/$totalAttempts 次重試');
@@ -480,15 +505,7 @@ class GroqNativeService {
         _log.w('[Groq chat] 網路錯誤: ${e.message}，第 ${attempt + 1}/$totalAttempts 次重試');
         await Future<void>.delayed(delay);
         lastError = Exception('Groq chat 網路錯誤: ${e.message}');
-      } on Exception catch (e) {
-        final msg = e.toString();
-        if (_retryableStatuses.any((s) => msg.contains('$s'))) {
-          final delay = Duration(seconds: 3 + attempt * 3);
-          _log.w('[Groq chat] 第 ${attempt + 1}/$totalAttempts 次重試');
-          await Future<void>.delayed(delay);
-          lastError = e;
-          continue;
-        }
+      } on _GroqFatalException {
         rethrow;
       } finally {
         // cached client stays alive; do not close

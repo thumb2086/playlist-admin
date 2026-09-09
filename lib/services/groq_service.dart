@@ -77,10 +77,6 @@ class GroqService {
     return text;
   }
 
-  Future<String> transcribeUrl({required String audioUrl, required String model, String? language}) async {
-    throw UnimplementedError('URL 轉錄尚未支援，請先下載音檔');
-  }
-
   static const models = ['whisper-large-v3', 'whisper-large-v3-turbo'];
   static const languages = ['', 'zh', 'en', 'ja', 'ko', 'es', 'fr', 'de', 'th', 'vi'];
 }

@@ -379,12 +379,6 @@ class YoutubeService {
     ];
 
     // 加入餅乾（如果有的話）
-    final cookies2 = _findCookies();
-    if (cookies2 != null) {
-      baseArgs.addAll(['--cookies', cookies2]);
-    }
-
-    // 加入餅乾（如果有的話）
     final cookies = _findCookies();
     if (cookies != null) {
       baseArgs.addAll(['--cookies', cookies]);

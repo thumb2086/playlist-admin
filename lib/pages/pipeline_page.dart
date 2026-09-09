@@ -34,6 +34,16 @@ class _PipelinePageState extends State<PipelinePage> {
   double _ragProgress = 0;
   int _musicStep = 0;
 
+  // ── Log 節流：pipeline 每秒幾十行 log，若每行都 setState + animateTo，
+  // 兩條一起跑會直接塞爆主 thread。改為 300ms 批量 flush 一次。
+  final _musicPending = <String>[];
+  final _podcastPending = <String>[];
+  Timer? _logFlushTimer;
+  static const int _maxLogLines = 1500;
+  DateTime _lastMusicProgress = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastPodcastProgress = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastRagProgress = DateTime.fromMillisecondsSinceEpoch(0);
+
   late List<String> _stepLabels;
 
   @override
@@ -45,6 +55,7 @@ class _PipelinePageState extends State<PipelinePage> {
 
   @override
   void dispose() {
+    _logFlushTimer?.cancel();
     I18N.instance.removeListener(_rebuildStepLabels);
     _musicScrollCtrl.dispose();
     _podcastScrollCtrl.dispose();
@@ -67,22 +78,61 @@ class _PipelinePageState extends State<PipelinePage> {
   }
 
   void _musicLog(String msg) {
-    if (mounted) setState(() { _musicLogs.add(msg); });
-    _autoScroll(_musicScrollCtrl);
+    _musicPending.add(msg);
+    _scheduleLogFlush();
   }
 
   void _podcastLog(String msg) {
-    if (mounted) setState(() { _podcastLogs.add(msg); });
+    _podcastPending.add(msg);
+    _scheduleLogFlush();
+  }
+
+  void _scheduleLogFlush() {
+    if (_logFlushTimer?.isActive ?? false) return;
+    _logFlushTimer = Timer(const Duration(milliseconds: 300), _flushLogs);
+  }
+
+  void _flushLogs() {
+    if (!mounted) {
+      _musicPending.clear();
+      _podcastPending.clear();
+      return;
+    }
+    setState(() {
+      if (_musicPending.isNotEmpty) {
+        _musicLogs.addAll(_musicPending);
+        _musicPending.clear();
+        if (_musicLogs.length > _maxLogLines) {
+          _musicLogs.removeRange(0, _musicLogs.length - _maxLogLines);
+        }
+      }
+      if (_podcastPending.isNotEmpty) {
+        _podcastLogs.addAll(_podcastPending);
+        _podcastPending.clear();
+        if (_podcastLogs.length > _maxLogLines) {
+          _podcastLogs.removeRange(0, _podcastLogs.length - _maxLogLines);
+        }
+      }
+    });
+    _autoScroll(_musicScrollCtrl);
     _autoScroll(_podcastScrollCtrl);
   }
 
   void _autoScroll(ScrollController ctrl) {
-    Future.delayed(const Duration(milliseconds: 50), () {
-      if (ctrl.hasClients) {
-        ctrl.animateTo(ctrl.position.maxScrollExtent,
-            duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
-      }
-    });
+    if (!ctrl.hasClients) return;
+    final pos = ctrl.position;
+    if (!pos.hasContentDimensions) return;
+    // 使用者已往上翻看舊 log 時不硬拉到底；貼底才跟隨，且用 jumpTo
+    // 避免數百個 animateTo 動畫疊加卡死 UI。
+    if (pos.maxScrollExtent - pos.pixels > 200) return;
+    try {
+      ctrl.jumpTo(pos.maxScrollExtent);
+    } catch (_) {}
+  }
+
+  /// 進度條節流：250ms 最多一次 setState，完成時一定更新。
+  bool _throttleProgress(DateTime last) {
+    return DateTime.now().difference(last).inMilliseconds < 250;
   }
 
   Future<void> _run({int fromStep = 0, int? toStep}) async {
@@ -99,6 +149,9 @@ class _PipelinePageState extends State<PipelinePage> {
         config: ConfigService.instance.config,
         onLog: _musicLog,
         onProgress: (c, t, stepIdx) {
+          final done = t <= 0 || c >= t;
+          if (!done && _throttleProgress(_lastMusicProgress)) return;
+          _lastMusicProgress = DateTime.now();
           try { if (mounted) setState(() { _musicProgress = t > 0 ? c / t : 0.0; _musicStep = stepIdx; }); } catch (_) {}
         },
         state: _musicState,
@@ -108,6 +161,8 @@ class _PipelinePageState extends State<PipelinePage> {
     } catch (e) {
       _musicLog('  ❌ Pipeline 執行錯誤: $e');
     } finally {
+      _logFlushTimer?.cancel();
+      _flushLogs();
       if (mounted) setState(() { _musicRunning = false; _musicProgress = 0; });
     }
   }
@@ -140,6 +195,9 @@ class _PipelinePageState extends State<PipelinePage> {
         final match = RegExp(r'\[(\d+)/(\d+)\]\s+([\d.]+)%').firstMatch(line);
         if (match != null) {
           final pct = (double.tryParse(match.group(3) ?? '') ?? 0) / 100;
+          final done = pct >= 1.0;
+          if (!done && _throttleProgress(_lastRagProgress)) return;
+          _lastRagProgress = DateTime.now();
           if (mounted) setState(() => _ragProgress = pct);
         }
       });
@@ -148,6 +206,8 @@ class _PipelinePageState extends State<PipelinePage> {
     } catch (e) {
       _podcastLog('  ❌ RAG 更新錯誤: $e');
     } finally {
+      _logFlushTimer?.cancel();
+      _flushLogs();
       if (mounted) setState(() { _ragRunning = false; _ragProgress = 0; });
     }
   }
@@ -165,6 +225,9 @@ class _PipelinePageState extends State<PipelinePage> {
       final pipeline = PodcastPipeline(
         onLog: _podcastLog,
         onProgress: (c, t, stepIdx) {
+          final done = t <= 0 || c >= t;
+          if (!done && _throttleProgress(_lastPodcastProgress)) return;
+          _lastPodcastProgress = DateTime.now();
           try { if (mounted) setState(() { _podcastProgress = t > 0 ? c / t : 0.0; }); } catch (_) {}
         },
         state: _podcastState,
@@ -173,6 +236,8 @@ class _PipelinePageState extends State<PipelinePage> {
     } catch (e) {
       _podcastLog('  ❌ Podcast Pipeline 錯誤: $e');
     } finally {
+      _logFlushTimer?.cancel();
+      _flushLogs();
       if (mounted) setState(() { _podcastRunning = false; _podcastProgress = 0; });
     }
   }

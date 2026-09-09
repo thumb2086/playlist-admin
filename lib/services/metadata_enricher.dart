@@ -20,10 +20,14 @@ class MetadataEnricher {
     log('🎵 找到 ${files.length} 個檔案缺少 metadata，開始補充…');
     int success = 0;
 
+    // spotify_cache 索引只建一次：原本每首歌都 listSync + 全讀全 parse，
+    // O(歌×快取檔) 的同步 IO 全卡在主 thread 上。
+    final cacheIndex = await _loadSpotifyCacheIndex();
+
     for (int i = 0; i < files.length; i++) {
       final path = files[i];
       try {
-        final ok = await _enrichFile(path);
+        final ok = await _enrichFile(path, cacheIndex);
         if (ok) success++;
       } catch (e) {
         log('  ❌ ${path.split('\\').last}: $e');
@@ -54,7 +58,7 @@ class MetadataEnricher {
     return missing;
   }
 
-  Future<bool> _enrichFile(String filePath) async {
+  Future<bool> _enrichFile(String filePath, Map<String, Map<String, dynamic>> cacheIndex) async {
     final stem = File(filePath).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '');
     final meta = await MetadataReader.read(filePath);
 
@@ -64,8 +68,8 @@ class MetadataEnricher {
     String? year;
     String? coverUrl;
 
-    // 1. Try Spotify cache
-    final cached = _loadSpotifyCache(stem);
+    // 1. Try Spotify cache (in-memory index, no IO here)
+    final cached = _lookupSpotifyCache(stem, cacheIndex);
     if (cached != null) {
       title ??= cached['title'] as String?;
       artist ??= cached['artist'] as String?;
@@ -93,33 +97,41 @@ class MetadataEnricher {
     return _applyMetadata(filePath, title, artist, album, year, coverUrl);
   }
 
-  Map<String, dynamic>? _loadSpotifyCache(String stem) {
+  /// 一次把 spotify_cache 讀進記憶體（檔名 stem → 內容），之後全是記憶體比對。
+  Future<Map<String, Map<String, dynamic>>> _loadSpotifyCacheIndex() async {
+    final index = <String, Map<String, dynamic>>{};
     try {
       final base = ConfigService.instance.config.basePath;
-      if (base.isEmpty) return null;
+      if (base.isEmpty) return index;
       final cacheDir = Directory('$base\\spotify_cache');
-      if (!cacheDir.existsSync()) return null;
-
-      // Try exact match
-      final exactFile = File('$base\\spotify_cache\\$stem.json');
-      if (exactFile.existsSync()) {
-        return jsonDecode(exactFile.readAsStringSync()) as Map<String, dynamic>;
-      }
-
-      // Try fuzzy match by iterating all cache files
-      for (final f in cacheDir.listSync()) {
+      if (!await cacheDir.exists()) return index;
+      await for (final f in cacheDir.list()) {
         if (f is File && f.path.endsWith('.json')) {
           try {
-            final data = jsonDecode(f.readAsStringSync()) as Map<String, dynamic>;
-            final cacheTitle = (data['title'] as String? ?? '').toLowerCase().replaceAll(' ', '');
-            final stemLower = stem.toLowerCase().replaceAll(' ', '');
-            if (cacheTitle.contains(stemLower) || stemLower.contains(cacheTitle)) {
-              return data;
-            }
+            final data = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
+            final key = File(f.path).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '').toLowerCase();
+            index[key] = data;
           } catch (_) {}
         }
       }
     } catch (_) {}
+    return index;
+  }
+
+  Map<String, dynamic>? _lookupSpotifyCache(String stem, Map<String, Map<String, dynamic>> index) {
+    if (index.isEmpty) return null;
+    final hit = index[stem.toLowerCase()];
+    if (hit != null) return hit;
+    // Fuzzy fallback: in-memory scan, no IO.
+    final stemLower = stem.toLowerCase().replaceAll(' ', '');
+    if (stemLower.isEmpty) return null;
+    for (final data in index.values) {
+      final cacheTitle = (data['title'] as String? ?? '').toLowerCase().replaceAll(' ', '');
+      if (cacheTitle.isEmpty) continue;
+      if (cacheTitle.contains(stemLower) || stemLower.contains(cacheTitle)) {
+        return data;
+      }
+    }
     return null;
   }
 

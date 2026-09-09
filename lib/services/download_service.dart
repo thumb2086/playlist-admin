@@ -111,7 +111,7 @@ class DownloadService {
     required void Function(String log) onLog,
   }) async {
     final bridge = _bridgePath;
-    if (bridge.isEmpty) throw Exception('Base path not configured');
+    if (bridge.isEmpty) throw Exception('找不到 flutter_download_bridge.py（僅影響 list-missing / batch-download）');
 
     final env = Map<String, String>.from(Platform.environment);
     env['PYTHONIOENCODING'] = 'utf-8';
@@ -152,7 +152,7 @@ class DownloadService {
     required void Function(int current, int total, String song) onProgress,
   }) async {
     final bridge = _bridgePath;
-    if (bridge.isEmpty) throw Exception('Base path not configured');
+    if (bridge.isEmpty) throw Exception('找不到 flutter_download_bridge.py（僅影響 list-missing / batch-download）');
 
     final songsJson = jsonEncode(songs.map((s) => {
       'name': s.name,

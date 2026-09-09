@@ -36,11 +36,13 @@ class PodcastService {
   }
 
   /// Fetch RSS feed and parse episodes natively (no Python).
+  /// 30s timeout：http 預設無超時，連線僵住會連帶卡死整批 Future.wait，
+  /// 讓暫停/取消按鈕看起來像沒反應。
   Future<({String title, List<PodcastEpisode> episodes})> fetchEpisodes(
       String rssUrl) async {
     final resp = await http.get(Uri.parse(rssUrl), headers: {
       'User-Agent': 'playlist-admin/2.0',
-    });
+    }).timeout(const Duration(seconds: 30));
     if (resp.statusCode != 200) {
       throw Exception('RSS fetch failed (${resp.statusCode})');
     }
@@ -77,9 +79,14 @@ class PodcastService {
 
   /// Get audio URL for a specific episode index from RSS.
   Future<String?> getAudioUrl(String rssUrl, int index) async {
-    final resp = await http.get(Uri.parse(rssUrl), headers: {
-      'User-Agent': 'playlist-admin/2.0',
-    });
+    http.Response resp;
+    try {
+      resp = await http.get(Uri.parse(rssUrl), headers: {
+        'User-Agent': 'playlist-admin/2.0',
+      }).timeout(const Duration(seconds: 30));
+    } on TimeoutException {
+      return null;
+    }
     if (resp.statusCode != 200) return null;
     final body = utf8.decode(resp.bodyBytes, allowMalformed: true);
     final doc = XmlDocument.parse(body);
@@ -126,25 +133,37 @@ class PodcastService {
   }
 
   /// Download episode audio natively (HTTP streaming, no Python).
+  ///
+  /// [knownTitle]/[knownAudioUrl] 由呼叫方（已抓過 RSS）直接傳入，
+  /// 避免同一 feed 為每集重抓重解析 3 次。沒傳時才 fallback 重抓。
   Future<bool> downloadEpisode(
     String rssUrl,
     int index,
     void Function(double progress) onProgress, {
     String? podcastName,
+    String? knownTitle,
+    String? knownAudioUrl,
   }) async {
-    final audioUrl = await getAudioUrl(rssUrl, index);
+    String? audioUrl = (knownAudioUrl != null && knownAudioUrl.isNotEmpty)
+        ? knownAudioUrl
+        : await getAudioUrl(rssUrl, index);
     if (audioUrl == null || audioUrl.isEmpty) throw Exception('No audio URL found');
 
-    // Get title from RSS.
-    final resp2 = await http.get(Uri.parse(rssUrl), headers: {
-      'User-Agent': 'playlist-admin/2.0',
-    });
-    final body2 = utf8.decode(resp2.bodyBytes, allowMalformed: true);
-    final doc = XmlDocument.parse(body2);
-    final items = doc.findAllElements('item').toList();
-    final title = index < items.length
-        ? items[index].findAllElements('title').firstOrNull?.innerText ?? 'episode_$index'
-        : 'episode_$index';
+    String title;
+    if (knownTitle != null && knownTitle.isNotEmpty) {
+      title = knownTitle;
+    } else {
+      // Fallback: re-fetch RSS for the title.
+      final resp2 = await http.get(Uri.parse(rssUrl), headers: {
+        'User-Agent': 'playlist-admin/2.0',
+      }).timeout(const Duration(seconds: 30));
+      final body2 = utf8.decode(resp2.bodyBytes, allowMalformed: true);
+      final doc = XmlDocument.parse(body2);
+      final items = doc.findAllElements('item').toList();
+      title = index < items.length
+          ? items[index].findAllElements('title').firstOrNull?.innerText ?? 'episode_$index'
+          : 'episode_$index';
+    }
 
     final name = normalizeFileName(title);
     final ext = _guessExtension(audioUrl);
@@ -155,24 +174,44 @@ class PodcastService {
       return false;
     }
 
-    // Native HTTP download.
+    // Native HTTP download (timeouts everywhere: stalled connection must not
+    // hang the batch forever, otherwise pause/cancel looks dead).
     final client = http.Client();
-    final request = http.Request('GET', Uri.parse(audioUrl));
-    final response = await client.send(request);
-    if (response.statusCode != 200) {
+    IOSink? sink;
+    try {
+      final request = http.Request('GET', Uri.parse(audioUrl));
+      final response = await client.send(request).timeout(const Duration(seconds: 60));
+      if (response.statusCode != 200) {
+        throw Exception('Download failed (${response.statusCode})');
+      }
+      final totalBytes = response.contentLength ?? 0;
+      int received = 0;
+      int sinceFlush = 0;
+      sink = File(outputPath).openWrite();
+      await for (final chunk in response.stream.timeout(
+        const Duration(seconds: 60),
+        onTimeout: (sinkCtrl) => sinkCtrl.addError(TimeoutException('download stalled')),
+      )) {
+        sink.add(chunk);
+        received += chunk.length;
+        sinceFlush += chunk.length;
+        // 背壓：每 ~5MB flush 一次，避免百 MB 檔全緩衝進記憶體。
+        if (sinceFlush >= 5 * 1024 * 1024) {
+          await sink.flush();
+          sinceFlush = 0;
+        }
+        if (totalBytes > 0) onProgress(received / totalBytes);
+      }
+      await sink.flush();
+      await sink.close();
+      sink = null;
+    } catch (e) {
+      try { await sink?.close(); } catch (_) {}
+      try { if (await File(outputPath).exists()) await File(outputPath).delete(); } catch (_) {}
+      rethrow;
+    } finally {
       client.close();
-      throw Exception('Download failed (${response.statusCode})');
     }
-    final totalBytes = response.contentLength ?? 0;
-    int received = 0;
-    final sink = File(outputPath).openWrite();
-    await for (final chunk in response.stream) {
-      sink.add(chunk);
-      received += chunk.length;
-      if (totalBytes > 0) onProgress(received / totalBytes);
-    }
-    await sink.close();
-    client.close();
     onProgress(1.0);
     return true;
   }
@@ -203,7 +242,7 @@ class PodcastService {
         environment: {'PYTHONIOENCODING': 'utf-8'},
       );
       var result = PodcastSubtitleResult.failed;
-      await proc.stdout.transform(utf8.decoder).transform(const LineSplitter()).forEach((line) {
+      final outDone = proc.stdout.transform(utf8.decoder).transform(const LineSplitter()).forEach((line) {
         if (line.trim().isEmpty) return;
         try {
           final json = jsonDecode(line.trim()) as Map<String, dynamic>;
@@ -214,7 +253,19 @@ class PodcastService {
           else if (type == 'complete') { onLog('字幕下載完成'); result = PodcastSubtitleResult.found; }
         } catch (_) { onLog(line); }
       });
-      await proc.exitCode;
+      // exitCode 必須有 timeout：yt-dlp 僵住時整批會等到天荒地老。
+      // transient 失敗不燒 not_found，下次重試（pipeline 已如此處理）。
+      await proc.exitCode.timeout(
+        const Duration(seconds: 180),
+        onTimeout: () {
+          try { proc.kill(); } catch (_) {}
+          onLog('字幕下載逾時 (180s)，下次重試');
+          return -1;
+        },
+      );
+      try {
+        await outDone.timeout(const Duration(seconds: 10));
+      } catch (_) {}
       return result;
     } catch (e) {
       onLog('字幕下載失敗: $e');

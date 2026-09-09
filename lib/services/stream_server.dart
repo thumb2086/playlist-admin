@@ -20,7 +20,10 @@ class StreamServer {
 
   int get port => _port;
 
-  final Map<String, String> _resolved = {};
+  // YouTube stream URL 約 6 小時失效：快取必須帶 TTL，否則隔天點播
+  // 直接失敗直到重開 app。5 小時到期。
+  final Map<String, ({String url, DateTime at})> _resolved = {};
+  static const _resolveTtl = Duration(hours: 5);
   Process? _activeProc;
   final Map<String, String> _cacheIndex = {};
 
@@ -120,15 +123,18 @@ class StreamServer {
 
   /// Resolve URL via YoutubeService (native).
   Future<String> _resolve(String query) async {
-    final cached = _resolved[query];
-    if (cached != null) return cached;
+    final hit = _resolved[query];
+    if (hit != null) {
+      if (DateTime.now().difference(hit.at) < _resolveTtl) return hit.url;
+      _resolved.remove(query); // 過期：重解
+    }
     try {
       final result = await YoutubeService.instance.resolveStream(query);
       if (result == null) {
         print('[StreamServer] resolve failed for: $query');
         return '';
       }
-      _resolved[query] = result.audioUrl;
+      _resolved[query] = (url: result.audioUrl, at: DateTime.now());
       return result.audioUrl;
     } catch (e) {
       print('[StreamServer] resolve exception: $e');
