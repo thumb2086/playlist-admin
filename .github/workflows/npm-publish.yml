@@ -27,7 +27,12 @@ jobs:
         run: node -e "var p=JSON.parse(require('fs').readFileSync('package.json'));p.version=process.env.VERSION;require('fs').writeFileSync('package.json',JSON.stringify(p,null,2)+'\n')"
 
       - name: Publish to npm
-        run: npm publish --access public
+        run: |
+          if npm view playlist-admin@$VERSION version 2>/dev/null; then
+            echo "playlist-admin@$VERSION already published, skipping"
+          else
+            npm publish --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
