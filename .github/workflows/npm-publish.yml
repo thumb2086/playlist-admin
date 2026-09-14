@@ -40,5 +40,4 @@ jobs:
         run: |
           sleep 10
           npm install -g playlist-admin
-          playlist-admin --help
-          playlist-admin status
+          playlist-admin
