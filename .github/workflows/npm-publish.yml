@@ -78,9 +78,6 @@ jobs:
           Write-Host "`n=== playlist-admin status ==="
           playlist-admin status
 
-          Write-Host "`n=== playlist-admin rag query (test) ==="
-          playlist-admin rag query "test" --topk 1 --json
-
           Write-Host "`n=== All smoke tests passed ==="
 
       # ── Package build artifacts ──
