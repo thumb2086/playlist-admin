@@ -1,6 +1,6 @@
 {
   "name": "playlist-admin",
-  "version": "2.15.14",
+  "version": "2.15.16",
   "description": "playlist-admin CLI - thin launcher for the Flutter app engine (pipeline, podcast) + podcast RAG query",
   "type": "module",
   "bin": {
@@ -9,7 +9,8 @@
   "scripts": {
     "pipeline": "node cli/index.js pipeline",
     "podcast": "node cli/index.js podcast",
-    "status": "node cli/index.js status"
+    "status": "node cli/index.js status",
+    "test": "node cli/index.js status && node cli/index.js rag query \"test\" --topk 1 --json"
   },
   "files": [
     "cli/index.js",

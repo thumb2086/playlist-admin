@@ -24,6 +24,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # rag/ 是唯一真相來源：release 打包的是 assets/tools/rag/，
+      # 每次 build 前強制同步，歷史分叉不再發生。
+      - name: Sync rag scripts into assets
+        run: |
+          mkdir -p assets/tools/rag
+          cp rag/build_db.py rag/_resolve.py rag/query.py rag/srt_to_text.py assets/tools/rag/
+          cp tools/flutter_download_bridge.py assets/tools/flutter_download_bridge.py
+
       - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
@@ -69,7 +77,7 @@ jobs:
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
-          name: "playlist-admin ${{ github.ref_name }} (${{ env.CHANNEL }})"
+          name: "playlist-admin v${{ env.APP_VERSION }}"
           prerelease: ${{ env.PRERELEASE }}
           files: build/app/outputs/flutter-apk/*.apk
         env:
@@ -86,6 +94,14 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      # rag/ 是唯一真相來源：release 打包的是 assets/tools/rag/，
+      # 每次 build 前強制同步，歷史分叉不再發生。
+      - name: Sync rag scripts into assets
+        run: |
+          New-Item -ItemType Directory -Force -Path assets/tools/rag | Out-Null
+          Copy-Item rag/build_db.py,rag/_resolve.py,rag/query.py,rag/srt_to_text.py assets/tools/rag/ -Force
+          Copy-Item tools/flutter_download_bridge.py assets/tools/flutter_download_bridge.py -Force
 
       - uses: subosito/flutter-action@v2
         with:
@@ -142,12 +158,4 @@ jobs:
           name: playlist-admin-Setup-${{ env.CHANNEL }}
           path: installer\playlist-admin-Setup-*.exe
 
-      - name: Release
-        if: github.ref_type == 'tag'
-        uses: softprops/action-gh-release@v2
-        with:
-          name: "playlist-admin ${{ github.ref_name }} (${{ env.CHANNEL }})"
-          prerelease: ${{ env.PRERELEASE }}
-          files: installer\playlist-admin-Setup-*.exe
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+      # Release is handled by npm-publish.yml (builds + npm + tests + release)

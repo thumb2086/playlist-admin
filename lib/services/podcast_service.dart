@@ -9,6 +9,12 @@ import 'config_service.dart';
 
 enum PodcastSubtitleResult { found, notFound, failed }
 
+/// 取消訊號：呼叫方（如下載頁取消鈕）透過 isCancelled 回報，
+/// 串流迴圈內拋出即中斷，殘檔由既有 catch 清理後 rethrow。
+class DownloadCancelled implements Exception {
+  const DownloadCancelled();
+}
+
 class PodcastService {
   static PodcastService? _instance;
   static PodcastService get instance => _instance ??= PodcastService._();
@@ -59,7 +65,7 @@ class PodcastService {
       final description = item.findAllElements('description').firstOrNull?.innerText ?? '';
       final pubDate = item.findAllElements('pubDate').firstOrNull?.innerText ?? '';
       // Duration from itunes:duration
-      final itunesNs = 'http://www.itunes.com/dtds/podcast-1.0.dtd';
+      const itunesNs = 'http://www.itunes.com/dtds/podcast-1.0.dtd';
       final durationEl = item.findAllElements('duration', namespace: itunesNs).firstOrNull
           ?? item.findAllElements('{http://www.itunes.com/dtds/podcast-1.0.dtd}duration').firstOrNull;
       final durationStr = durationEl?.innerText ?? '';
@@ -143,6 +149,7 @@ class PodcastService {
     String? podcastName,
     String? knownTitle,
     String? knownAudioUrl,
+    bool Function()? isCancelled,
   }) async {
     String? audioUrl = (knownAudioUrl != null && knownAudioUrl.isNotEmpty)
         ? knownAudioUrl
@@ -179,6 +186,7 @@ class PodcastService {
     final client = http.Client();
     IOSink? sink;
     try {
+      if (isCancelled?.call() ?? false) throw const DownloadCancelled();
       final request = http.Request('GET', Uri.parse(audioUrl));
       final response = await client.send(request).timeout(const Duration(seconds: 60));
       if (response.statusCode != 200) {
@@ -192,6 +200,7 @@ class PodcastService {
         const Duration(seconds: 60),
         onTimeout: (sinkCtrl) => sinkCtrl.addError(TimeoutException('download stalled')),
       )) {
+        if (isCancelled?.call() ?? false) throw const DownloadCancelled();
         sink.add(chunk);
         received += chunk.length;
         sinceFlush += chunk.length;
@@ -211,6 +220,12 @@ class PodcastService {
       rethrow;
     } finally {
       client.close();
+    }
+    // 0-byte/截斷檔不可回傳 true：否則下次 File.exists 跳過下載，永不重試。
+    final savedSize = await File(outputPath).length().catchError((_) => 0);
+    if (savedSize < 1024) {
+      try { await File(outputPath).delete(); } catch (_) {}
+      throw Exception('下載檔案過小 (${savedSize}B)，視為失敗');
     }
     onProgress(1.0);
     return true;
@@ -236,7 +251,7 @@ class PodcastService {
     try {
       final proc = await Process.start(
         'python',
-        ['tools\\flutter_download_bridge.py', 'youtube-subs', query, outputPath],
+        ['tools\\flutter_download_bridge.py', 'youtube-subs', query, outputPath, podcastName],
         runInShell: true,
         workingDirectory: ConfigService.instance.config.basePath,
         environment: {'PYTHONIOENCODING': 'utf-8'},
@@ -247,8 +262,9 @@ class PodcastService {
         try {
           final json = jsonDecode(line.trim()) as Map<String, dynamic>;
           final type = json['type'] as String?;
-          if (type == 'log') onLog(json['message'] as String? ?? '');
-          else if (type == 'error') { onLog('${json['message']}'); result = PodcastSubtitleResult.failed; }
+          if (type == 'log') {
+            onLog(json['message'] as String? ?? '');
+          } else if (type == 'error') { onLog('${json['message']}'); result = PodcastSubtitleResult.failed; }
           else if (type == 'not_found') { onLog('${json['message']}'); result = PodcastSubtitleResult.notFound; }
           else if (type == 'complete') { onLog('字幕下載完成'); result = PodcastSubtitleResult.found; }
         } catch (_) { onLog(line); }

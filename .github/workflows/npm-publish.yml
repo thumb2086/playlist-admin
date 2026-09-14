@@ -1,0 +1,102 @@
+name: NPM Publish & Test
+
+permissions:
+  contents: write
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    name: Build, Publish & Test
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version from tag
+        id: ver
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $v = $tag -replace '^v', ''
+          if (-not $v) { $v = '0.0.0-dev' }
+          "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
+          Write-Host " version: $v"
+
+      # ── Sync rag/ → assets/tools/rag/ ──
+      - name: Sync rag scripts
+        run: |
+          New-Item -ItemType Directory -Force -Path assets/tools/rag | Out-Null
+          Copy-Item rag/build_db.py,rag/_resolve.py,rag/query.py,rag/srt_to_text.py assets/tools/rag/ -Force
+          Copy-Item tools/flutter_download_bridge.py assets/tools/flutter_download_bridge.py -Force
+
+      # ── Flutter build ──
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          architecture: x64
+          cache: true
+
+      - run: flutter pub get
+
+      - name: Build Windows
+        run: flutter build windows --release --dart-define=APP_VERSION=$env:VERSION
+
+      # ── npm publish ──
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Update package.json version
+        run: |
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $pkg.version = $env:VERSION
+          $pkg | ConvertTo-Json -Depth 10 | Set-Content package.json -Encoding UTF8
+          Write-Host " package.json version set to $env:VERSION"
+
+      - name: npm publish
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # ── Install & smoke test ──
+      - name: Install published package
+        run: npm install -g playlist-admin@$env:VERSION
+
+      - name: CLI smoke tests
+        run: |
+          Write-Host "`n=== playlist-admin --help ==="
+          playlist-admin --help
+
+          Write-Host "`n=== playlist-admin status ==="
+          playlist-admin status
+
+          Write-Host "`n=== playlist-admin rag query (test) ==="
+          playlist-admin rag query "test" --topk 1 --json
+
+          Write-Host "`n=== All smoke tests passed ==="
+
+      # ── Package build artifacts ──
+      - name: Zip build output
+        run: |
+          $src = "build\windows\x64\runner\Release"
+          $dst = "playlist-admin-$env:VERSION-windows-x64.zip"
+          Compress-Archive -Path "$src\*" -DestinationPath $dst -Force
+          Write-Host "Created $dst"
+
+      # ── GitHub Release ──
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "playlist-admin v${{ env.VERSION }}"
+          prerelease: true
+          files: playlist-admin-${{ env.VERSION }}-windows-x64.zip
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
