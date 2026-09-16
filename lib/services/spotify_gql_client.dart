@@ -16,7 +16,6 @@ class SpotifyGqlClient {
   static const _browseAll = 'dbd8b55e09a58afc52eab438bc228ba28fd72ac2f2148c6c26354980e4579001';
   static const _libraryV3 = '390c78e5b951029bad359785e69b07b536a509c581cbcd0aded5e5067f187455';
   static const _getTrack = '612585ae06ba435ad26369870deaae23b5c8800a256cd8a57e08eddc25a37294';
-  static const _libraryTracks = '087278b20b743578a6262c2b0b4bcd20d879c503cc359a2285baf083ef944240';
 
   static const _userAgents = [
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
@@ -159,7 +158,7 @@ class SpotifyGqlClient {
           'persistedQuery': {'version': 1, 'sha256Hash': hash},
         },
       }),
-    );
+    ).timeout(const Duration(seconds: 20));
     if (resp.statusCode == 401) {
       await session.refreshToken();
       final retry = session.accessToken;
@@ -194,7 +193,7 @@ class SpotifyGqlClient {
           'persistedQuery': {'version': 1, 'sha256Hash': hash},
         },
       }),
-    );
+    ).timeout(const Duration(seconds: 20));
     if (resp.statusCode >= 400) {
       throw Exception('Spotify GQL retry ${resp.statusCode}');
     }

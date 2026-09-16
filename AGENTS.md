@@ -46,3 +46,14 @@ npm 包名：`playlist-admin`（帳號 `thumb2087`，已搶注）
 - `npm publish` 會自動 `npm pkg fix` 修正 bin 路徑
 - 包含：`cli/index.js`、`rag/*.py`、`rag/README.md`
 - 如果 `npm publish` 四處 404，確認 `npm whoami` 是 `thumb2087`
+
+## RAG 腳本同步
+
+`rag/*.py` 是唯一真相來源。release 打包的是 `assets/tools/rag/`。
+CI（flutter-release.yml）在每次 build 前自動同步，本地改完不用手動複製。
+`tools/flutter_download_bridge.py` → `assets/tools/` 同理自動同步。
+
+## 工作紀律
+
+- 不要用 shell 寫檔案（Set-Content / echo 重定向會毀掉中文編碼）：讀用 Read，改用 Edit，驗證用 `python -c` 只印 ASCII。
+- tool 輸出偶爾把中文顯示成 `?`（顯示假象）：拿不準時用 Python 比 bytes/hash，不要憑顯示下結論。

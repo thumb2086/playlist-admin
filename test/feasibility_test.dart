@@ -1,6 +1,6 @@
-﻿/// 可行性實驗：youtube_explode + Groq + Ollama + LRCLib
+/// 可行性實驗：youtube_explode + Groq + Ollama + LRCLib
 /// MediaKit 需要 libmpv（桌面 CI/手機自動打包），改用 Dart 單元直接測 API
-import 'dart:async';
+library;
 import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';

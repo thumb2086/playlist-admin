@@ -36,6 +36,10 @@ class _JamPageState extends State<JamPage> {
     JamService.instance.removeListener(_onChanged);
     PlayerController.instance.removeListener(_onChanged);
     _searchDebounce?.cancel();
+    _nameCtrl.dispose();
+    _codeCtrl.dispose();
+    _searchCtrl.dispose();
+    _chatCtrl.dispose();
     _chatScroll.dispose();
     super.dispose();
   }
@@ -51,12 +55,6 @@ class _JamPageState extends State<JamPage> {
     _searchDebounce = Timer(const Duration(milliseconds: 400), () {
       JamService.instance.search(q);
     });
-  }
-
-  void _copy(String text) {
-    Clipboard.setData(ClipboardData(text: text));
-    ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('已複製'), duration: Duration(seconds: 1)));
   }
 
   @override
@@ -212,7 +210,8 @@ class _JamPageState extends State<JamPage> {
           version: QrVersions.auto,
           size: 64,
           backgroundColor: Colors.white,
-          foregroundColor: Colors.black,
+          eyeStyle: const QrEyeStyle(color: Colors.black),
+          dataModuleStyle: const QrDataModuleStyle(color: Colors.black),
         ),
         const SizedBox(width: 12),
         // Code + info
@@ -539,10 +538,10 @@ class _JamPageState extends State<JamPage> {
         borderRadius: BorderRadius.circular(12),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-        Row(children: [
-          const Icon(Icons.chat_rounded, size: 18, color: AppColors.accent),
-          const SizedBox(width: 6),
-          const Text('聊天室', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+        const Row(children: [
+          Icon(Icons.chat_rounded, size: 18, color: AppColors.accent),
+          SizedBox(width: 6),
+          Text('聊天室', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
         ]),
         const SizedBox(height: 8),
         ConstrainedBox(

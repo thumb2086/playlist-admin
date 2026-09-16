@@ -85,10 +85,12 @@ def read_text_file(path: Path) -> str:
 
 
 def split_sentences(text: str) -> list[str]:
-    """依中文句號斷句，過濾空白行"""
-    text = re.sub(r"\s+", "", text)
+    """依中文句號斷句，過濾空白行。
+    空白壓成單空格不斷字：舊寫法刪掉所有空白，英文全黏在一起傷 embedding。
+    （query.py 的 normalize 已同步改同一規則，否則 offset 對不上。）"""
+    text = re.sub(r"\s+", " ", text).strip()
     parts = re.split(r"(?<=[。！？!?；;])", text)
-    return [p for p in parts if len(p) >= 4]
+    return [p.strip() for p in parts if len(p.strip()) >= 4]
 
 
 def make_chunks(sentences: list[str], max_len: int = 600, overlap: int = 60) -> list[str]:
@@ -135,7 +137,41 @@ def main() -> None:
     ap.add_argument("--batch", type=int, default=64, help="每批 embedding 數量")
     args = ap.parse_args()
 
+    # 先拿鎖再開 PersistentClient：反過來雙進程仍會同時開 SQLite。
+    lock_file = Path(args.db) / ".build.lock"
+    if lock_file.exists():
+        # stale 鎖：mtime 超過 30 分鐘（kill -9 殘留）直接清掉重拿。
+        try:
+            age = time.time() - lock_file.stat().st_mtime
+        except Exception:
+            age = 0
+        if age < 1800:
+            print("另一個 build_db 正在寫入此 DB，本次跳過（避免 ChromaDB 寫入衝突）")
+            sys.exit(2)
+        try:
+            lock_file.unlink()
+            print("清掉過期 build lock，繼續執行")
+        except Exception:
+            pass
+    try:
+        fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, "w") as lf:
+            lf.write(f"{os.getpid()}|{time.time()}")
+    except FileExistsError:
+        print("另一個 build_db 正在寫入此 DB，本次跳過（避免 ChromaDB 寫入衝突）")
+        sys.exit(2)
+
     client = chromadb.PersistentClient(path=args.db)
+    try:
+        _main_build(client, args)
+    finally:
+        try:
+            lock_file.unlink()
+        except Exception:
+            pass
+
+
+def _main_build(client, args) -> None:
     if args.reset:
         try:
             client.delete_collection("podcasts")
@@ -192,13 +228,16 @@ def main() -> None:
         return hashlib.md5(raw).hexdigest()
 
     migrated = 0
+    to_update_ids: list[str] = []
+    to_update_metas: list[dict] = []
     offset = 0
     while True:
-        batch = col.get(limit=5000, offset=offset,
-                        include=["metadatas"])["metadatas"]
+        got = col.get(limit=5000, offset=offset, include=["metadatas"])
+        batch = got["metadatas"]
+        ids = got["ids"]
         if not batch:
             break
-        for m in batch:
+        for rid, m in zip(ids, batch):
             if not m or m.get("sig"):
                 continue
             p = m.get("path")
@@ -206,12 +245,25 @@ def main() -> None:
                 continue
             try:
                 sig = file_sig(Path(p))
+                m["sig"] = sig
                 done_sigs.add(sig)
+                to_update_ids.append(rid)
+                to_update_metas.append(m)
                 migrated += 1
             except Exception:
                 pass
         offset += 5000
         if offset > 1000000:
+            break
+    # 寫回 DB：舊寫法只加記憶體 set，從不寫回，每次啟動重掃且刪檔殘留。
+    for i in range(0, len(to_update_ids), 4500):
+        try:
+            col.update(
+                ids=to_update_ids[i:i + 4500],
+                metadatas=to_update_metas[i:i + 4500],
+            )
+        except Exception as e:
+            print(f"migration write-back failed: {e}")
             break
     if migrated:
         print(f"migrated {migrated} legacy chunks to content-sig dedup")
@@ -266,23 +318,37 @@ def main() -> None:
         sig = file_sig(f)
         try:
             kept_chunks, vectors = embed_texts(args.model, chunks, batch=args.batch, workers=args.workers)
-        except requests.exceptions.HTTPError as e:
-            print(f"!! HTTP 錯誤 檔案={meta['file']} 前300字={chunks[0][:300] if chunks else ''}")
-            raise
         except requests.exceptions.ConnectionError:
             print("無法連線 Ollama，請先啟動 (ollama serve) 並 pull bge-m3")
             sys.exit(1)
+        except Exception as e:
+            # 單檔失敗（500/429/timeout）不可中斷整個索引：
+            # 跳過，下次增量 run 會自動補上（dedup：沒寫入就不在 done_sigs）。
+            print(f"!! 跳過 {meta['file']}: {e}")
+            continue
         if not kept_chunks:
             continue
+        # ID 混入 show+sig+檔名：同節目同內容不同檔也互不相撞；
+        # 寫入成功立刻登記 done_sigs（批次內第二檔直接跳過，不等下次 run）。
+        try:
+            col.delete(where={"path": str(f)})
+        except Exception as e:
+            print(f"!! 清舊 chunks 失敗 {meta['file']}: {e}")
         ids = [
-            hashlib.md5(f"{meta['file']}|{j}".encode()).hexdigest()
+            hashlib.md5(f"{meta['show']}|{meta['file']}|{sig}|{j}".encode()).hexdigest()
             for j in range(len(kept_chunks))
         ]
         metadatas = [
             {**meta, "sig": sig, "chunk": j, "chars": len(c), "path": str(f)}
             for j, c in enumerate(kept_chunks)
         ]
-        col.add(ids=ids, documents=kept_chunks, metadatas=metadatas, embeddings=vectors)
+        try:
+            col.add(ids=ids, documents=kept_chunks, metadatas=metadatas, embeddings=vectors)
+        except Exception as e:
+            # DuplicateID 等單檔失敗不可崩整個 build：下次增量補上。
+            print(f"!! 寫入失敗跳過 {meta['file']}: {e}")
+            continue
+        done_sigs.add(sig)
         total_chunks += len(kept_chunks)
         if i % 5 == 0 or i == len(files):
             elapsed = time.time() - t_start

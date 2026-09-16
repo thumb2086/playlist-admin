@@ -1,4 +1,5 @@
-﻿import 'dart:io';
+import 'dart:async';
+import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
@@ -21,6 +22,9 @@ class _AudioExtractorPageState extends State<AudioExtractorPage> {
   int _done = 0, _total = 1;
   final List<String> _logs = [];
   final _logCtrl = ScrollController();
+  // onLog 高頻（deepFilter 進度行）：300ms 批量 flush，否則 setState 風暴卡 UI。
+  final _logPending = <String>[];
+  Timer? _logFlushTimer;
 
   @override
   void initState() {
@@ -34,8 +38,28 @@ class _AudioExtractorPageState extends State<AudioExtractorPage> {
 
   @override
   void dispose() {
+    _logFlushTimer?.cancel();
     _logCtrl.dispose();
     super.dispose();
+  }
+
+  void _pushLog(String l) {
+    _logPending.add(l);
+    if (_logFlushTimer?.isActive ?? false) return;
+    _logFlushTimer = Timer(const Duration(milliseconds: 300), () {
+      if (!mounted) { _logPending.clear(); return; }
+      setState(() {
+        _logs.addAll(_logPending);
+        _logPending.clear();
+        if (_logs.length > 1000) _logs.removeRange(0, _logs.length - 1000);
+      });
+      if (_logCtrl.hasClients) {
+        final pos = _logCtrl.position;
+        if (pos.hasContentDimensions && pos.maxScrollExtent - pos.pixels <= 200) {
+          try { _logCtrl.jumpTo(pos.maxScrollExtent); } catch (_) {}
+        }
+      }
+    });
   }
 
   void _switchProfile(String name) {
@@ -52,7 +76,13 @@ class _AudioExtractorPageState extends State<AudioExtractorPage> {
   }
 
   void _tryCache() {
-    final cached = AudioExtractorStore.loadCache(_cfg.sourceDir);
+    // async 載入：舊同步版在 initState 逐檔 stat，大目錄凍結首幀。
+    _tryCacheAsync();
+  }
+
+  Future<void> _tryCacheAsync() async {
+    final cached = await AudioExtractorStore.loadCacheAsync(_cfg.sourceDir);
+    if (!mounted) return;
     if (cached != null) {
       _files = cached;
       final thr = _cfg.silenceThreshold;
@@ -169,16 +199,7 @@ class _AudioExtractorPageState extends State<AudioExtractorPage> {
     await AudioExtractorEngine.runParallel(
       jobs: jobs,
       cfg: _cfg,
-      onLog: (l) {
-        if (!mounted) return;
-        setState(() {
-          _logs.add(l);
-          if (_logs.length > 1000) _logs.removeRange(0, _logs.length - 1000);
-        });
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (_logCtrl.hasClients) _logCtrl.jumpTo(_logCtrl.position.maxScrollExtent);
-        });
-      },
+      onLog: (l) { if (mounted) _pushLog(l); },
       onProgress: () {
         if (!mounted) return;
         setState(() => _done++);
@@ -328,7 +349,9 @@ class _AudioExtractorPageState extends State<AudioExtractorPage> {
           actions: [
             TextButton(
               onPressed: () {
-                for (final c in nameCtrls.values) c.dispose();
+                for (final c in nameCtrls.values) {
+                  c.dispose();
+                }
                 dfpCtrl.dispose();
                 Navigator.pop(ctx);
               },
@@ -354,7 +377,9 @@ class _AudioExtractorPageState extends State<AudioExtractorPage> {
                   _profile = newName;
                   AudioExtractorStore.setActiveProfile(newName);
                 }
-                for (final c in nameCtrls.values) c.dispose();
+                for (final c in nameCtrls.values) {
+                  c.dispose();
+                }
                 dfpCtrl.dispose();
                 pnameCtrl.dispose();
                 setState(() {});
@@ -423,7 +448,7 @@ class _AudioExtractorPageState extends State<AudioExtractorPage> {
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 8),
             child: Row(children: [
-              Text('選取: ', style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+              const Text('選取: ', style: TextStyle(fontSize: 12, color: AppColors.textMuted)),
               _chip('全部', _selAll),
               _chip('無', _selNone),
               _chip('單音軌', () => _selN(1)),

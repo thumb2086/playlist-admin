@@ -46,18 +46,24 @@ class _LyricsPageState extends State<LyricsPage> {
   }
 
   Future<void> _fetchLyrics() async {
-    final result = await LyricsService.instance.fetch(
-      widget.artist, widget.track,
-      album: widget.album, durationSec: widget.durationSec,
-    );
-    if (!mounted) return;
-    setState(() {
-      _result = result;
-      _loading = false;
-      if (result?.hasSynced == true) {
-        _syncedLines = LyricsService.parseLrc(result!.syncedLyrics!);
-      }
-    });
+    try {
+      final result = await LyricsService.instance.fetch(
+        widget.artist, widget.track,
+        album: widget.album, durationSec: widget.durationSec,
+      ).timeout(const Duration(seconds: 20));
+      if (!mounted) return;
+      setState(() {
+        _result = result;
+        _loading = false;
+        if (result?.hasSynced == true) {
+          _syncedLines = LyricsService.parseLrc(result!.syncedLyrics!);
+        }
+      });
+    } catch (_) {
+      // 失敗/逾時不可永遠轉圈。
+      if (!mounted) return;
+      setState(() => _loading = false);
+    }
   }
 
   void _updateLine(Timer _) {

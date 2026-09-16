@@ -10,14 +10,10 @@ import 'pages/library_page.dart';
 import 'pages/pipeline_page.dart';
 import 'pages/stats_page.dart';
 import 'pages/settings_page.dart';
-import 'pages/download_page.dart';
-import 'pages/audio_extractor_page.dart';
 import 'services/i18n.dart';
 import 'services/config_service.dart';
 import 'services/update_service.dart';
 import 'services/version_checker.dart';
-import 'services/spotify_session.dart';
-import 'services/player_controller.dart';
 import 'widgets/update_dialog.dart';
 import 'widgets/player_bar.dart';
 
@@ -82,6 +78,7 @@ class _MainShellState extends State<MainShell> {
   int _selectedIndex = 0;
   final _updateSvc = UpdateService.instance;
   BuildContext? _context;
+  Timer? _updateTimer;
   Widget? _detailWidget;
 
   late List<_NavItemData> _navItems;
@@ -111,7 +108,8 @@ class _MainShellState extends State<MainShell> {
     _updateSvc.addListener(_onUpdate);
     _checkForUpdates();
     // Periodic check every 10 minutes while app is running
-    Timer.periodic(const Duration(minutes: 1), (_) => _checkForUpdates());
+    //（註解曾寫 10 分鐘但程式是 1 分鐘：每分鐘打 GitHub API 太頻繁，改回 10 分鐘）
+    _updateTimer = Timer.periodic(const Duration(minutes: 10), (_) => _checkForUpdates());
   }
 
   void _onUpdate() {
@@ -150,6 +148,8 @@ class _MainShellState extends State<MainShell> {
 
   @override
   void dispose() {
+    _updateTimer?.cancel();
+    _updateSvc.removeListener(_onUpdate);
     I18N.instance.removeListener(_rebuildNav);
     super.dispose();
   }
@@ -163,9 +163,9 @@ class _MainShellState extends State<MainShell> {
       final showStats = !isMobile;
 
       _navItems = [
-        _NavItemData(Icons.home_outlined, Icons.home, '首頁'),
-        _NavItemData(Icons.search_outlined, Icons.search, '搜尋'),
-        _NavItemData(Icons.groups_outlined, Icons.groups_rounded, '一起聽'),
+        const _NavItemData(Icons.home_outlined, Icons.home, '首頁'),
+        const _NavItemData(Icons.search_outlined, Icons.search, '搜尋'),
+        const _NavItemData(Icons.groups_outlined, Icons.groups_rounded, '一起聽'),
         _NavItemData(Icons.library_music_outlined, Icons.library_music, t('app.sidebar.library')),
         if (showPipeline)
           _NavItemData(Icons.play_circle_outline, Icons.play_circle_filled, t('app.sidebar.pipeline')),
@@ -396,10 +396,10 @@ class _Sidebar extends StatelessWidget {
                 margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                 padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 10),
                 decoration: BoxDecoration(color: AppColors.accent, borderRadius: BorderRadius.circular(8)),
-                child: Row(children: [
-                  const Icon(Icons.check_circle, size: 12, color: Color(0xFF000000)),
-                  const SizedBox(width: 4),
-                  const Text('安裝更新', style: TextStyle(color: Color(0xFF000000), fontSize: 10, fontWeight: FontWeight.w600)),
+                child: const Row(children: [
+                  Icon(Icons.check_circle, size: 12, color: Color(0xFF000000)),
+                  SizedBox(width: 4),
+                  Text('安裝更新', style: TextStyle(color: Color(0xFF000000), fontSize: 10, fontWeight: FontWeight.w600)),
                 ]),
               ),
             ),
@@ -414,7 +414,7 @@ class _Sidebar extends StatelessWidget {
               children: [
                 const Icon(Icons.info_outline, color: AppColors.accent, size: 14),
                 const SizedBox(width: 8),
-                Text(t('app.version'), style: TextStyle(color: AppColors.accent, fontSize: 11, fontWeight: FontWeight.w500)),
+                Text(t('app.version'), style: const TextStyle(color: AppColors.accent, fontSize: 11, fontWeight: FontWeight.w500)),
                 const Spacer(),
                 Text('Flutter', style: TextStyle(color: AppColors.accent.withValues(alpha: 0.7), fontSize: 10)),
               ],

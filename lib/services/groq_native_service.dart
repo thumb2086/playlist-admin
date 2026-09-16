@@ -321,9 +321,10 @@ class GroqNativeService {
     }
     await Future.wait(List.generate(workers, (_) => worker()));
 
-    // 清理暫存分段檔案 + temp 目錄（fallback 回傳原檔時 parent 不是
-    // temp dir，用檔名特徵 guard，不可误删原目錄）。
+    // 清理暫存分段：只刪 temp dir 裡的 chunk。fallback 回傳原檔時
+    // chunks==[filePath]，那個是使用者原檔，絕對不可刪。
     for (final c in chunks) {
+      if (!c.contains('groq_chunk_')) continue;
       try { await File(c).delete(); } catch (_) {}
     }
     try {

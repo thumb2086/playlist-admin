@@ -60,7 +60,7 @@ class LufsService {
     if (!entry.contains('.') && !entry.contains('\\') && !entry.contains('/')) return null;
 
     // Try resolving against playlists directory (handles ../music/ relative paths).
-    final resolved = '${playlistsPath}\\$entry';
+    final resolved = '$playlistsPath\\$entry';
     if (File(resolved).existsSync()) {
       // Normalize to absolute path (remove ..) so ffmpeg works correctly.
       try {
@@ -146,7 +146,7 @@ class LufsService {
     onLog('歌單內共 ${playlistFiles.length} 個 MP3');
 
     final cache = _load('mp3');
-    final target = -14.0;
+    const target = -14.0;
 
     // Determine which files actually need normalization (uncached or deviating)
     final needsNormalize = <String>[];
@@ -398,7 +398,7 @@ class LufsService {
     final cache = _load('mp3');
     if (cache.isEmpty) { onLog('MP3 LUFS 快取為空，跳過 normalize'); return; }
 
-    final target = -14.0;
+    const target = -14.0;
     final toNormalize = <String, double>{};
     for (final e in cache.entries) {
       if ((e.value - target).abs() > tolerance) {
@@ -407,11 +407,11 @@ class LufsService {
     }
 
     if (toNormalize.isEmpty) {
-      onLog('所有 MP3 已在 ${target}±$tolerance LUFS 範圍內');
+      onLog('所有 MP3 已在 $target±$tolerance LUFS 範圍內');
       return;
     }
 
-    onLog('Normalize ${toNormalize.length} 個偏離 ${target} 的 MP3...');
+    onLog('Normalize ${toNormalize.length} 個偏離 $target 的 MP3...');
     final ffmpeg = await _resolveFfmpeg();
     int done = 0;
     int total = toNormalize.length;

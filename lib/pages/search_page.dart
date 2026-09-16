@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import '../services/config_service.dart';
 import '../services/spotify_session.dart';
@@ -19,15 +20,20 @@ class _SearchPageState extends State<SearchPage> {
   final _gql = SpotifyGqlClient();
   final _searchCtrl = TextEditingController();
   Timer? _debounce;
+  int _searchGen = 0;
   List<SpotifyTrackItem> _tracks = [];
   bool _searching = false;
   String _error = '';
+  // 本地索引：stem → 路徑。原本 _findLocal 在 itemBuilder 每列都
+  // existsSync + listSync 整個音樂目錄，改為建一次、builder 純查表。
+  Map<String, String> _localIndex = {};
 
   @override
   void initState() {
     super.initState();
     SpotifySession.instance.addListener(_onSession);
     _searchCtrl.addListener(_onQueryChanged);
+    _rebuildLocalIndex();
   }
 
   @override
@@ -36,6 +42,13 @@ class _SearchPageState extends State<SearchPage> {
     _debounce?.cancel();
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // 從別頁回來時重建（期間的新下載才會亮本機 badge）。
+    _rebuildLocalIndex();
   }
 
   void _onSession() {
@@ -54,13 +67,16 @@ class _SearchPageState extends State<SearchPage> {
 
   Future<void> _search(String query) async {
     if (!SpotifySession.instance.isLoggedIn) return;
+    final gen = ++_searchGen;
     setState(() { _searching = true; _error = ''; });
     try {
       final data = await _gql.searchTracks(query, limit: 25);
+      // 慢回應先到會覆蓋新結果：世代不符直接丟棄。
+      if (!mounted || gen != _searchGen) return;
       final tracks = _parseTracks(data);
       if (mounted) setState(() { _tracks = tracks; _searching = false; });
     } catch (e) {
-      if (mounted) setState(() { _searching = false; _error = '$e'; });
+      if (mounted && gen == _searchGen) setState(() { _searching = false; _error = '$e'; });
     }
   }
 
@@ -94,26 +110,39 @@ class _SearchPageState extends State<SearchPage> {
     return out;
   }
 
+  /// Rebuild the local stem→path index (async, once per search/page open).
+  Future<void> _rebuildLocalIndex() async {
+    final idx = <String, String>{};
+    try {
+      final dir = Directory(ConfigService.instance.config.musicPath);
+      if (await dir.exists()) {
+        await for (final f in dir.list()) {
+          if (f is File) {
+            idx[File(f.path).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '').toLowerCase()] = f.path;
+          }
+        }
+      }
+    } catch (_) {}
+    if (mounted) setState(() => _localIndex = idx);
+  }
+
   /// Returns the local music file for [t] if it exists in the library.
+  /// 純查表（_localIndex），無 IO，可安全在 builder 內呼叫。
   String? _findLocal(SpotifyTrackItem t) {
-    final cfg = ConfigService.instance.config;
-    final dir = Directory(cfg.musicPath);
-    if (!dir.existsSync()) return null;
+    if (_localIndex.isEmpty) return null;
     final targets = [
       t.displayName.toLowerCase(),
       '${t.name} - ${t.artists.join(' ')}'.toLowerCase(),
       t.name.toLowerCase(),
     ];
-    final files = dir.listSync();
-    for (final f in files) {
-      if (f is! File) continue;
-      final stem = File(f.path).uri.pathSegments.last
-          .replaceAll(RegExp(r'\.\w+$'), '')
-          .toLowerCase();
-      for (final target in targets) {
-        if (stem == target || stem.contains(target) || target.contains(stem)) {
-          return f.path;
-        }
+    for (final target in targets) {
+      final hit = _localIndex[target];
+      if (hit != null) return hit;
+    }
+    for (final target in targets) {
+      if (target.isEmpty) continue;
+      for (final e in _localIndex.entries) {
+        if (e.key.contains(target) || target.contains(e.key)) return e.value;
       }
     }
     return null;
@@ -198,8 +227,11 @@ class _SearchPageState extends State<SearchPage> {
                     leading: ClipRRect(
                       borderRadius: BorderRadius.circular(4),
                       child: t.coverUrl != null
-                          ? Image.network(t.coverUrl!, width: 40, height: 40, fit: BoxFit.cover,
-                              errorBuilder: (_, __, ___) => Container(
+                          // CachedNetworkImage：裸 Image.network 捲動時重複抓圖。
+                          ? CachedNetworkImage(imageUrl: t.coverUrl!, width: 40, height: 40, fit: BoxFit.cover,
+                              placeholder: (_, __) => Container(
+                                  width: 40, height: 40, color: AppColors.surfaceLight),
+                              errorWidget: (_, __, ___) => Container(
                                   width: 40, height: 40, color: AppColors.surfaceLight,
                                   child: const Icon(Icons.music_note_rounded, size: 18, color: AppColors.textMuted)))
                           : Container(width: 40, height: 40, color: AppColors.surfaceLight,

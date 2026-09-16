@@ -132,6 +132,13 @@ class SpotifyScraper {
     return current;
   }
 
+  /// 歌單名進檔案系統前消毒：Spotify 回傳含 /\: 或 .. 會寫錯目錄。
+  /// 只用在拼路徑，map key 沿用原始名（rename 比對邏輯不變）。
+  static String _safePlName(String name) => name
+      .replaceAll(RegExp(r'[<>:"/\\|?*]'), '_')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+
   Future<(String, List<String>)?> _scrapeOne(String url, {bool writeM3u8 = true}) async {
     final spId = url.split('playlist/').last.split('?').first;
     final embedUrl = 'https://open.spotify.com/embed/playlist/$spId';
@@ -140,7 +147,7 @@ class SpotifyScraper {
     final resp = await http.get(Uri.parse(embedUrl), headers: {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       'Accept-Language': 'zh-TW,zh;q=0.9,en;q=0.5',
-    });
+    }).timeout(const Duration(seconds: 20));
 
     if (resp.statusCode != 200) {
       log('  HTTP ${resp.statusCode}');
@@ -175,7 +182,7 @@ class SpotifyScraper {
               final displayName = (artists != null && artists.isNotEmpty) ? '$name - $artists' : name;
               final engName = _englishDisplayName(displayName);
               tracks.add(engName);
-              _saveTrackCache(engName, name, _toEnglish(artists?.trim() ?? ''), track);
+              await _saveTrackCache(engName, name, _toEnglish(artists?.trim() ?? ''), track);
             }
           }
         }
@@ -209,7 +216,7 @@ class SpotifyScraper {
             final displayName = artists.isNotEmpty ? '$title - $artists' : title;
             final engName = _englishDisplayName(displayName);
             tracks.add(engName);
-            _saveTrackCache(engName, title, _toEnglish(artists.trim()), track);
+            await _saveTrackCache(engName, title, _toEnglish(artists.trim()), track);
           }
           break;
         } catch (_) {}
@@ -219,7 +226,7 @@ class SpotifyScraper {
     if (plName == null || tracks.isEmpty) {
       log('  無法解析歌單');
       if (plName != null) {
-        final emptyFile = File('$playlistsPath\\$plName.m3u8');
+        final emptyFile = File('$playlistsPath\\${_safePlName(plName)}.m3u8');
         if (await emptyFile.exists()) {
           await emptyFile.delete();
         }
@@ -233,7 +240,7 @@ class SpotifyScraper {
       // Build audio index to resolve track names to file paths
       await _buildIndex();
 
-      final m3uPath = '$playlistsPath\\$plName.m3u8';
+      final m3uPath = '$playlistsPath\\${_safePlName(plName)}.m3u8';
       await Directory(playlistsPath).create(recursive: true);
 
       // Clean up old M3U8 file if playlist was renamed
@@ -278,7 +285,8 @@ class SpotifyScraper {
 
     // Update config with the real playlist name
     ConfigService.instance.config.urlNames[url] = plName;
-    ConfigService.instance.save();
+    // 必須 await：併發 scrape 下不 await 會丟失 urlNames 更新。
+    await ConfigService.instance.save();
     return (plName, tracks);
   }
 
@@ -305,7 +313,7 @@ class SpotifyScraper {
   String _cacheDir() =>
       '${ConfigService.instance.config.basePath}\\spotify_cache';
 
-  void _saveTrackCache(String displayName, String title, String artists, Map<String, dynamic> track) {
+  Future<void> _saveTrackCache(String displayName, String title, String artists, Map<String, dynamic> track) async {
     try {
       final album = track['album'] as Map<String, dynamic>?;
       String? albumName;
@@ -332,7 +340,7 @@ class SpotifyScraper {
 
       final cleanName = _sanitize(displayName);
       final file = File('${_cacheDir()}\\$cleanName.json');
-      file.writeAsStringSync(jsonEncode(meta.toJson()), flush: true);
+      await file.writeAsString(jsonEncode(meta.toJson()), flush: true);
     } catch (_) {}
   }
 

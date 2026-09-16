@@ -10,8 +10,16 @@ class LyricsService {
   LyricsService._();
   static final instance = LyricsService._();
 
-  /// 快取: "artist:track" → LyricsResult
+  /// 快取: "artist:track" → LyricsResult（LRU 上限 200，只增不減會吃 RAM）。
   final Map<String, LyricsResult> _cache = {};
+  static const int _cacheMax = 200;
+  void _cachePut(String key, LyricsResult v) {
+    _cache.remove(key);
+    _cache[key] = v;
+    while (_cache.length > _cacheMax) {
+      _cache.remove(_cache.keys.first);
+    }
+  }
 
   /// 取得歌詞。優先同步 LRC，再非同步。
   Future<LyricsResult?> fetch(String artist, String track, {String? album, int? durationSec}) async {
@@ -44,7 +52,7 @@ class LyricsService {
         durationSec: data['duration'] as int? ?? durationSec ?? 0,
       );
 
-      _cache[key] = result;
+      _cachePut(key, result);
       _log.i('LRCLib 歌詞: $artist - $track '
           '(LRC: ${result.syncedLyrics != null ? "${result.syncedLyrics!.length}c" : "無"}'
           ', plain: ${result.plainLyrics != null ? "${result.plainLyrics!.length}c" : "無"})');

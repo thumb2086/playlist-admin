@@ -8,10 +8,17 @@ class LibraryIndex {
   Map<List<String>, List<String>> _filenameIndex = {};
   Map<List<String>, List<String>> _metadataIndex = {};
   Map<String, FileInfo> _fileInfoMap = {};
+  // List 當 Map key 用的是 identity hash：每次 _normalize 都是新 List，
+  // 內容相同的 key 會失散成多條。全部經 _intern 拿同一實例，grouping 才正確。
+  final Map<String, List<String>> _keyPool = {};
   int _mp3Count = 0;
   int _podcastMp3Count = 0;
   int _podcastOtherCount = 0;
   bool _built = false;
+
+  // key 用 jsonEncode：['New','York'] vs ['Newyork'] 不可撞 key。
+  List<String> _intern(List<String> tokens) =>
+      _keyPool.putIfAbsent(jsonEncode(tokens), () => tokens);
 
   static String _cacheDir() => AppDataDir.dir;
   static String _fingerprintFile(String libraryPath) =>
@@ -160,7 +167,7 @@ class LibraryIndex {
         _metadataIndex = <List<String>, List<String>>{};
         for (final e in cached.entries) {
           final tokens = (jsonDecode(e.key) as List<dynamic>).cast<String>();
-          _metadataIndex[tokens] = e.value;
+          _metadataIndex[_intern(tokens)] = e.value;
         }
         log('  metadata 索引載入完成: ${_metadataIndex.length} 首');
         _built = true;
@@ -185,12 +192,16 @@ class LibraryIndex {
     if (cached != null) {
       for (final e in cached.entries) {
         final tokens = (jsonDecode(e.key) as List<dynamic>).cast<String>();
+        final kept = <String>[];
         for (final path in e.value) {
           final stem = File(path).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '').toLowerCase();
           if (!changedStems.contains(stem)) {
-            _metadataIndex[tokens] = e.value;
+            kept.add(path);
             cachedPaths.add(path);
           }
+        }
+        if (kept.isNotEmpty) {
+          _metadataIndex.putIfAbsent(_intern(tokens), () => []).addAll(kept);
         }
       }
     }
@@ -203,8 +214,13 @@ class LibraryIndex {
     }).toList();
 
     log('讀取 metadata 索引 (${toIndex.length}/${mp3s.length} 個檔案)…');
+    final beforeCount = _metadataIndex.length;
     final newEntries = await _buildMetadataIndex(toIndex, log);
-    _metadataIndex.addAll(newEntries);
+    // 用 merge 不用 addAll：key 是 identity hash，addAll 會把同內容建成重複條目。
+    for (final e in newEntries.entries) {
+      _metadataIndex.putIfAbsent(_intern(e.key), () => []).addAll(e.value);
+    }
+    final addedCount = _metadataIndex.length - beforeCount;
 
     // Remove cache entries for files that no longer exist on disk
     final onDisk = mp3s.toSet();
@@ -218,7 +234,7 @@ class LibraryIndex {
     }
 
     if (changedStems.isNotEmpty) {
-      log('索引完成 (新增 ${newEntries.length}，快取 ${_metadataIndex.length - newEntries.length})');
+      log('索引完成 (新增 $addedCount，快取 ${_metadataIndex.length - addedCount})');
       if (toRemove.isNotEmpty) log('  清除 ${toRemove.length} 條已刪除檔案的快取');
     } else {
       log('索引完成');
@@ -248,9 +264,12 @@ class LibraryIndex {
   }
 
   void _copyFrom(LibraryIndex other) {
-    _filenameIndex = other._filenameIndex;
-    _metadataIndex = other._metadataIndex;
-    _fileInfoMap = other._fileInfoMap;
+    // 深拷貝 value list：淺拷貝會讓呼叫端改動污染靜態快取。
+    // key 是 canonical 實例（永不修改），可共用；pool 一併帶過。
+    _filenameIndex = {for (final e in other._filenameIndex.entries) e.key: List<String>.from(e.value)};
+    _metadataIndex = {for (final e in other._metadataIndex.entries) e.key: List<String>.from(e.value)};
+    _fileInfoMap = Map<String, FileInfo>.from(other._fileInfoMap);
+    _keyPool.addAll(other._keyPool);
     _mp3Count = other._mp3Count;
     _podcastMp3Count = other._podcastMp3Count;
     _podcastOtherCount = other._podcastOtherCount;
@@ -300,7 +319,7 @@ class LibraryIndex {
       final stem = name.replaceAll(RegExp(r'\.\w+$'), '');
       final tokens = _normalize(stem);
       if (tokens.isNotEmpty) {
-        index.putIfAbsent(tokens, () => []).add(f);
+        index.putIfAbsent(_intern(tokens), () => []).add(f);
       }
     }
     return index;
@@ -319,7 +338,7 @@ class LibraryIndex {
         if (meta.title != null && meta.title!.isNotEmpty) {
           final tokens = _normalize(meta.title!);
           if (tokens.isNotEmpty) {
-            index.putIfAbsent(tokens, () => []).add(batch[j]);
+            index.putIfAbsent(_intern(tokens), () => []).add(batch[j]);
           }
         }
       }

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import '../services/config_service.dart';
 import '../services/i18n.dart';
@@ -19,10 +20,18 @@ class DownloadPage extends StatefulWidget {
 class _DownloadPageState extends State<DownloadPage> {
   int _tabIndex = 0;
 
+  void _onI18n() { if (mounted) setState(() {}); }
+
   @override
   void initState() {
     super.initState();
-    I18N.instance.addListener(() { if (mounted) setState(() {}); });
+    I18N.instance.addListener(_onI18n);
+  }
+
+  @override
+  void dispose() {
+    I18N.instance.removeListener(_onI18n);
+    super.dispose();
   }
 
   @override
@@ -97,6 +106,7 @@ class _DownloadJob {
   bool done = false;
   bool skipped = false;
   bool failed = false;
+  bool cancelled = false;
   _DownloadJob({required this.title});
 }
 
@@ -121,6 +131,10 @@ class _PodcastTabState extends State<_PodcastTab> {
   final Set<int> _selected = {};
   int _maxEpisodes = 100;
   final List<_DownloadJob> _jobs = [];
+  // log 節流：下載進度每 chunk 一次 setState 會卡 UI，300ms 批量 flush。
+  final _logPending = <String>[];
+  Timer? _logFlushTimer;
+  static const int _maxLogLines = 800;
 
   Map<String, String> get _history => ConfigService.instance.config.podcastHistory;
   Map<String, String> get _subscriptions => ConfigService.instance.config.podcastSubscriptions;
@@ -148,14 +162,25 @@ class _PodcastTabState extends State<_PodcastTab> {
   bool _isSubscribed(String name) => _subscriptions.containsKey(name);
 
   @override
-  void dispose() { _searchCtrl.dispose(); _urlCtrl.dispose(); _scrollCtrl.dispose(); super.dispose(); }
+  void dispose() { _logFlushTimer?.cancel(); _searchCtrl.dispose(); _urlCtrl.dispose(); _scrollCtrl.dispose(); super.dispose(); }
 
   void _log(String msg) {
-    _logs.add(msg);
-    if (mounted) setState(() {});
-    Future.delayed(const Duration(milliseconds: 50), () {
+    _logPending.add(msg);
+    if (_logFlushTimer?.isActive ?? false) return;
+    _logFlushTimer = Timer(const Duration(milliseconds: 300), () {
+      if (!mounted) { _logPending.clear(); return; }
+      setState(() {
+        _logs.addAll(_logPending);
+        _logPending.clear();
+        if (_logs.length > _maxLogLines) {
+          _logs.removeRange(0, _logs.length - _maxLogLines);
+        }
+      });
       if (_scrollCtrl.hasClients) {
-        _scrollCtrl.animateTo(_scrollCtrl.position.maxScrollExtent, duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
+        final pos = _scrollCtrl.position;
+        if (pos.hasContentDimensions && pos.maxScrollExtent - pos.pixels <= 200) {
+          try { _scrollCtrl.jumpTo(pos.maxScrollExtent); } catch (_) {}
+        }
       }
     });
   }
@@ -176,6 +201,7 @@ class _PodcastTabState extends State<_PodcastTab> {
     try {
       final result = await PodcastService.instance.fetchEpisodes(pod.feedUrl);
       setState(() { _podcastTitle = result.title; _episodes = result.episodes; _maxEpisodes = result.episodes.length; _loading = false; _searchCtrl.text = pod.title; _searchResults = []; });
+      _refreshDiskNames();
       _saveHistory(pod.title, pod.feedUrl);
       _log('✅ ${result.title}: ${result.episodes.length} 集');
     } catch (e) { _log('❌ 讀取節目失敗: $e'); setState(() => _loading = false); }
@@ -196,6 +222,7 @@ class _PodcastTabState extends State<_PodcastTab> {
     try {
       final result = await PodcastService.instance.fetchEpisodes(url);
       setState(() { _podcastTitle = result.title; _episodes = result.episodes; _maxEpisodes = result.episodes.length; _loading = false; });
+      _refreshDiskNames();
       _saveHistory(result.title, url);
       _log('✅ 找到 ${result.episodes.length} 集');
     } catch (e) { _log('❌ 讀取 RSS 失敗: $e'); setState(() => _loading = false); }
@@ -203,15 +230,68 @@ class _PodcastTabState extends State<_PodcastTab> {
 
   List<PodcastEpisode> get _displayEpisodes => _episodes.take(_maxEpisodes).toList();
 
+  /// 當前節目錄磁碟檔名快取：每列每 rebuild 都打 disk 太傷，
+  /// 载入清單/下載完成時刷一次，列內純記憶體比對 + 慢速 fallback。
+  /// EP 號也建成常駐 map（舊寫法 miss 時全目錄 listSync）。
+  Set<String> _diskNames = {};
+  Map<int, String> _epNumIndex = {};
+
+  Future<void> _refreshDiskNames() async {
+    final names = <String>{};
+    final epMap = <int, String>{};
+    final epRe = RegExp(r'EP(\d+)', caseSensitive: false);
+    try {
+      final dir = Directory(PodcastService.instance.podcastDir(_podcastTitle));
+      if (await dir.exists()) {
+        await for (final f in dir.list()) {
+          if (f is File) {
+            final stem = File(f.path).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '');
+            names.add(stem.toLowerCase());
+            final m = epRe.firstMatch(stem);
+            if (m != null) {
+              final n = int.tryParse(m.group(1)!);
+              if (n != null) epMap.putIfAbsent(n, () => f.path);
+            }
+          }
+        }
+      }
+    } catch (_) {}
+    _diskNames = names;
+    _epNumIndex = epMap;
+    if (mounted) setState(() {});
+  }
+
   bool _isDownloaded(int index) {
     if (index >= _episodes.length) return false;
     final ep = _episodes[index];
+    if (_diskNames.contains(PodcastService.normalizeFileName(ep.title).toLowerCase())) return true;
+    // EP 號走常駐 map，不再全目錄掃描。
+    final titleEp = RegExp(r'EP(\d+)', caseSensitive: false).firstMatch(ep.title);
+    if (titleEp != null) {
+      final n = int.tryParse(titleEp.group(1)!);
+      if (n != null && _epNumIndex.containsKey(n)) return true;
+    }
     return PodcastService.instance.isEpisodeDownloaded(ep.title, ep.audioUrl, podcastName: _podcastTitle);
   }
 
   void _cancelAllDownloads() {
-    for (final j in _jobs) { if (!j.done && !j.failed) { j.failed = true; _log('⏹️ 已取消: ${j.title}'); } }
+    // 真取消：flag 會中斷底層 downloadEpisode 串流（殘檔自動清），
+    // 不再只是改 UI 狀態讓底層照跑。
+    for (final j in _jobs) {
+      if (!j.done && !j.failed) {
+        j.cancelled = true;
+        j.failed = true;
+        _log('⏹️ 已取消: ${j.title}');
+      }
+    }
     setState(() {});
+  }
+
+  /// 進度節流：每 chunk 都 setState 會卡 UI，變化夠大或完成才更新。
+  void _jobProgress(_DownloadJob job, double p) {
+    if (!mounted) return;
+    if (p < 1.0 && (p - job.progress).abs() < 0.02) return;
+    setState(() => job.progress = p);
   }
 
   Future<void> _downloadEpisode(int index) async {
@@ -220,12 +300,21 @@ class _PodcastTabState extends State<_PodcastTab> {
     final job = _DownloadJob(title: _episodes[index].title);
     setState(() { _jobs.add(job); });
     try {
-      await PodcastService.instance.downloadEpisode(_currentRssUrl, index,
-          (p) { if (mounted) setState(() => job.progress = p); },
-          podcastName: _podcastTitle);
+      // 回傳 false = 已存在跳過，不可打 ✅ 當新增。
+      final fresh = await PodcastService.instance.downloadEpisode(_currentRssUrl, index,
+          (p) => _jobProgress(job, p),
+          podcastName: _podcastTitle,
+          knownTitle: _episodes[index].title,
+          knownAudioUrl: _episodes[index].audioUrl,
+          isCancelled: () => job.cancelled);
       job.done = true;
-      _log('✅ ${_episodes[index].title}');
-    } catch (e) { job.failed = true; _log('❌ ${_episodes[index].title}: $e'); }
+      _diskNames.add(PodcastService.normalizeFileName(_episodes[index].title).toLowerCase());
+      _log(fresh ? '✅ ${_episodes[index].title}' : '⏭️ 已有檔案: ${_episodes[index].title}');
+    } catch (e) {
+      job.failed = true;
+      // 取消不算錯誤（_cancelAllDownloads 已 log 過）。
+      if (e is! DownloadCancelled) _log('❌ ${_episodes[index].title}: $e');
+    }
     if (mounted) setState(() {});
   }
 
@@ -244,23 +333,40 @@ class _PodcastTabState extends State<_PodcastTab> {
 
   Future<void> _downloadSingleInBg(int idx, _DownloadJob job) async {
     try {
-      await PodcastService.instance.downloadEpisode(_currentRssUrl, idx,
-          (p) { if (mounted) setState(() => job.progress = p); },
-          podcastName: _podcastTitle);
+      final fresh = await PodcastService.instance.downloadEpisode(_currentRssUrl, idx,
+          (p) => _jobProgress(job, p),
+          podcastName: _podcastTitle,
+          knownTitle: _episodes[idx].title,
+          knownAudioUrl: _episodes[idx].audioUrl,
+          isCancelled: () => job.cancelled);
       job.done = true;
-      _log('✅ ${_episodes[idx].title}');
-    } catch (e) { job.failed = true; _log('❌ ${_episodes[idx].title}: $e'); }
+      _diskNames.add(PodcastService.normalizeFileName(_episodes[idx].title).toLowerCase());
+      _log(fresh ? '✅ ${_episodes[idx].title}' : '⏭️ 已有檔案: ${_episodes[idx].title}');
+    } catch (e) {
+      job.failed = true;
+      if (e is! DownloadCancelled) _log('❌ ${_episodes[idx].title}: $e');
+    }
     if (mounted) setState(() {});
   }
 
   void _clearCompletedJobs() { _jobs.removeWhere((j) => j.done || j.failed); setState(() {}); }
 
-  void _toggleSelect(int index) { setState(() { if (_selected.contains(index)) _selected.remove(index); else _selected.add(index); }); }
+  void _toggleSelect(int index) { setState(() { if (_selected.contains(index)) {
+    _selected.remove(index);
+  } else {
+    _selected.add(index);
+  } }); }
 
   void _selectAll() {
-    final displayed = _displayEpisodes;
-    final displayedIndices = displayed.map((e) => _episodes.indexOf(e)).toSet();
-    setState(() { if (_selected.containsAll(displayedIndices)) _selected.removeAll(displayedIndices); else _selected.addAll(displayedIndices); });
+    // _displayEpisodes 恆為 _episodes 的前綴：index 直接 0..n-1，
+    // 舊寫法每集 indexOf 全表掃描 O(n²)。
+    final count = _displayEpisodes.length;
+    final displayedIndices = Set<int>.from(List.generate(count, (i) => i));
+    setState(() { if (_selected.containsAll(displayedIndices)) {
+      _selected.removeAll(displayedIndices);
+    } else {
+      _selected.addAll(displayedIndices);
+    } });
   }
 
   @override
@@ -279,7 +385,7 @@ class _PodcastTabState extends State<_PodcastTab> {
                   height: 32,
                   child: Row(
                     children: [
-                      Icon(Icons.history, size: 14, color: AppColors.textMuted),
+                      const Icon(Icons.history, size: 14, color: AppColors.textMuted),
                       const SizedBox(width: 6),
                       Expanded(
                         child: DropdownButtonHideUnderline(
@@ -311,7 +417,7 @@ class _PodcastTabState extends State<_PodcastTab> {
               GestureDetector(
                 onTap: () => setState(() => _showUrlInput = !_showUrlInput),
                 child: Row(children: [
-                  Icon(Icons.link, size: 12, color: AppColors.textMuted),
+                  const Icon(Icons.link, size: 12, color: AppColors.textMuted),
                   const SizedBox(width: 4),
                   Text(_showUrlInput ? t('download.hide_url_input') : t('download.use_rss_url'), style: const TextStyle(color: AppColors.accent, fontSize: 11)),
                 ]),
@@ -349,7 +455,7 @@ class _PodcastTabState extends State<_PodcastTab> {
                       MaterialPageRoute(builder: (_) => const PipelinePage()),
                     ),
                     icon: const Icon(Icons.play_arrow_rounded, size: 12),
-                    label: Text('Podcast 流程', style: const TextStyle(fontSize: 10)),
+                    label: const Text('Podcast 流程', style: TextStyle(fontSize: 10)),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color(0xFFCE93D8), foregroundColor: Colors.black,
                       padding: const EdgeInsets.symmetric(horizontal: 8), visualDensity: VisualDensity.compact),
@@ -371,7 +477,7 @@ class _PodcastTabState extends State<_PodcastTab> {
                         _urlCtrl.text = e.value;
                         _fetchByUrl();
                       },
-                      child: Text('檢視', style: TextStyle(fontSize: 10, color: AppColors.accent)),
+                      child: const Text('檢視', style: TextStyle(fontSize: 10, color: AppColors.accent)),
                     ),
                   ),
                   SizedBox(
@@ -450,8 +556,9 @@ class _PodcastTabState extends State<_PodcastTab> {
           Expanded(flex: 3, child: ListView.builder(
             itemCount: _displayEpisodes.length,
             itemBuilder: (ctx, i) {
-              final ep = _displayEpisodes[i];
-              final origIndex = _episodes.indexOf(ep);
+              // _displayEpisodes 恆為 _episodes 前綴：直接用 i，不 take().toList() + indexOf。
+              final ep = _episodes[i];
+              final origIndex = i;
               final alreadyDl = _isDownloaded(origIndex);
               final selected = _selected.contains(origIndex);
               final isActive = activeJobs.any((j) => j.title == ep.title);
@@ -504,7 +611,7 @@ class _PodcastTabState extends State<_PodcastTab> {
           ClipRRect(
             borderRadius: BorderRadius.circular(4),
             child: LinearProgressIndicator(
-              value: _jobs.fold(0.0, (sum, j) => sum + j.progress) / (_jobs.length > 0 ? _jobs.length : 1),
+              value: _jobs.fold(0.0, (sum, j) => sum + j.progress) / (_jobs.isNotEmpty ? _jobs.length : 1),
               backgroundColor: AppColors.surfaceLight,
               valueColor: const AlwaysStoppedAnimation(AppColors.accent),
               minHeight: 8,
@@ -518,7 +625,7 @@ class _PodcastTabState extends State<_PodcastTab> {
             overflow: TextOverflow.ellipsis,
           ),
         ],
-        if (activeCount > 0 || _jobs.where((j) => j.done || j.failed).length > 0) ...[
+        if (activeCount > 0 || _jobs.where((j) => j.done || j.failed).isNotEmpty) ...[
           const SizedBox(height: 6),
           Container(
             padding: const EdgeInsets.all(10),
@@ -590,6 +697,9 @@ class _SongDownloadTabState extends State<_SongDownloadTab> {
   int _mp3Current = 0;
   int _mp3Total = 0;
   String _mp3CurrentSong = '';
+  final _logPending = <String>[];
+  Timer? _logFlushTimer;
+  static const int _maxLogLines = 800;
 
   @override
   void initState() {
@@ -598,12 +708,26 @@ class _SongDownloadTabState extends State<_SongDownloadTab> {
   }
 
   @override
-  void dispose() { _queryCtrl.dispose(); _scrollCtrl.dispose(); super.dispose(); }
+  void dispose() { _logFlushTimer?.cancel(); _queryCtrl.dispose(); _scrollCtrl.dispose(); super.dispose(); }
 
   void _log(String msg) {
-    _logs.add(msg); if (mounted) setState(() {});
-    Future.delayed(const Duration(milliseconds: 50), () {
-      if (_scrollCtrl.hasClients) _scrollCtrl.animateTo(_scrollCtrl.position.maxScrollExtent, duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
+    _logPending.add(msg);
+    if (_logFlushTimer?.isActive ?? false) return;
+    _logFlushTimer = Timer(const Duration(milliseconds: 300), () {
+      if (!mounted) { _logPending.clear(); return; }
+      setState(() {
+        _logs.addAll(_logPending);
+        _logPending.clear();
+        if (_logs.length > _maxLogLines) {
+          _logs.removeRange(0, _logs.length - _maxLogLines);
+        }
+      });
+      if (_scrollCtrl.hasClients) {
+        final pos = _scrollCtrl.position;
+        if (pos.hasContentDimensions && pos.maxScrollExtent - pos.pixels <= 200) {
+          try { _scrollCtrl.jumpTo(pos.maxScrollExtent); } catch (_) {}
+        }
+      }
     });
   }
 
@@ -611,12 +735,11 @@ class _SongDownloadTabState extends State<_SongDownloadTab> {
     final query = _queryCtrl.text.trim();
     if (query.isEmpty) return;
     setState(() { _running = true; _progress = 0; _logs.clear(); });
-    final cfg = ConfigService.instance.config;
     try {
       await DownloadService.instance.downloadSong(songName: query, format: 'mp3',
         onLog: _log, onProgress: (p) { if (mounted) setState(() => _progress = p); });
     } catch (e) { _log('❌ $e'); }
-    setState(() => _running = false);
+    if (mounted) setState(() => _running = false);
   }
 
   Future<void> _startYtDownload() async {
@@ -629,7 +752,7 @@ class _SongDownloadTabState extends State<_SongDownloadTab> {
       await DownloadService.instance.downloadYouTube(url: url, outputPath: outPath, format: 'mp3',
         onLog: _log, onProgress: (p) { if (mounted) setState(() => _progress = p); });
     } catch (e) { _log('❌ $e'); }
-    setState(() => _running = false);
+    if (mounted) setState(() => _running = false);
   }
 
   Future<void> _scanMissing(String format) async {

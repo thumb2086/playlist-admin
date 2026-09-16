@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import '../services/config_service.dart';
@@ -20,24 +21,33 @@ class LibraryPageState extends State<LibraryPage> {
   Map<String, _PlStats> _stats = {};
   bool _loading = false;
   int _refreshVersion = 0;
+  Timer? _refreshDebounce;
 
   @override
   void dispose() {
+    _refreshDebounce?.cancel();
+    I18N.instance.removeListener(_onI18n);
     _urlCtrl.dispose();
     ConfigService.instance.removeListener(_onConfigChanged);
     super.dispose();
   }
 
+  void _onI18n() { if (mounted) setState(() {}); }
+
   @override
   void initState() {
     super.initState();
-    I18N.instance.addListener(() { if (mounted) setState(() {}); });
+    I18N.instance.addListener(_onI18n);
     ConfigService.instance.addListener(_onConfigChanged);
     _refresh();
   }
 
   void _onConfigChanged() {
-    if (mounted) _refresh();
+    // 每次存檔都全量掃描太傷：debounce 500ms 合併。
+    _refreshDebounce?.cancel();
+    _refreshDebounce = Timer(const Duration(milliseconds: 500), () {
+      if (mounted) _refresh();
+    });
   }
 
   Future<void> _refresh({bool cleanOrphans = false}) async {
@@ -147,7 +157,7 @@ class LibraryPageState extends State<LibraryPage> {
     if (url.isEmpty) return;
     final cfg = ConfigService.instance.config;
     final id = url.split('/').last.split('?').first;
-    cfg.urlNames[url] = id.substring(0, 12).replaceAll(RegExp(r'[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202f\u2060-\u206f\ufeff]'), '').trim();
+    cfg.urlNames[url] = id.substring(0, id.length.clamp(0, 12)).replaceAll(RegExp(r'[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202f\u2060-\u206f\ufeff]'), '').trim();
     ConfigService.instance.save();
     _urlCtrl.clear();
     setState(() {});

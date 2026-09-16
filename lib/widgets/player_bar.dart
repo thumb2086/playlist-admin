@@ -68,7 +68,7 @@ class _PlayerBarState extends State<PlayerBar> {
 
     return Container(
       height: 72,
-      decoration: BoxDecoration(
+      decoration: const BoxDecoration(
         color: AppColors.card,
         border: Border(top: BorderSide(color: AppColors.border, width: 0.5)),
       ),
@@ -194,7 +194,7 @@ class _PlayerBarState extends State<PlayerBar> {
 
         // --- Volume ---
         const SizedBox(width: 4),
-        Icon(Icons.volume_up_rounded, size: 16, color: AppColors.textMuted),
+        const Icon(Icons.volume_up_rounded, size: 16, color: AppColors.textMuted),
         SizedBox(
           width: 80,
           child: SliderTheme(
@@ -334,7 +334,7 @@ class _QueueDrawerState extends State<_QueueDrawer> {
           child: ReorderableListView.builder(
             padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
             itemCount: queue.length,
-            onReorder: (oldIndex, newIndex) {
+            onReorderItem: (oldIndex, newIndex) {
               _ctrl.moveInQueue(oldIndex, newIndex);
             },
             itemBuilder: (ctx, i) {

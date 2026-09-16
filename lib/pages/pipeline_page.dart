@@ -202,7 +202,7 @@ class _PipelinePageState extends State<PipelinePage> {
         }
       });
       final elapsed = DateTime.now().difference(ragStart).inMinutes;
-      _podcastLog('RAG 完成 (${elapsed}分)');
+      _podcastLog('RAG 完成 ($elapsed分)');
     } catch (e) {
       _podcastLog('  ❌ RAG 更新錯誤: $e');
     } finally {
@@ -452,10 +452,10 @@ _PButton(t('pipeline.run_prune'), Icons.cleaning_services, () => _run(fromStep: 
               }),
             ),
           if (_podcastRunning)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
+            const Padding(
+              padding: EdgeInsets.only(bottom: 8),
               child: Text('Podcast Pipeline 執行中…',
-                  style: const TextStyle(color: AppColors.accent, fontSize: 12, fontWeight: FontWeight.w600)),
+                  style: TextStyle(color: AppColors.accent, fontSize: 12, fontWeight: FontWeight.w600)),
             ),
           const SizedBox(height: 16),
           Expanded(

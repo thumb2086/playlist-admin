@@ -1,6 +1,5 @@
-﻿import 'dart:io';
-import 'dart:math';
-import '../lib/services/audio_extractor.dart';
+import 'dart:io';
+import 'package:playlist_admin/services/audio_extractor.dart';
 
 /// 端到端測試：用真實影片跑完整抽取管線（含長檔切段/拼接、GPU deep）。
 Future<void> main() async {

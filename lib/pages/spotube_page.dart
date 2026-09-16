@@ -23,23 +23,45 @@ class _SpotubePageState extends State<SpotubePage> {
   int _fail = 0;
   int _total = 0;
   int _done = 0;
-  Process? _proc;
+  final _logPending = <String>[];
+  Timer? _logFlushTimer;
+  static const int _maxLogLines = 800;
+
+  void _onI18n() { if (mounted) setState(() {}); }
 
   @override
   void initState() {
     super.initState();
     _status = '就緒';
-    I18N.instance.addListener(() { if (mounted) setState(() {}); });
+    I18N.instance.addListener(_onI18n);
   }
 
   @override
-  void dispose() { _scrollCtrl.dispose(); super.dispose(); }
+  void dispose() {
+    _logFlushTimer?.cancel();
+    I18N.instance.removeListener(_onI18n);
+    _scrollCtrl.dispose();
+    super.dispose();
+  }
 
-  void _log(String msg) { _logs.add(msg); if (mounted) setState(() {}); _autoScroll(); }
-  void _autoScroll() {
-    Future.delayed(const Duration(milliseconds: 50), () {
-      if (_scrollCtrl.hasClients) _scrollCtrl.animateTo(
-          _scrollCtrl.position.maxScrollExtent, duration: const Duration(milliseconds: 200), curve: Curves.easeOut);
+  void _log(String msg) {
+    _logPending.add(msg);
+    if (_logFlushTimer?.isActive ?? false) return;
+    _logFlushTimer = Timer(const Duration(milliseconds: 300), () {
+      if (!mounted) { _logPending.clear(); return; }
+      setState(() {
+        _logs.addAll(_logPending);
+        _logPending.clear();
+        if (_logs.length > _maxLogLines) {
+          _logs.removeRange(0, _logs.length - _maxLogLines);
+        }
+      });
+      if (_scrollCtrl.hasClients) {
+        final pos = _scrollCtrl.position;
+        if (pos.hasContentDimensions && pos.maxScrollExtent - pos.pixels <= 200) {
+          try { _scrollCtrl.jumpTo(pos.maxScrollExtent); } catch (_) {}
+        }
+      }
     });
   }
 
@@ -55,15 +77,35 @@ class _SpotubePageState extends State<SpotubePage> {
   }
 
   void _cancelDownload() {
-    _proc?.kill();
-    _proc = null;
+    // _running=false 會讓下載迴圈在當前這首結束後停下（單首最多等 yt-dlp 180s timeout）。
     setState(() { _running = false; _status = '已取消'; });
-    _log('⏹️ 已取消');
+    _log('⏹️ 已取消（當前歌曲完成後停止）');
   }
 
   Future<void> _downloadAll() async {
     if (_running) return;
     setState(() { _running = true; _status = '下載中...'; _ok = 0; _fail = 0; _done = 0; });
+    try {
+      await _downloadAllInner();
+    } finally {
+      // 任何 throw 路徑都要重置，否則 UI 永遠卡「下載中」。
+      _logFlushTimer?.cancel();
+      _flushLogsNow();
+      if (mounted) setState(() { _running = false; });
+    }
+  }
+
+  void _flushLogsNow() {
+    if (_logPending.isEmpty) return;
+    _logs.addAll(_logPending);
+    _logPending.clear();
+    if (_logs.length > _maxLogLines) {
+      _logs.removeRange(0, _logs.length - _maxLogLines);
+    }
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _downloadAllInner() async {
 
     final cfg = ConfigService.instance.config;
     final bridge = _findBridge();
@@ -145,8 +187,7 @@ class _SpotubePageState extends State<SpotubePage> {
       }
       await ConfigService.instance.save();
     }
-    setState(() { _running = false; _status = '完成'; });
-    _proc = null;
+    if (mounted) setState(() { _status = '完成'; });
   }
 
   void _resetRecords() {
@@ -219,7 +260,7 @@ class _SpotubePageState extends State<SpotubePage> {
           decoration: BoxDecoration(color: AppColors.card, borderRadius: BorderRadius.circular(12), border: Border.all(color: AppColors.border)),
           clipBehavior: Clip.antiAlias,
           child: ConfigService.instance.config.lastUpdated.isEmpty
-              ? Center(child: Text('尚無下載紀錄', style: const TextStyle(color: AppColors.textMuted)))
+              ? const Center(child: Text('尚無下載紀錄', style: TextStyle(color: AppColors.textMuted)))
               : ListView.builder(itemCount: ConfigService.instance.config.lastUpdated.length,
                   itemBuilder: (ctx, i) {
                     final e = ConfigService.instance.config.lastUpdated.entries.elementAt(i);
@@ -231,13 +272,13 @@ class _SpotubePageState extends State<SpotubePage> {
                   }),
         )),
         const SizedBox(height: 8),
-        Text('執行紀錄', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+        const Text('執行紀錄', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
         const SizedBox(height: 8),
         Expanded(flex: 3, child: Container(
           decoration: BoxDecoration(color: const Color(0xFF080808), borderRadius: BorderRadius.circular(12), border: Border.all(color: AppColors.border)),
           clipBehavior: Clip.antiAlias,
           child: _logs.isEmpty
-              ? Center(child: Text('按下「一鍵補全」開始下載', style: const TextStyle(color: AppColors.textMuted, fontSize: 12)))
+              ? const Center(child: Text('按下「一鍵補全」開始下載', style: TextStyle(color: AppColors.textMuted, fontSize: 12)))
               : SelectionArea(child: ListView.builder(controller: _scrollCtrl, padding: const EdgeInsets.all(10),
                   itemCount: _logs.length, itemBuilder: (ctx, i) => Padding(
                     padding: const EdgeInsets.symmetric(vertical: 1),

@@ -22,13 +22,23 @@ class _StatsPageState extends State<StatsPage> {
   List<Snapshot> _history = [];
   List<double> _mp3Lufs = [];
   bool _lufsReady = false;
+  // 下載統計：原本在 build() 內每次同步讀檔，改為 _load() 一次載入。
+  List<Map<String, dynamic>> _dlRuns = [];
 
   @override
   void initState() {
     super.initState();
-    I18N.instance.addListener(() { if (mounted) setState(() {}); });
+    I18N.instance.addListener(_onI18n);
     _history = HistoryRecorder.load();
     _load();
+  }
+
+  void _onI18n() { if (mounted) setState(() {}); }
+
+  @override
+  void dispose() {
+    I18N.instance.removeListener(_onI18n);
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -36,15 +46,18 @@ class _StatsPageState extends State<StatsPage> {
     try {
       final lib = ConfigService.instance.config.libraryPath;
       final pl = ConfigService.instance.config.playlistsPath;
-      int mp3 = 0, m4a = 0, flac = 0, txt = 0, podcast = 0;
+      int mp3 = 0, flac = 0, txt = 0, podcast = 0;
 
-      final podcastDir = Directory('${ConfigService.instance.config.podcastsPath}');
+      final podcastDir = Directory(ConfigService.instance.config.podcastsPath);
       if (await podcastDir.exists()) {
         await for (final e in podcastDir.list(recursive: true, followLinks: false)) {
           if (e is File) {
             final low = e.path.toLowerCase();
-            if (low.endsWith('.mp3') || low.endsWith('.m4a') || low.endsWith('.wav') || low.endsWith('.flac')) podcast++;
-            else if (low.endsWith('.txt')) txt++;
+            if (low.endsWith('.mp3') || low.endsWith('.m4a') || low.endsWith('.wav') || low.endsWith('.flac')) {
+              podcast++;
+            } else if (low.endsWith('.txt')) {
+              txt++;
+            }
           }
         }
       }
@@ -91,8 +104,24 @@ class _StatsPageState extends State<StatsPage> {
         }
       }
       setState(() { _mp3 = mp3; _flac = flac; _txt = txt; _podcast = podcast; _playlists = plCount; _entries = entries; _dual = dual; _sizeGb = size; _savedGb = savedGb; _duplicates = duplicates; _loading = false; });
-    } catch (_) { setState(() => _loading = false); }
+    } catch (_) { if (mounted) setState(() => _loading = false); }
+    _loadDownloadRuns();
     _loadLufsCache();
+  }
+
+  Future<void> _loadDownloadRuns() async {
+    try {
+      final f = File('${ConfigService.instance.config.cachePath}\\downloads_log.json');
+      if (!await f.exists()) {
+        if (mounted) setState(() => _dlRuns = []);
+        return;
+      }
+      final log = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
+      final runs = (log['runs'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+      if (mounted) setState(() => _dlRuns = runs);
+    } catch (_) {
+      if (mounted) setState(() => _dlRuns = []);
+    }
   }
 
   Future<void> _loadLufsCache() async {
@@ -223,22 +252,12 @@ class _StatsPageState extends State<StatsPage> {
   }
 
   Widget _buildDownloadStats() {
-    final cfg = ConfigService.instance.config;
-    final f = File('${cfg.cachePath}\\downloads_log.json');
-    if (!f.existsSync()) return const SizedBox.shrink();
-    Map<String, dynamic> log = {};
-    try {
-      log = jsonDecode(f.readAsStringSync()) as Map<String, dynamic>;
-    } catch (_) {
-      return const SizedBox.shrink();
-    }
-    final runs = (log['runs'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+    final runs = _dlRuns;
     if (runs.isEmpty) return const SizedBox.shrink();
     final totalOk = runs.fold<int>(0, (s, r) => s + ((r['ok'] as num?)?.toInt() ?? 0));
     final totalFail = runs.fold<int>(0, (s, r) => s + ((r['fail'] as num?)?.toInt() ?? 0));
     final totalAll = totalOk + totalFail;
     final rate = totalAll > 0 ? (totalOk / totalAll * 100).toStringAsFixed(1) : '0';
-    final last = runs.last;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -250,20 +269,20 @@ class _StatsPageState extends State<StatsPage> {
         const Text('⬇️ 下載統計', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
         const SizedBox(height: 10),
         Row(children: [
-          Expanded(child: _MiniStat('總下載', '$totalAll', Icons.download_rounded)),
+          Expanded(child: _miniStat('總下載', '$totalAll', Icons.download_rounded)),
           const SizedBox(width: 8),
-          Expanded(child: _MiniStat('成功', '$totalOk', Icons.check_circle_outline)),
+          Expanded(child: _miniStat('成功', '$totalOk', Icons.check_circle_outline)),
           const SizedBox(width: 8),
-          Expanded(child: _MiniStat('失敗', '$totalFail', Icons.error_outline)),
+          Expanded(child: _miniStat('失敗', '$totalFail', Icons.error_outline)),
           const SizedBox(width: 8),
-          Expanded(child: _MiniStat('成功率', '$rate%', Icons.percent_rounded)),
+          Expanded(child: _miniStat('成功率', '$rate%', Icons.percent_rounded)),
         ]),
         const SizedBox(height: 12),
         ...runs.reversed.take(10).map((r) => Padding(
               padding: const EdgeInsets.symmetric(vertical: 2),
               child: Row(children: [
                 Expanded(
-                  child: Text('${(r['time'] as String? ?? '').substring(0, 16).replaceAll('T', ' ')}',
+                  child: Text(_shortTime(r['time'] as String? ?? ''),
                       style: const TextStyle(fontSize: 11, color: AppColors.textMuted, fontFamily: 'Consolas')),
                 ),
                 Text('${r['ok']}/${r['total']} (${r['success_rate']}%)',
@@ -275,6 +294,11 @@ class _StatsPageState extends State<StatsPage> {
   }
 
   int _historyWindow = 0; // 0 = all time, 7, 30
+
+  static String _shortTime(String iso) {
+    if (iso.length < 16) return iso.replaceAll('T', ' ');
+    return iso.substring(0, 16).replaceAll('T', ' ');
+  }
 
   Widget _buildPlaybackStats() {
     final ph = PlaybackHistory.instance;
@@ -310,11 +334,11 @@ class _StatsPageState extends State<StatsPage> {
         ]),
         const SizedBox(height: 10),
         Row(children: [
-          Expanded(child: _MiniStat('聆聽分鐘', '$mins', Icons.timer_outlined)),
+          Expanded(child: _miniStat('聆聽分鐘', '$mins', Icons.timer_outlined)),
           const SizedBox(width: 8),
-          Expanded(child: _MiniStat('唯一曲目', '${unique.tracks}', Icons.music_note_rounded)),
+          Expanded(child: _miniStat('唯一曲目', '${unique.tracks}', Icons.music_note_rounded)),
           const SizedBox(width: 8),
-          Expanded(child: _MiniStat('唯一藝人', '${unique.artists}', Icons.person_outline_rounded)),
+          Expanded(child: _miniStat('唯一藝人', '${unique.artists}', Icons.person_outline_rounded)),
         ]),
         if (top.isNotEmpty) ...[
           const SizedBox(height: 14),
@@ -362,7 +386,7 @@ class _StatsPageState extends State<StatsPage> {
     );
   }
 
-  Widget _MiniStat(String label, String value, IconData icon) {
+  Widget _miniStat(String label, String value, IconData icon) {
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
       decoration: BoxDecoration(
@@ -539,7 +563,7 @@ class _StatsPageState extends State<StatsPage> {
                   getTooltipItem: (group, i, v, d) {
                     final pct = (buckets[group.x.toInt()] / values.length * 100).toStringAsFixed(1);
                     return BarTooltipItem('${labels[group.x.toInt()]}\n${buckets[group.x.toInt()]} 個 ($pct%)',
-                      TextStyle(color: Colors.white, fontSize: 13, height: 1.5));
+                      const TextStyle(color: Colors.white, fontSize: 13, height: 1.5));
                   })),
               titlesData: FlTitlesData(
                 leftTitles: AxisTitles(sideTitles: SideTitles(
@@ -648,11 +672,11 @@ class _StatsPageState extends State<StatsPage> {
           horizontalInterval: (maxRpm > 4 ? (maxRpm / 4).ceilToDouble() : 1)),
         titlesData: FlTitlesData(leftTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, reservedSize: 24, getTitlesWidget: (v, _) => Text('${v.toInt()}', style: const TextStyle(fontSize: 8, color: AppColors.textMuted)))),
           bottomTitles: AxisTitles(sideTitles: SideTitles(showTitles: true, interval: 10, getTitlesWidget: (v, _) => Text('${-60 + v.toInt()}', style: const TextStyle(fontSize: 8, color: AppColors.textMuted)))),
-          topTitles: AxisTitles(sideTitles: SideTitles(showTitles: false)),
-          rightTitles: AxisTitles(sideTitles: SideTitles(showTitles: false))),
+          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false))),
         borderData: FlBorderData(show: false),
         lineBarsData: [LineChartBarData(spots: rpm.map((e) => FlSpot(e[0].toDouble(), e[1].toDouble())).toList(),
-          isCurved: true, color: AppColors.accent, barWidth: 2, dotData: FlDotData(show: false),
+          isCurved: true, color: AppColors.accent, barWidth: 2, dotData: const FlDotData(show: false),
           belowBarData: BarAreaData(show: true, color: AppColors.accent.withValues(alpha: 0.15)))],
         minY: 0,
       )),

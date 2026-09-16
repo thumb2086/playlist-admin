@@ -103,7 +103,7 @@ class SpotifySession extends ChangeNotifier {
             '${Random().nextInt(100000) * 1000}'
             '${_randomHex(16)}',
         'Cookie': 'sp_dc=$dc;',
-      });
+      }).timeout(const Duration(seconds: 20));
       if (resp.statusCode != 200) return;
       final data = jsonDecode(resp.body) as Map<String, dynamic>;
       _accessToken = data['accessToken'] as String?;
@@ -119,7 +119,9 @@ class SpotifySession extends ChangeNotifier {
     _refreshTimer?.cancel();
     final remainMs = _tokenExpiryMs - DateTime.now().millisecondsSinceEpoch;
     if (remainMs <= 0) return;
-    _refreshTimer = Timer(Duration(milliseconds: remainMs - 60000), refreshToken);
+    // remain<60s 時 Duration 會是負值直接拋 ArgumentError：clamp 保底。
+    final delayMs = (remainMs - 60000).clamp(0, remainMs);
+    _refreshTimer = Timer(Duration(milliseconds: delayMs), refreshToken);
   }
 
   void _save() {
@@ -160,7 +162,8 @@ class SpotifySession extends ChangeNotifier {
   Map<int, String>? _nuancesCache;
 
   Future<int> _fetchServerTime() async {
-    final resp = await http.get(Uri.parse('https://open.spotify.com/api/server-time'));
+    final resp = await http.get(Uri.parse('https://open.spotify.com/api/server-time'))
+        .timeout(const Duration(seconds: 15));
     if (resp.statusCode != 200) throw Exception('server-time ${resp.statusCode}');
     return (jsonDecode(resp.body)['serverTime'] as num).toInt();
   }

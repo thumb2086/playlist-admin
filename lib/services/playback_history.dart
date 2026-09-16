@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'config_service.dart';
@@ -12,6 +13,8 @@ class PlaybackHistory {
 
   List<PlaybackEntry> _entries = [];
   bool _loaded = false;
+  // 寫檔 debounce：每首歌都全量重寫 5000 筆 JSON 會卡主 thread，2s 合併一次。
+  Timer? _saveTimer;
 
   static String get _path =>
       '${ConfigService.instance.config.cachePath}\\playback_history.json';
@@ -46,7 +49,16 @@ class PlaybackHistory {
     if (_entries.length > 5000) {
       _entries = _entries.sublist(_entries.length - 5000);
     }
-    _save();
+    _scheduleSave();
+  }
+
+  void _scheduleSave() {
+    _saveTimer?.cancel();
+    _saveTimer = Timer(const Duration(seconds: 2), () {
+      try {
+        _save();
+      } catch (_) {}
+    });
   }
 
   void _save() {

@@ -64,4 +64,33 @@ class SnapshotManager {
     updateSnapshot(playlistName, currentTracks);
     return count;
   }
+
+  /// 批次版：N 個歌單只 load+save 一次。原本每歌單 2 load + 1 save 全檔 IO。
+  /// 回傳 [playlistName] → removed count。
+  static Map<String, int> processAll(Map<String, List<String>> playlists) {
+    final result = <String, int>{};
+    if (playlists.isEmpty) return result;
+    final cache = _loadCache();
+    final all = cache['playlists'] as Map<String, dynamic>;
+    for (final entry in playlists.entries) {
+      final name = entry.key;
+      final current = entry.value;
+      int count = 0;
+      try {
+        final old = all[name];
+        if (old != null) {
+          final oldTracks = (old['tracks'] as List<dynamic>?)?.cast<String>() ?? [];
+          final removed = oldTracks.toSet().difference(current.toSet());
+          count = removed.length;
+        }
+        all[name] = {
+          'tracks': current,
+          'last_updated': DateTime.now().toIso8601String(),
+        };
+      } catch (_) {}
+      result[name] = count;
+    }
+    _saveCache(cache);
+    return result;
+  }
 }

@@ -29,6 +29,8 @@ dependencies:
   xml: ^6.6.1
   cached_network_image: ^3.4.1
 
+  path: any
+  crypto: any
 dev_dependencies:
   flutter_test:
     sdk: flutter

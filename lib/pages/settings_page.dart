@@ -50,6 +50,12 @@ class _SettingsPageState extends State<SettingsPage> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t('settings.saved')), duration: const Duration(seconds: 1)));
   }
 
+  /// Toggle專用：只存當前config，不收割文字框。
+  /// 舊寫法每個toggle都調_save()，打一半的路徑會被順手存掉。
+  void _saveQuiet() {
+    ConfigService.instance.save();
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = ConfigService.instance.config;
@@ -76,11 +82,11 @@ class _SettingsPageState extends State<SettingsPage> {
             onChanged: (v) { c.theme = v; ConfigService.instance.save(); setState(() {}); },
           ),
           const SizedBox(height: 4),
-          _Toggle(t('settings.debug_mode'), c.debugMode, (v) { c.debugMode = v; _save(); setState(() {}); }),
-          _Toggle(t('settings.metadata_enrich'), c.enableMetadataEnrichment, (v) { c.enableMetadataEnrichment = v; _save(); setState(() {}); }),
-          _Toggle(t('settings.auto_update_check'), c.autoUpdateCheck, (v) { c.autoUpdateCheck = v; _save(); setState(() {}); }),
-          _Toggle('自動下載更新', c.autoDownloadUpdate, (v) { c.autoDownloadUpdate = v; _save(); setState(() {}); }),
-          _Toggle('接收 Beta 更新', c.receiveBetaUpdates, (v) { c.receiveBetaUpdates = v; _save(); setState(() {}); }),
+          _Toggle(t('settings.debug_mode'), c.debugMode, (v) { c.debugMode = v; _saveQuiet(); setState(() {}); }),
+          _Toggle(t('settings.metadata_enrich'), c.enableMetadataEnrichment, (v) { c.enableMetadataEnrichment = v; _saveQuiet(); setState(() {}); }),
+          _Toggle(t('settings.auto_update_check'), c.autoUpdateCheck, (v) { c.autoUpdateCheck = v; _saveQuiet(); setState(() {}); }),
+          _Toggle('自動下載更新', c.autoDownloadUpdate, (v) { c.autoDownloadUpdate = v; _saveQuiet(); setState(() {}); }),
+          _Toggle('接收 Beta 更新', c.receiveBetaUpdates, (v) { c.receiveBetaUpdates = v; _saveQuiet(); setState(() {}); }),
         ]),
         const SizedBox(height: 12),
         _Section(t('settings.lyrics_section'), [
@@ -90,7 +96,7 @@ class _SettingsPageState extends State<SettingsPage> {
         _Section('Groq API (Podcast 轉錄)', [
           _Field('API Key (多個用逗號分隔)', _groqApiKeyCtrl, 'gsk_xxx,gsk_yyy'),
           const SizedBox(height: 4),
-          Text(
+          const Text(
             '沒有 key 也能用，Podcast 會改用 YouTube 字幕',
             style: TextStyle(color: AppColors.textSecondary, fontSize: 11),
           ),
@@ -100,7 +106,7 @@ class _SettingsPageState extends State<SettingsPage> {
           _Field('Discord Application ID', _discordAppIdCtrl, '到 discord.com/developers 申請'),
           _Toggle('Discord Presence', c.discordPresenceEnabled, (v) {
             c.discordPresenceEnabled = v;
-            _save();
+            _saveQuiet();
             setState(() {});
           }),
         ]),

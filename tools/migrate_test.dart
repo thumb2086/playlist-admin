@@ -1,5 +1,5 @@
 import 'dart:io';
-import '../lib/services/app_data_dir.dart';
+import 'package:playlist_admin/services/app_data_dir.dart';
 
 Future<void> main() async {
   print('new dir : ${AppDataDir.dir}');

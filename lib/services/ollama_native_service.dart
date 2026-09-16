@@ -1,9 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'package:logger/logger.dart';
-
-final _log = Logger(printer: PrettyPrinter(methodCount: 0));
 
 /// Ollama REST API 原生 Dart 客戶端（取代 Python bridge）。
 /// 直接呼叫本地 Ollama API，不需要 Python。
@@ -41,32 +38,46 @@ class OllamaNativeService {
       return [];
     }
   }
-  /// 串流式問答（逐 token 回傳）。
+  /// 串流式問答（逐 token 回傳）：streamed request + NDJSON 逐行 parse。
+  /// 舊寫法 stream:false + http.post，要等整段生完（最長 300s）才吐一次。
   Stream<String> chatStream(String prompt, {String? model, List<Map<String, String>>? history}) async* {
     final chosenModel = model ?? await _pickModel();
     if (chosenModel == null) throw Exception('無可用模型');
 
-    final messages = <Map<String, String>>[];
-    if (history != null) messages.addAll(history);
-    messages.add({'role': 'user', 'content': prompt});
+    final msgs = <Map<String, String>>[];
+    if (history != null) msgs.addAll(history);
+    msgs.add({'role': 'user', 'content': prompt});
 
-    final resp = await http.post(
-      Uri.parse('$baseUrl/api/chat'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'model': chosenModel,
-        'messages': messages,
-        'stream': false,
-      }),
-    ).timeout(const Duration(seconds: 300));
-
-    if (resp.statusCode != 200) {
-      throw Exception('Ollama 回應 ${resp.statusCode}');
+    final client = http.Client();
+    try {
+      final req = http.Request('POST', Uri.parse('$baseUrl/api/chat'))
+        ..headers['Content-Type'] = 'application/json'
+        ..body = jsonEncode({
+          'model': chosenModel,
+          'messages': msgs,
+          'stream': true,
+        });
+      // connect 30s（TTFT 含冷啟動載模型放寬到 120s），之後每行 120s。
+      final resp = await client.send(req).timeout(const Duration(seconds: 120));
+      if (resp.statusCode != 200) {
+        throw Exception('Ollama 回應 ${resp.statusCode}');
+      }
+      await for (final line in resp.stream
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .timeout(const Duration(seconds: 120))) {
+        final t = line.trim();
+        if (t.isEmpty) continue;
+        try {
+          final data = jsonDecode(t) as Map<String, dynamic>;
+          final content = (data['message'] as Map?)?['content'] as String?;
+          if (content != null && content.isNotEmpty) yield content;
+          if (data['done'] == true) break;
+        } catch (_) {}
+      }
+    } finally {
+      client.close();
     }
-
-    final data = jsonDecode(resp.body);
-    final content = data['message']?['content'] as String?;
-    if (content != null) yield content;
   }
 
   /// 非串流式問答。
@@ -94,7 +105,11 @@ class OllamaNativeService {
       throw Exception('Ollama embed 失敗: ${resp.statusCode}');
     }
     final data = jsonDecode(resp.body);
-    return (data['embedding'] as List?)?.cast<double>() ?? [];
+    // embedding 可能是 int list（小模型量化輸出）：逐個轉 double，
+    // cast<double>() 遇到 int 直接拋。
+    final raw = data['embedding'] as List?;
+    if (raw == null) return [];
+    return raw.map((e) => (e as num).toDouble()).toList();
   }
 
   Future<String?> _pickModel() async {

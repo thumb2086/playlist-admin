@@ -11,8 +11,20 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _resolve import podcast_downloads_dir
 
 
+def read_srt(srt_path: Path) -> str:
+    """讀檔：utf-8-sig → utf-8 → big5 → gb18030，和 build_db 同順序。
+    舊寫法只試 utf-8-sig，Big5 繁中字幕直接亂碼進庫。"""
+    raw = srt_path.read_bytes()
+    for enc in ("utf-8-sig", "utf-8", "big5", "gb18030"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 def srt_to_text(srt_path: Path) -> str:
-    text = srt_path.read_text(encoding="utf-8-sig", errors="replace")
+    text = read_srt(srt_path)
     # 移除 srt 索引行 (純數字行)
     text = re.sub(r"^\d+\s*$", "", text, flags=re.MULTILINE)
     # 移除時間軸行 (00:00:00,000 --> 00:00:01,000)

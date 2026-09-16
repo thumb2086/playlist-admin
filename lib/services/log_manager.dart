@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 class LogManager {
@@ -8,6 +9,9 @@ class LogManager {
   String? _logPath;
   int _maxFiles = 10;
   bool _enabled = false;
+  // 常駐 sink：舊寫法每行 open-write-close 同步寫，高頻 log 很傷主 thread。
+  IOSink? _sink;
+  Timer? _flushTimer;
 
   void enable(String basePath, {int maxFiles = 10}) {
     _maxFiles = maxFiles;
@@ -44,9 +48,14 @@ class LogManager {
   void _write(String level, String msg) {
     if (!_enabled || _logPath == null) return;
     try {
+      _sink ??= File(_logPath!).openWrite(mode: FileMode.append);
       final now = DateTime.now();
-      final line = '[${now.hour}:${_p2(now.minute)}:${_p2(now.second)}] [$level] $msg\n';
-      File(_logPath!).writeAsStringSync(line, mode: FileMode.append);
+      _sink!.writeln('[${now.hour}:${_p2(now.minute)}:${_p2(now.second)}] [$level] $msg');
+      // 5s flush 一次：crash 最多丟 5 秒 log，換來不卡主 thread。
+      if (_flushTimer?.isActive ?? false) return;
+      _flushTimer = Timer(const Duration(seconds: 5), () async {
+        try { await _sink?.flush(); } catch (_) {}
+      });
     } catch (_) {}
   }
 }

@@ -76,13 +76,10 @@ class _UpdateDialogState extends State<UpdateDialog> {
             ]),
             if (isDownloading) ...[
               const SizedBox(height: 14),
-              TweenAnimationBuilder<double>(
-                tween: Tween(begin: 0, end: progress),
-                duration: const Duration(milliseconds: 200),
-                builder: (ctx, v, _) => ClipRRect(borderRadius: BorderRadius.circular(4),
-                  child: LinearProgressIndicator(value: v, backgroundColor: AppColors.surfaceLight,
-                      valueColor: const AlwaysStoppedAnimation(AppColors.accent), minHeight: 6)),
-              ),
+              // 普通進度條：Tween 每次都 begin:0 重播會閃爍。
+              ClipRRect(borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(value: progress, backgroundColor: AppColors.surfaceLight,
+                    valueColor: const AlwaysStoppedAnimation(AppColors.accent), minHeight: 6)),
               const SizedBox(height: 6),
               Text('${(progress * 100).toStringAsFixed(0)}% 下載中…',
                   style: const TextStyle(color: AppColors.textMuted, fontSize: 11)),

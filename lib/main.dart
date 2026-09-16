@@ -1,4 +1,4 @@
-﻿import 'dart:convert';
+import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io' as io; // dk: Platform 與 Flutter 的 Platform 衝突，用別名
 import 'package:ffi/ffi.dart';
@@ -14,7 +14,6 @@ import 'services/i18n.dart';
 import 'services/log_manager.dart';
 import 'services/spotify_session.dart';
 import 'services/player_controller.dart';
-import 'dart:ui' show PlatformDispatcher;
 
 int _foundHwnd = 0;
 
@@ -79,7 +78,6 @@ void main() async {
     // The runner keeps a window message loop alive even without runApp —
     // force-exit so the CLI returns to the caller.
     io.exit(0);
-    return;
   }
 
   WidgetsFlutterBinding.ensureInitialized();

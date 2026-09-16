@@ -17,7 +17,9 @@ class LrcParser {
       final ms = match.group(3);
       if (ms != null) {
         final msVal = ms.replaceAll(RegExp(r'[:.]'), '');
-        if (msVal.length == 2) { timeMs += int.parse(msVal) * 10; }
+        // 1 位小數是 1/10 秒（舊寫法當 0ms，整句歌詞錯位）。
+        if (msVal.length == 1) { timeMs += int.parse(msVal) * 100; }
+        else if (msVal.length == 2) { timeMs += int.parse(msVal) * 10; }
         else if (msVal.length == 3) { timeMs += int.parse(msVal); }
       }
       final text = match.group(4)?.trim() ?? '';

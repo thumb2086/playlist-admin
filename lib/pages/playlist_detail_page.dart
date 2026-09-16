@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:flutter/services.dart';
 import '../models/playlist_item.dart';
 import '../services/player_controller.dart';
 import '../services/config_service.dart';
@@ -42,15 +41,20 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   final Set<int> _downloaded = {};
   /// Download progress per track (0.0 - 1.0).
   final Map<int, double> _progress = {};
-  /// Which tracks are already on disk at startup.
-  late Set<int> _localTracks;
+  /// Which tracks are already on disk (filled async after first frame).
+  Set<int> _localTracks = {};
   Set<String> _favorites = {};
 
   @override
   void initState() {
     super.initState();
-    _localTracks = _findLocalTracks();
     _loadFavorites();
+    WidgetsBinding.instance.addPostFrameCallback((_) { _scanLocalTracks(); });
+  }
+
+  Future<void> _scanLocalTracks() async {
+    final found = await _findLocalTracksAsync();
+    if (mounted) setState(() => _localTracks = found);
   }
 
   Future<void> _loadFavorites() async {
@@ -58,16 +62,19 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     if (mounted) setState(() => _favorites = favs);
   }
 
+  static String _favKey(String s) =>
+      s.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+
   bool _isFav(PlaylistItem item) {
-    final key = '${item.name} - ${item.artist}'.toLowerCase();
-    return _favorites.any((f) => f.toLowerCase().contains(key) || key.contains(f.toLowerCase()));
+    final key = _favKey('${item.name} - ${item.artist}');
+    return _favorites.any((f) => _favKey(f) == key);
   }
 
   Future<void> _toggleFav(PlaylistItem item) async {
     final key = '${item.name} - ${item.artist}';
     final favs = await FavoritesService.load();
     final match = favs.firstWhere(
-      (f) => f.toLowerCase().contains(key.toLowerCase()) || key.toLowerCase().contains(f.toLowerCase()),
+      (f) => _favKey(f) == _favKey(key),
       orElse: () => '',
     );
     if (match.isNotEmpty) {
@@ -79,41 +86,54 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   }
 
   /// Check which tracks already exist in the local music library.
-  Set<int> _findLocalTracks() {
+  /// 全 async：本來在 initState 同步掃目錄，且快取目錄被每首歌重列一次 O(N×M)。
+  /// 現在兩個目錄各只列一次，之後全是記憶體比對。
+  Future<Set<int>> _findLocalTracksAsync() async {
     final result = <int>{};
+    if (widget.items.isEmpty) return result;
     final cfg = ConfigService.instance.config;
     final musicDir = Directory(cfg.musicPath);
-    if (!musicDir.existsSync()) return result;
-    final localFiles = musicDir.listSync().whereType<File>()
-        .where((f) => f.path.endsWith('.mp3'))
-        .map((f) => f.uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '').toLowerCase())
-        .toSet();
-    for (int i = 0; i < widget.items.length; i++) {
-      final query = widget.items[i].audioQuery.toLowerCase();
-      for (final local in localFiles) {
-        if (local == query || local.contains(query) || query.contains(local)) {
-          result.add(i);
-          break;
+    final localFiles = <String>{};
+    if (await musicDir.exists()) {
+      await for (final f in musicDir.list()) {
+        if (f is File && f.path.endsWith('.mp3')) {
+          localFiles.add(f.uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '').toLowerCase());
         }
       }
     }
-    // Also check stream cache.
+    // Stream cache: scan ONCE (was re-listed per track).
+    final cacheNames = <String>[];
     final cacheDir = Directory(cfg.streamCachePath);
-    if (cacheDir.existsSync()) {
-      for (int i = 0; i < widget.items.length; i++) {
-        if (result.contains(i)) continue;
-        final query = widget.items[i].audioQuery.toLowerCase();
-        final prefix = query.substring(0, query.length.clamp(0, 20));
-        for (final f in cacheDir.listSync().whereType<File>()) {
-          if (f.path.endsWith('.mp3') && f.lengthSync() > 65536) {
-            final name = f.path.split(Platform.pathSeparator).last.toLowerCase();
-            if (name.contains(prefix)) {
-              result.add(i);
-              break;
+    if (await cacheDir.exists()) {
+      await for (final f in cacheDir.list()) {
+        if (f is File && f.path.endsWith('.mp3')) {
+          try {
+            if (await f.length() > 65536) {
+              cacheNames.add(f.path.split(Platform.pathSeparator).last.toLowerCase());
             }
+          } catch (_) {}
+        }
+      }
+    }
+    for (int i = 0; i < widget.items.length; i++) {
+      final query = widget.items[i].audioQuery.toLowerCase();
+      var hit = false;
+      for (final local in localFiles) {
+        if (local == query || local.contains(query) || query.contains(local)) {
+          hit = true;
+          break;
+        }
+      }
+      if (!hit && query.isNotEmpty) {
+        // 空 query 的 prefix 是 ''，contains('') 恆真會誤標：直接跳過。
+        final prefix = query.substring(0, query.length.clamp(0, 20));
+        if (prefix.isNotEmpty) {
+          for (final name in cacheNames) {
+            if (name.contains(prefix)) { hit = true; break; }
           }
         }
       }
+      if (hit) result.add(i);
     }
     return result;
   }
@@ -154,8 +174,10 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       });
       if (streamResult == null) {
         debugPrint('[DL] $index NOT FOUND: ${item.name}');
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('找不到: ${item.name}'), duration: const Duration(seconds: 2)));
+        }
         return;
       }
       debugPrint('[DL] $index resolved: ${streamResult.title}');
@@ -168,12 +190,18 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
         ['-y', '-i', streamResult.audioUrl, '-vn', '-acodec', 'libmp3lame', '-q:a', '0', '-ac', '2', tmpPath],
         runInShell: true,
       );
-      // Capture stderr for debugging.
-      final stderrOutput = await proc.stderr.transform(utf8.decoder).join();
-      if (mounted) setState(() { _progress[index] = 0.5; });
-      final code = await proc.exitCode.timeout(
+      // stdout 也要排空，否則輸出大時 pipe 塞住 deadlock；
+      // 先掛 exitCode timeout 再收 stderr，避免 ffmpeg 僵住時 join 永遠等不到。
+      unawaited(proc.stdout.drain());
+      final codeFuture = proc.exitCode.timeout(
         const Duration(seconds: 90), onTimeout: () { proc.kill(); return -1; },
       );
+      final stderrFuture = proc.stderr.transform(utf8.decoder).join();
+      final code = await codeFuture;
+      // Capture stderr for debugging.
+      final stderrOutput = await stderrFuture.timeout(
+        const Duration(seconds: 10), onTimeout: () => '');
+      if (mounted) setState(() { _progress[index] = 0.5; });
       if (code == 0 && File(tmpPath).existsSync()) {
         if (File(finalPath).existsSync()) await File(finalPath).delete();
         await File(tmpPath).rename(finalPath);
@@ -193,7 +221,12 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     }
   }
 
+  /// 整單下載開關：true 跑 serial，false 停在當前這首後。
+  bool _downloadingAll = false;
+
   Future<void> _downloadAll() async {
+    // 跑一半再按一次 = 取消。
+    if (_downloadingAll) { _downloadingAll = false; return; }
     _registerSpotifyUrl();
     final toDownload = <int>[];
     for (int i = 0; i < widget.items.length; i++) {
@@ -202,10 +235,16 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       }
     }
     if (toDownload.isEmpty) return;
-    // Download 3 at a time, each with independent timeout.
-    for (int batch = 0; batch < toDownload.length; batch += 3) {
-      final chunk = toDownload.skip(batch).take(3).toList();
-      await Future.wait(chunk.map((i) => _downloadTrack(i)), eagerError: false);
+    if (mounted) setState(() => _downloadingAll = true);
+    try {
+      // Serial：跟音樂鏈路一致（YouTube 限流只能 serial），百首單可中途取消。
+      for (final i in toDownload) {
+        if (!_downloadingAll) break;
+        if (!_isLocal(i)) await _downloadTrack(i);
+      }
+    } finally {
+      _downloadingAll = false;
+      if (mounted) setState(() {});
     }
   }
 
@@ -276,7 +315,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                       style: TextStyle(fontSize: 12, color: AppColors.textMuted.withValues(alpha: 0.8))),
                 ],
                 const SizedBox(height: 8),
-                Text('${totalCount} 首', style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+                Text('$totalCount 首', style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
                 const SizedBox(height: 12),
                 Row(children: [
                   ElevatedButton.icon(
@@ -296,7 +335,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                     label: const Text('隨機'),
                     style: OutlinedButton.styleFrom(
                       foregroundColor: AppColors.text,
-                      side: BorderSide(color: AppColors.border),
+                      side: const BorderSide(color: AppColors.border),
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     ),
                   ),
@@ -304,11 +343,11 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                     const SizedBox(width: 8),
                     OutlinedButton.icon(
                       onPressed: _downloadAll,
-                      icon: const Icon(Icons.download_rounded, size: 16),
-                      label: Text(localCount > 0 ? '下載 ($localCount/$totalCount)' : '下載全部'),
+                      icon: Icon(_downloadingAll ? Icons.stop_rounded : Icons.download_rounded, size: 16),
+                      label: Text(_downloadingAll ? '取消下載' : (localCount > 0 ? '下載 ($localCount/$totalCount)' : '下載全部')),
                       style: OutlinedButton.styleFrom(
                         foregroundColor: AppColors.text,
-                        side: BorderSide(color: AppColors.border),
+                        side: const BorderSide(color: AppColors.border),
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       ),
                     ),
@@ -325,7 +364,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   Widget _buildColumnHeader() {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
-      decoration: BoxDecoration(
+      decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: AppColors.border, width: 0.5)),
       ),
       child: Row(children: [
@@ -346,7 +385,6 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     final item = widget.items[index];
     final isLocal = _isLocal(index);
     final isDownloading = _isDownloading(index);
-    final progress = _progress[index] ?? 0;
 
     return InkWell(
       onTap: isDownloading ? null : () => _playTrack(context, index),

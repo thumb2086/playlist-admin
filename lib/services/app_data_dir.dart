@@ -43,14 +43,21 @@ class AppDataDir {
     } catch (_) {}
   }
 
+  static String _baseName(String path) {
+    // Directory 的 URI 尾是 '/'，pathSegments.last 會取到空字串：
+    // 用 path 切、濾掉空段，檔名/目錄名都拿得到。
+    final segs = path.split(Platform.pathSeparator).where((s) => s.isNotEmpty);
+    return segs.isEmpty ? path : segs.last;
+  }
+
   static Future<void> _copyTree(Directory src, Directory dst) async {
     await dst.create(recursive: true);
     await for (final e in src.list()) {
-      final target = File('${dst.path}\\${e.uri.pathSegments.last}');
+      final target = File('${dst.path}\\${_baseName(e.path)}');
       if (e is File) {
         await e.copy(target.path);
       } else if (e is Directory) {
-        await _copyTree(e, Directory('${dst.path}\\${e.uri.pathSegments.last}'));
+        await _copyTree(e, Directory('${dst.path}\\${_baseName(e.path)}'));
       }
     }
   }

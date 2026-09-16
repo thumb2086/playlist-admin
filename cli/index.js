@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Thin launcher: the CLI engine lives in the Flutter app binary
 // (lib/cli_main.dart), so GUI and CLI share one implementation.
@@ -37,17 +38,39 @@ function projectRoot() {
   }
 }
 
+/// npm 包自身目錄（全域 npm i -g 時，cwd 向上找不到 pubspec，
+/// 但包內自帶 cli/ + rag/，RAG 命令靠它就能跑）。
+function packageRoot() {
+  try {
+    return path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+  } catch {
+    return null;
+  }
+}
+
 function exePath(root) {
   const candidates = [
     path.join(root, 'build', 'windows', 'x64', 'runner', 'Release', 'playlist-admin.exe'),
     path.join(root, 'build', 'windows', 'x64', 'runner', 'Debug', 'playlist-admin.exe'),
+    path.join(root, 'build', 'windows', 'arm64', 'runner', 'Release', 'playlist-admin.exe'),
+    path.join(root, 'build', 'windows', 'arm64', 'runner', 'Debug', 'playlist-admin.exe'),
     path.join(root, 'build', 'windows', 'x64', 'runner', 'Release', 'playlist_administrator.exe'),
   ];
   return candidates.find((c) => fs.existsSync(c)) || null;
 }
 
 function python() {
-  return process.env.PYTHON || 'python';
+  if (process.env.PYTHON) return process.env.PYTHON;
+  // Windows 常只有 py launcher 或 python：依序探測可用的。
+  for (const cmd of ['py', 'python', 'python3']) {
+    try {
+      const r = spawnSync(cmd, ['--version'], { stdio: 'ignore', windowsHide: true });
+      if (r.status === 0) return cmd;
+    } catch {
+      // 試下一個
+    }
+  }
+  return 'python';
 }
 
 function forward(exe, args) {
@@ -82,15 +105,17 @@ function forwardPy(args) {
 }
 
 function runRag(args) {
-  const root = projectRoot();
-  if (!root) {
-    console.error('找不到專案根目錄（pubspec.yaml）。請在專案內執行，或設定 PA_ROOT');
+  const sub = args[0];
+  if (sub !== 'build' && sub !== 'query') {
+    console.error(`未知 rag 子命令: ${sub ?? '(空)'}\n用法: playlist-admin rag build | playlist-admin rag query "問題"`);
     process.exit(1);
   }
-  const sub = args[0];
-  const script = path.join(root, 'rag', sub === 'build' ? 'build_db.py' : 'query.py');
-  if (!fs.existsSync(script)) {
-    console.error(`找不到 ${script}`);
+  // 優先專案內 rag/（開發時最新），全域安裝時退回包內自帶的 rag/。
+  const roots = [projectRoot(), packageRoot()].filter(Boolean);
+  const fname = sub === 'build' ? 'build_db.py' : 'query.py';
+  const script = roots.map((r) => path.join(r, 'rag', fname)).find((s) => fs.existsSync(s));
+  if (!script) {
+    console.error(`找不到 rag/${fname}。請在專案內執行，或設定 PA_ROOT`);
     process.exit(1);
   }
   forwardPy([script, ...args.slice(1)]);

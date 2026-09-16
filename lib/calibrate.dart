@@ -113,6 +113,6 @@ List<int> _clientOrigin(int hwnd) {
 }
 
 void _wait(int ms) {
-  final sw = Stopwatch()..start();
-  while (sw.elapsedMilliseconds < ms) {}
+  // 舊寫法 Stopwatch 空轉吃滿一個 CPU 核心：Sleep 讓出時間片。
+  Sleep(ms);
 }

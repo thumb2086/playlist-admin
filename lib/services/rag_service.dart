@@ -1,8 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:flutter/foundation.dart';
-import 'bridge_service.dart';
 import 'config_service.dart';
 
 /// RAG 索引服務 — 透過 Python bridge 執行 rag/build_db.py（增量）。

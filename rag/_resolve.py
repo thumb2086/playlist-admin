@@ -32,8 +32,22 @@ def find_base() -> Path:
             bp = _win_to_wsl(bp)
         return bp
 
-    # WSL: 直接用 /mnt/c/ 路徑
+    # WSL：優先 HOME/Music 推導，寫死的個人路徑只當最後 fallback。
+    # 多使用者機器：優先 USERNAME 對得上的那個。
     if _is_wsl():
+        home_music = Path.home() / "Music" / "playlist-admin"
+        if home_music.exists():
+            return home_music
+        try:
+            hits = sorted(Path("/mnt/c/Users").glob("*/Music/playlist-admin"))
+            if hits:
+                me = (os.environ.get("USERNAME") or os.environ.get("USER") or "").lower()
+                for h in hits:
+                    if me and h.parts[3].lower() == me:
+                        return h
+                return hits[0]
+        except Exception:
+            pass
         return Path("/mnt/c/Users/CPXru/Music/playlist-admin")
 
     # Windows: 讀 config.json
@@ -45,7 +59,8 @@ def find_base() -> Path:
             pointer = Path(local) / "Playlist Administrator" / "data" / "config.json"
     try:
         if pointer and pointer.exists():
-            data = json.loads(pointer.read_text(encoding="utf-8"))
+            # utf-8-sig：BOM 檔用 utf-8 讀會讓 json.loads 炸掉。
+            data = json.loads(pointer.read_text(encoding="utf-8-sig"))
             bp = data.get("base_path") or data.get("basePath")
             if bp:
                 return Path(bp)

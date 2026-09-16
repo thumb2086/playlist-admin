@@ -2,7 +2,6 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
 import '../services/player_controller.dart';
 import '../services/spotify_session.dart';
 import '../services/spotify_gql_client.dart';
@@ -16,6 +15,15 @@ class JamService extends ChangeNotifier {
 
   // ---------- Relay ----------
   static const _relayUrl = 'wss://jam-relay.cpxru83.workers.dev/jam';
+
+  /// 測試用 relay 覆寫（flutter_test 指向本地假 relay，平時 null）。
+  static String? relayUrlOverride;
+  static String get _relay => relayUrlOverride ?? _relayUrl;
+
+  /// flutter_test 用：test 環境無 libmpv，PlayerController 建不起來。
+  /// 開啟後播放器呼叫全變 no-op，協議邏輯照常測試。正式環境恆 false。
+  static bool testMode = false;
+  static PlayerController? get _pc => testMode ? null : PlayerController.instance;
 
   // ---------- 公開狀態 ----------
   String mode = 'idle'; // 'idle' | 'host' | 'client'
@@ -41,7 +49,6 @@ class JamService extends ChangeNotifier {
   List<Map<String, dynamic>> searchResults = [];
   bool searching = false;
   String searchError = '';
-  int _searchReqId = 0;
   final Map<int, Completer<List<Map<String, dynamic>>>> _searchCompleters = {};
 
   // ---------- WebSocket ----------
@@ -59,7 +66,7 @@ class JamService extends ChangeNotifier {
     lastError = '';
     statusText = '建立房間…';
     try {
-      _ws = await WebSocket.connect(_relayUrl)
+      _ws = await WebSocket.connect(_relay)
           .timeout(const Duration(seconds: 10));
       _ws!.listen(_onMessage, onDone: _onClosed, onError: (_) => _onClosed());
       _ws!.add(jsonEncode({'type': 'create', 'name': name}));
@@ -77,7 +84,7 @@ class JamService extends ChangeNotifier {
     lastError = '';
     statusText = '加入房間…';
     try {
-      _ws = await WebSocket.connect(_relayUrl)
+      _ws = await WebSocket.connect(_relay)
           .timeout(const Duration(seconds: 10));
       _ws!.listen(_onMessage, onDone: _onClosed, onError: (_) => _onClosed());
       _ws!.add(jsonEncode({
@@ -103,7 +110,7 @@ class JamService extends ChangeNotifier {
     _myVotes.clear();
     searchResults = [];
     searching = false;
-    PlayerController.instance.jamFollowMode = false;
+    _pc?.jamFollowMode = false;
     _lastUrl = '';
     notifyListeners();
   }
@@ -124,7 +131,7 @@ class JamService extends ChangeNotifier {
     if (mode == 'idle') return;
     mode = 'idle';
     _ws = null;
-    PlayerController.instance.jamFollowMode = false;
+    _pc?.jamFollowMode = false;
     lastError = '與 Relay 的連線中斷';
     notifyListeners();
   }
@@ -134,7 +141,13 @@ class JamService extends ChangeNotifier {
   // ===================================================================
 
   void _onMessage(dynamic raw) {
-    final msg = jsonDecode(raw as String) as Map<String, dynamic>;
+    // relay 壞包不可拋到 listen 區（會斷線）：解析失敗直接丟棄。
+    late final Map<String, dynamic> msg;
+    try {
+      msg = jsonDecode(raw as String) as Map<String, dynamic>;
+    } catch (_) {
+      return;
+    }
     final type = msg['type'] as String?;
 
     switch (type) {
@@ -146,7 +159,7 @@ class JamService extends ChangeNotifier {
             ? 'host'
             : 'client';
         roomCode = state['code'] as String? ?? '';
-        PlayerController.instance.jamFollowMode = mode == 'client';
+        _pc?.jamFollowMode = mode == 'client';
         _applyState(state);
         _startDriftSync();
         statusText = '';
@@ -253,7 +266,7 @@ class JamService extends ChangeNotifier {
     ts = msg['ts'] as int? ?? 0;
 
     if (current == null) {
-      PlayerController.instance.stop();
+      _pc?.stop();
       notifyListeners();
       return;
     }
@@ -261,7 +274,7 @@ class JamService extends ChangeNotifier {
     final url = current!['audioUrl'] as String? ?? '';
     if (url.isNotEmpty && url != _lastUrl) {
       _lastUrl = url;
-      PlayerController.instance.playJamUrl(url,
+      _pc?.playJamUrl(url,
           title: current!['title'] as String? ?? '',
           artist: current!['artist'] as String? ?? '',
           coverUrl: current!['coverUrl'] as String?);
@@ -273,7 +286,8 @@ class JamService extends ChangeNotifier {
   }
 
   void _mirrorPlayPause() {
-    final pc = PlayerController.instance;
+    final pc = _pc;
+    if (pc == null) return;
     if (playing) {
       if (!pc.isPlaying) pc.resume();
     } else {
@@ -290,7 +304,8 @@ class JamService extends ChangeNotifier {
   }
 
   void _driftCorrect() {
-    final pc = PlayerController.instance;
+    final pc = _pc;
+    if (pc == null) return;
     if (pc.title.isEmpty) return;
     final elapsed = DateTime.now().millisecondsSinceEpoch - ts;
     final expected = positionMs + elapsed;
@@ -312,7 +327,8 @@ class JamService extends ChangeNotifier {
     if (mode == 'idle') return;
     _send({'type': playing ? 'pause' : 'play'});
     // 本地也立即反應
-    final pc = PlayerController.instance;
+    final pc = _pc;
+    if (pc == null) return;
     if (playing) {
       pc.pause();
       playing = false;
@@ -325,7 +341,7 @@ class JamService extends ChangeNotifier {
 
   void seek(Duration pos) {
     _send({'type': 'seek', 'pos': pos.inMilliseconds});
-    PlayerController.instance.jamSeekLocal(pos);
+    _pc?.jamSeekLocal(pos);
   }
 
   void next() {
@@ -387,9 +403,15 @@ class JamService extends ChangeNotifier {
     final artist = (raw['artists'] as List? ?? []).join(', ');
     if (title.isEmpty) return;
 
-    // 先搜 YouTube 取音訊 URL。
+    // 先搜 YouTube 取音訊 URL（timeout：卡住不可凍住房主 UI）。
     final query = '$title $artist';
-    final result = await YoutubeService.instance.resolveStream(query);
+    YoutubeStreamResult? result;
+    try {
+      result = await YoutubeService.instance.resolveStream(query)
+          .timeout(const Duration(seconds: 30));
+    } catch (_) {
+      result = null;
+    }
 
     final track = <String, dynamic>{
       'id': 't-${DateTime.now().millisecondsSinceEpoch.toRadixString(16)}',
@@ -415,7 +437,7 @@ class JamService extends ChangeNotifier {
       // 房主端也播放。
       if (track['audioUrl'] != null &&
           (track['audioUrl'] as String).isNotEmpty) {
-        PlayerController.instance.playJamUrl(track['audioUrl'] as String,
+        _pc?.playJamUrl(track['audioUrl'] as String,
             title: title, artist: artist, coverUrl: raw['coverUrl'] as String?);
       }
     }
@@ -432,7 +454,7 @@ class JamService extends ChangeNotifier {
       'pos': 0,
       'ts': DateTime.now().millisecondsSinceEpoch,
     });
-    PlayerController.instance.playJamUrl(url,
+    _pc?.playJamUrl(url,
         title: track['title'] as String? ?? '',
         artist: track['artist'] as String? ?? '',
         coverUrl: track['coverUrl'] as String?);

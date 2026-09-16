@@ -59,9 +59,17 @@ class AudioConverter {
       final stderrBuf = <int>[];
       proc.stderr.listen(stderrBuf.addAll);
       // Poll for cancellation while ffmpeg runs, kill immediately if cancelled.
+      // 總超時 120 分鐘：hang 住不可無限等（舊寫法 catch 全吞 + 無 deadline）。
+      final start = DateTime.now();
+      const limit = Duration(minutes: 120);
       while (true) {
         if (isCancelled?.call() ?? false) {
           proc.kill(ProcessSignal.sigkill);
+          return (false, null);
+        }
+        if (DateTime.now().difference(start) > limit) {
+          proc.kill(ProcessSignal.sigkill);
+          try { if (await File(outputPath).exists()) await File(outputPath).delete(); } catch (_) {}
           return (false, null);
         }
         final exited = await proc.exitCode.timeout(

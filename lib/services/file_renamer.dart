@@ -23,7 +23,10 @@ class FileRenamer {
 
     final artist = meta.artist?.trim() ?? '';
     final title = meta.title?.trim() ?? '';
-    final ext = filePath.split('.').last;
+    // 副檔名取檔名段的最後一段：路徑目錄含點時 split('.').last 會取錯。
+    final fileName = File(filePath).uri.pathSegments.last;
+    final dotIdx = fileName.lastIndexOf('.');
+    final ext = (dotIdx > 0) ? fileName.substring(dotIdx + 1) : '';
 
     String newName;
     if (artist.isNotEmpty && title.isNotEmpty) {
@@ -78,10 +81,21 @@ class FileRenamer {
     log('🔍 掃描到 $total 個音檔');
 
     for (int i = 0; i < files.length; i++) {
-      final r = await renameFile(files[i], dryRun: dryRun);
+      // 單檔 throw（保留名/權限/被佔用）不可中斷整批：計錯繼續。
+      RenameResult r;
+      try {
+        r = await renameFile(files[i], dryRun: dryRun);
+      } catch (e) {
+        errors++;
+        log('  ❌ ${files[i].split('\\').last}: $e');
+        continue;
+      }
       if (r.success) {
-        if (r.newPath != r.oldPath) renamed++;
-        else skipped++;
+        if (r.newPath != r.oldPath) {
+          renamed++;
+        } else {
+          skipped++;
+        }
       } else {
         errors++;
         log('  ❌ ${files[i].split('\\').last}: ${r.message}');

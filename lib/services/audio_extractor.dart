@@ -1,7 +1,6 @@
-﻿import 'dart:async';
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math' as math;
 import 'package:path/path.dart' as p;
 
 // Port of 大拇哥實驗室 AudioExtractor — DeepFilterNet 降噪 only。
@@ -150,16 +149,18 @@ class AudioExtractorStore {
     File(profileFile(name)).writeAsStringSync(jsonEncode(c.toJson()));
   }
 
-  static List<VideoFile>? loadCache(String dir) {
+  static Future<List<VideoFile>?> loadCacheAsync(String dir) async {
     try {
       final f = File(cacheFile(dir));
-      if (!f.existsSync()) return null;
-      final data = jsonDecode(f.readAsStringSync()) as Map<String, dynamic>;
+      if (!await f.exists()) return null;
+      final data = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
       final cached = (data['files'] as List).map((e) => VideoFile.fromJson(e as Map<String, dynamic>)).toList();
       final mtimes = (data['mtimes'] as List<dynamic>).map((e) => DateTime.tryParse(e as String) ?? DateTime(2000)).toList();
       for (int i = 0; i < cached.length && i < mtimes.length; i++) {
         final cur = File(cached[i].path);
-        if (!cur.existsSync() || cur.lastModifiedSync().millisecondsSinceEpoch != mtimes[i].millisecondsSinceEpoch) return null;
+        if (!await cur.exists()) return null;
+        final mtime = await cur.lastModified();
+        if (mtime.millisecondsSinceEpoch != mtimes[i].millisecondsSinceEpoch) return null;
       }
       return cached;
     } catch (_) {
@@ -251,16 +252,6 @@ class AudioExtractorEngine {
     }
   }
 
-  /// PyTorch CUDA OOM / cuDNN 錯誤偵測（傳完整 stderr，避免截斷漏判）
-  static bool _isGpuOom(String err) {
-    final e = err.toLowerCase();
-    return e.contains('out of memory') ||
-        e.contains('cuda out') ||
-        e.contains('reserved by pytorch') ||
-        e.contains('cudnn_status') ||
-        e.contains('cublas');
-  }
-
 /// 定位 deepfilter_daemon.py：橋接暫存目錄（release）→ cwd/tools（dev）
   static String? _daemonScript() {
     final cands = <String>[
@@ -341,32 +332,6 @@ class AudioExtractorEngine {
     }
   }
 
-  /// 一次呼叫 deepFilter 處理多個 wav（模型只載入一次）。
-  static Future<String?> _batchDeep(List<String> wavs, AudioExtractorConfig cfg,
-      List<Process> active, void Function(String) onLog,
-      {bool forceCpu = false, bool Function()? cancelCheck}) async {
-    final device = forceCpu ? 'cpu' : await _resolveDevice(cfg);
-    final env = <String, String>{'PYTHONWARNINGS': 'ignore'};
-    if (device == 'cpu') {
-      // 空字串會被系統丟掉 → 用不存在的 GPU 編號讓 torch 完全看不到顯卡
-      env['CUDA_VISIBLE_DEVICES'] = '999999';
-    }
-    onLog('deeplog> device=${device == 'cpu' ? 'cpu' : 'cuda'} (forceCpu=$forceCpu)');
-    return _run([
-      cfg.deepFilterPath, ...wavs,
-      '--output-dir', Directory.systemTemp.path, '--no-suffix', '--log-level', 'info',
-    ], active, env: env, cancelCheck: cancelCheck, onLine: (s) {
-      final t = s.trim();
-      // 只轉播階段/裝置/關鍵錯誤行；堆疊明細與 warnings 不進 log
-      if (t.contains('Running on device') || t.contains('Loading model') ||
-          t.contains('Enhanced noisy audio file') ||
-          t.contains('Traceback') || t.contains('RuntimeError') || t.contains('Error:') ||
-          t.contains('CUDA out') || t.contains('Out of memory')) {
-        onLog('deeplog> $t');
-      }
-    });
-  }
-
   /// 回傳已解析的記憶體模式（auto 用可空閒 RAM 決定）
   /// quality(≥18GB) / balanced(≥9GB) / eco(其餘)。
   static Future<String> _resolveMemoryMode(AudioExtractorConfig cfg) async {
@@ -397,8 +362,6 @@ class AudioExtractorEngine {
     if (jobs.isEmpty) return;
     // 記憶體模式決定模型/精度/並行度（auto 依空閒 RAM）
     final memMode = await _resolveMemoryMode(cfg);
-    final dfModel = memMode == 'eco' ? 'DeepFilterNet2' : 'DeepFilterNet3';
-    final dfHalf = memMode != 'quality';
     final pool = memMode == 'quality' ? 2 : 1;
     final active = <Process>[];
     final fmt = switch (cfg.format) { 'm4a' => 'aac', 'wav' => 'wav', 'flac' => 'flac', _ => 'aac' };
@@ -466,7 +429,7 @@ class AudioExtractorEngine {
       final memMode = await _resolveMemoryMode(cfg);
       final dfModel = memMode == 'eco' ? 'DeepFilterNet2' : 'DeepFilterNet3';
       final dfHalf = memMode != 'quality';
-      onLog('daemon> 模式=${memMode}（模型=$dfModel${dfHalf ? ' fp16' : ''}）');
+      onLog('daemon> 模式=$memMode（模型=$dfModel${dfHalf ? ' fp16' : ''}）');
       Process? daemon;
       final pending = <int, Completer<Map<String, dynamic>>>{};
       bool daemonAlive = false;
@@ -512,10 +475,7 @@ class AudioExtractorEngine {
         try {
           daemon = await Process.start('python', [script], runInShell: false, environment: env);
           final dPid = daemon!.pid;
-          Process.start('powershell', [
-            '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
-            '-Command', "(Get-Process -Id $dPid).PriorityClass='BelowNormal'",
-          ], runInShell: false).ignore();
+          _setBelowNormal(dPid);
         } catch (e) {
           onLog('  ⚠️ daemon 啟動失敗: $e');
           return false;
@@ -669,9 +629,22 @@ class AudioExtractorEngine {
     }
   }
 
+  /// 設優先級的 powershell：必須等 exitCode回收，否則幾百次後漏 handle。
+  static void _setBelowNormal(int pid) {
+    unawaited(Future(() async {
+      try {
+        final p = await Process.start('powershell', [
+          '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
+          '-Command', "(Get-Process -Id $pid).PriorityClass='BelowNormal'"
+        ], runInShell: false);
+        await p.exitCode;
+      } catch (_) {}
+    }));
+  }
+
   static Future<String?> _run(List<String> args, List<Process> active,
       {String? workDir, Map<String, String>? env, void Function(String line)? onLine,
-      bool Function()? cancelCheck}) async {
+      bool Function()? cancelCheck, Duration timeout = const Duration(minutes: 120)}) async {
     final fullEnv = env != null ? {...Platform.environment, ...env} : null;
     Process? proc;
     final sb = StringBuffer();
@@ -689,12 +662,7 @@ class AudioExtractorEngine {
     if (proc == null) return 'launch failed';
     active.add(proc);
     // 子進程設為 BelowNormal：讓「播放影片/遊戲」等前景程式優先，避免卡頓
-    try {
-      Process.start('powershell', [
-        '-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden',
-        '-Command', "(Get-Process -Id ${proc.pid}).PriorityClass='BelowNormal'"
-      ], runInShell: false).ignore();
-    } catch (_) {}
+    _setBelowNormal(proc.pid);
     // 排空 stdout（deepFilter 進度行走 stdout，不排會 pipe 塞滿死鎖）
     proc.stdout.drain<void>();
     proc.stderr.transform(const Utf8Decoder(allowMalformed: true)).listen((chunk) {
@@ -710,13 +678,21 @@ class AudioExtractorEngine {
       }
     });
     try {
-      // 持續檢查取消（250ms），取消立即整棵殺掉
+      // 持續檢查取消（250ms），取消立即整棵殺掉。
+      // 總超時：ffmpeg hang 住時不可無限等（舊寫法的 on TimeoutException
+      // 是死碼——250ms 輪詢永遠回 -1 從不拋）。
+      final start = DateTime.now();
       int code;
       while (true) {
         if (cancelCheck != null && cancelCheck()) {
           await _killTree(proc.pid);
           try { active.remove(proc); } catch (_) {}
           return 'cancelled';
+        }
+        if (DateTime.now().difference(start) > timeout) {
+          await _killTree(proc.pid);
+          try { active.remove(proc); } catch (_) {}
+          return 'timeout (killed)';
         }
         code = await proc.exitCode.timeout(const Duration(milliseconds: 250), onTimeout: () => -1);
         if (code != -1) break;

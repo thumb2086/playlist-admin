@@ -13,17 +13,21 @@ class ConfigService extends ChangeNotifier {
 
   String get _appDataDir => AppDataDir.dir;
 
+  /// 平台路徑拼接：舊寫法硬編碼 \\，Android/iOS 會變成檔名含反斜線。
+  static String _join(String a, String b) =>
+      a.endsWith(Platform.pathSeparator) ? '$a$b' : '$a${Platform.pathSeparator}$b';
+
   Future<void> load() async {
     await AppDataDir.ensureMigrated();
     final localDir = Directory(_appDataDir);
-    final localFile = File('${localDir.path}\\config.json');
+    final localFile = File(_join(localDir.path, 'config.json'));
 
     if (await localFile.exists()) {
       try {
         final data = jsonDecode(await localFile.readAsString()) as Map<String, dynamic>;
         final basePath = data['base_path'] as String?;
         if (basePath != null && basePath.isNotEmpty) {
-          final mainFile = File('$basePath\\config.json');
+          final mainFile = File(_join(basePath, 'config.json'));
           if (await mainFile.exists()) {
             _configPath = mainFile.path;
             config = AppConfig.fromJson(jsonDecode(await mainFile.readAsString()) as Map<String, dynamic>);
@@ -55,12 +59,12 @@ class ConfigService extends ChangeNotifier {
       savePath = _configPath!;
     } else if (basePath.isNotEmpty) {
       await Directory(basePath).create(recursive: true);
-      savePath = '$basePath\\config.json';
+      savePath = _join(basePath, 'config.json');
       _configPath = savePath;
 
       final pointerDir = Directory(_appDataDir);
       await pointerDir.create(recursive: true);
-      final pointerFile = File('${pointerDir.path}\\config.json');
+      final pointerFile = File(_join(pointerDir.path, 'config.json'));
       await pointerFile.writeAsString(jsonEncode({
         'base_path': basePath,
         'language': cfg.language,

@@ -72,10 +72,16 @@ class VersionChecker {
       http.Response? resp;
       // Retry up to 3 times on rate limit (429) or server errors (5xx).
       for (int attempt = 0; attempt < 3; attempt++) {
-        resp = await http.get(
-          Uri.parse(_apiUrl),
-          headers: headers,
-        );
+        try {
+          resp = await http.get(
+            Uri.parse(_apiUrl),
+            headers: headers,
+          ).timeout(const Duration(seconds: 15));
+        } on TimeoutException {
+          // 逾時當 transient：等一下重試（啟動檢查不可永久卡死）。
+          await Future.delayed(Duration(seconds: 2 * (attempt + 1)));
+          continue;
+        }
         if (resp.statusCode == 200) break;
         if (resp.statusCode == 429 || resp.statusCode >= 500) {
           await Future.delayed(Duration(seconds: 2 * (attempt + 1)));
@@ -116,44 +122,44 @@ class VersionChecker {
   }
 
   /// Download update to temp path, reporting progress 0.0~1.0.
+  /// 總超時 + 200MB 上限（寫入中也檢查，chunked 可繞過 contentLength）。
   static Future<String?> downloadUpdate(String url, {void Function(double)? onProgress}) async {
+    const cap = 200 * 1024 * 1024;
+    final client = http.Client();
     try {
-      final client = http.Client();
       final request = http.Request('GET', Uri.parse(url));
-      final response = await client.send(request);
+      final response = await client.send(request).timeout(const Duration(seconds: 30));
       if (response.statusCode != 200) return null;
 
       final total = response.contentLength ?? -1;
-      if (total > 200 * 1024 * 1024) return null; // 200MB 上限防呆
-      final completer = Completer<String?>();
+      if (total > cap) return null; // 200MB 上限防呆
       final tmp = '${Directory.systemTemp.path}\\PlaylistAdmin_Setup_${DateTime.now().microsecondsSinceEpoch}.exe';
       final sink = File(tmp).openWrite();
       int written = 0;
-      response.stream.listen(
-        (chunk) {
-          sink.add(chunk);
+      try {
+        await for (final chunk in response.stream.timeout(const Duration(seconds: 60))) {
           written += chunk.length;
+          if (written > cap) throw Exception('超過 200MB 上限，中止下載');
+          sink.add(chunk);
           if (total > 0) onProgress?.call(written / total);
-        },
-        onDone: () {
-          sink.flush().then((_) => sink.close()).then((_) {
-            if (written > 0 && (total < 0 || written >= total)) {
-              completer.complete(tmp);
-            } else {
-              try { File(tmp).deleteSync(); } catch (_) {}
-              completer.complete(null);
-            }
-          });
-        },
-        onError: (e) {
-          try { sink.close(); File(tmp).deleteSync(); } catch (_) {}
-          completer.complete(null);
-        },
-        cancelOnError: false,
-      );
-      return await completer.future;
+        }
+        await sink.flush();
+        await sink.close();
+      } catch (_) {
+        try { await sink.close(); } catch (_) {}
+        try { await File(tmp).delete(); } catch (_) {}
+        return null;
+      }
+      // 截斷檔（比宣告短）不可回傳，否則使用者裝到壞掉的 installer。
+      if (written <= 0 || (total > 0 && written < total)) {
+        try { await File(tmp).delete(); } catch (_) {}
+        return null;
+      }
+      return tmp;
     } catch (_) {
       return null;
+    } finally {
+      client.close();
     }
   }
 }

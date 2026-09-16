@@ -36,7 +36,9 @@ def embed_one(model: str, text: str) -> list[float]:
 
 
 def normalize(text: str) -> str:
-    return re.sub(r"\s+", "", text)
+    # 與 build_db.split_sentences 同規則（單空格），否則 chunk offset 對不上。
+    # 注意：此規則變更前的舊 chunks 是無空白版，offset 可能為 -1（僅顯示用，不影響檢索）。
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def locate_chunk(full_norm: str, chunk: str, window: int = 100) -> int:
@@ -64,8 +66,9 @@ def pick_chat_models() -> list[str]:
     return [*local, *cloud]
 
 
-def generate_answer(question: str, hits: list[dict]) -> str:
-    """用 Ollama 生成基於檢索片段的回答；全部模型都失敗就回傳錯誤訊息"""
+def generate_answer(question: str, hits: list[dict], quiet: bool = False) -> str:
+    """用 Ollama 生成基於檢索片段的回答；全部模型都失敗就回傳錯誤訊息。
+    quiet=True 時不印 token（--json 模式：stdout 只能有 JSON，否則解析失敗）。"""
     context = "\n".join(
         f"[{h['show']} | {h['date']} | {h['file']}]\n{h['chunk']}"
         for h in hits
@@ -101,10 +104,12 @@ def generate_answer(question: str, hits: list[dict]) -> str:
                     token = chunk.get("message", {}).get("content", "")
                     if token:
                         answer.append(token)
-                        print(token, end="", flush=True)
+                        if not quiet:
+                            print(token, end="", flush=True)
                 except json.JSONDecodeError:
                     pass
-            print()  # 換行
+            if not quiet:
+                print()  # 換行
             return "".join(answer).strip()
         except requests.RequestException as e:
             errors.append(f"{model}: {e}")
@@ -139,9 +144,10 @@ def main() -> None:
     res = col.query(query_embeddings=[qvec], n_results=fetch_n)
 
     raw_hits = []
-    for doc, meta, dist in zip(
-        res["documents"][0], res["metadatas"][0], res["distances"][0]
-    ):
+    docs = res["documents"][0] if res.get("documents") else []
+    metas = res["metadatas"][0] if res.get("metadatas") else []
+    dists = res["distances"][0] if res.get("distances") else []
+    for doc, meta, dist in zip(docs, metas, dists):
         if args.show and args.show not in meta.get("show", ""):
             continue
         raw_hits.append({
@@ -181,20 +187,32 @@ def main() -> None:
             ],
         }
         if not args.no_full and e["path"]:
-            full = read_text_file(Path(e["path"]))
-            full_norm = normalize(full)
-            entry["full_text"] = full
-            entry["full_text_norm_len"] = len(full_norm)
-            entry["offsets"] = [
-                locate_chunk(full_norm, h["chunk"]) for h in e["hits"]
-            ]
+            # 檔案被搬走/刪除時跳過全文（舊寫法直接拋 FileNotFoundError 整個查詢崩潰）。
+            # 缺檔也要寫固定鍵：下游取 full_text/offsets 不可 KeyError。
+            try:
+                full = read_text_file(Path(e["path"]))
+            except (OSError, FileNotFoundError):
+                full = ""
+            if full:
+                full_norm = normalize(full)
+                entry["full_text"] = full
+                entry["full_text_norm_len"] = len(full_norm)
+                entry["offsets"] = [
+                    locate_chunk(full_norm, h["chunk"]) for h in e["hits"]
+                ]
+            else:
+                entry["full_text"] = ""
+                entry["full_text_norm_len"] = 0
+                entry["offsets"] = []
         results.append(entry)
 
     if args.json:
         payload = {"question": args.question, "results": results}
         if args.answer:
             try:
-                payload["answer"] = generate_answer(args.question, raw_hits[: max(args.topk_answer, 3)])
+                payload["answer"] = generate_answer(
+                    args.question, raw_hits[: max(args.topk_answer, 3)], quiet=True
+                )
             except Exception as e:
                 payload["answer_error"] = f"(Ollama 生成失敗: {e})"
         out = json.dumps(payload, ensure_ascii=False, indent=2)

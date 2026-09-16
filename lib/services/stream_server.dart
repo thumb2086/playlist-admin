@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'package:flutter/foundation.dart';
 import 'config_service.dart';
 import 'youtube_service.dart';
 
@@ -84,19 +83,27 @@ class StreamServer {
   }
 
   /// Search cache\stream\ for a file matching the query name.
+  /// stem 全等比對：前綴 contains 會讓 EP10 命中 EP100.mp3 播錯集。
   String? findCached(String query) {
     final dir = Directory(_cacheDir);
     if (!dir.existsSync()) return null;
-    final lower = query.toLowerCase();
-    final prefix = lower.substring(0, lower.length.clamp(0, 20));
+    final stem = _stemOf(query);
+    if (stem.isEmpty) return null;
     for (final f in dir.listSync().whereType<File>()) {
       if (f.path.endsWith('.mp3') && f.lengthSync() > 65536) {
         final name = f.path.split(Platform.pathSeparator).last.toLowerCase();
-        if (name.contains(prefix)) return f.path;
+        final nameStem = name.replaceAll(RegExp(r'\.\w+$'), '');
+        if (nameStem == stem) return f.path;
       }
     }
     return null;
   }
+
+  static String _stemOf(String query) => query
+      .replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim()
+      .toLowerCase();
 
   Future<void> _handle(HttpRequest request) async {
     final path = request.uri.pathSegments;
@@ -150,17 +157,20 @@ class StreamServer {
     await cacheDir.create(recursive: true);
 
     final safeName = query.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').replaceAll(RegExp(r'\s+'), ' ').trim();
-    // Check cache first.
-    final prefix = safeName.substring(0, safeName.length.clamp(0, 20)).toLowerCase();
-    for (final f in cacheDir.listSync().whereType<File>()) {
-      final name = f.path.split(Platform.pathSeparator).last.toLowerCase();
-      if (name.contains(prefix) && f.path.endsWith('.mp3') && f.lengthSync() > 65536) {
-        return f.path;
+    // 全等比對（見 findCached）：前綴 contains 會播錯集。
+    final wantStem = safeName.toLowerCase();
+    if (wantStem.isNotEmpty) {
+      for (final f in cacheDir.listSync().whereType<File>()) {
+        final name = f.path.split(Platform.pathSeparator).last.toLowerCase();
+        if (name.replaceAll(RegExp(r'\.\w+$'), '') == wantStem &&
+            f.path.endsWith('.mp3') && f.lengthSync() > 65536) {
+          return f.path;
+        }
       }
     }
 
-    _activeProc?.kill();
-    _activeProc = null;
+    // 不跨請求 kill：每請求獨立 tmp，併發同 query 各下各的。
+    // （stopActive 照樣能停掉「最新」那個。）
 
     try {
       // 1. Resolve audio URL via YoutubeService (native).
@@ -171,14 +181,16 @@ class StreamServer {
       }
 
       // 2. Download + convert to mp3 via ffmpeg.
-      final outBase = '${cacheDir.path}\\dl_${safeName.hashCode.toRadixString(16)}';
-      final mp3Path = '$outBase.mp3';
+      // 先寫 .part、成功才改名：失敗殘檔不可被下次當命中。
+      // tmp 每請求唯一（micros），併發同 query 不互蓋。
+      final outBase = '${cacheDir.path}\\dl_${safeName.hashCode.toRadixString(16)}_${DateTime.now().microsecondsSinceEpoch}';
+      final partPath = '$outBase.part.mp3';
       final ffmpeg = ConfigService.instance.config.resolvedFfmpegPath;
 
       final proc = await Process.start(
         ffmpeg,
-        ['-y', '-i', url, '-vn', '-acodec', 'libmp3lame', '-q:a', '0', '-ac', '2', mp3Path],
-        runInShell: true,
+        ['-y', '-i', url, '-vn', '-acodec', 'libmp3lame', '-q:a', '0', '-ac', '2', partPath],
+        runInShell: false,
       );
       _activeProc = proc;
 
@@ -188,13 +200,16 @@ class StreamServer {
       );
       _activeProc = null;
 
-      if (code == 0 && File(mp3Path).existsSync()) {
+      if (code == 0 && File(partPath).existsSync()) {
         final finalPath = '${cacheDir.path}\\$safeName.mp3';
-        if (mp3Path != finalPath) await File(mp3Path).rename(finalPath);
+        // Windows rename 不覆蓋：legacy 截斷殘檔先刪，否則拋錯整筆失敗。
+        try { if (await File(finalPath).exists()) await File(finalPath).delete(); } catch (_) {}
+        if (partPath != finalPath) await File(partPath).rename(finalPath);
         _cacheIndex[query] = finalPath;
         _saveIndex();
         return finalPath;
       }
+      try { if (await File(partPath).exists()) await File(partPath).delete(); } catch (_) {}
       print('[StreamServer] ffmpeg failed (exit $code) for: $query');
       return '';
     } catch (e) {
@@ -239,18 +254,30 @@ class StreamServer {
     request.response.headers.contentType = ContentType('audio', 'mpeg');
     request.response.headers.set('Cache-Control', 'no-store');
 
-    await request.response.addStream(ff.stdout.transform(
-        StreamTransformer.fromHandlers(
-            handleData: (data, sink) { cacheSink?.add(data); sink.add(data); },
-            handleError: (e, st, sink) {},
-            handleDone: (sink) => sink.close())));
-    await request.response.close();
+    // 只有 ffmpeg exit 0 才入庫：客戶端中途斷線的截斷檔不可進 cache，
+    // 否則 >65KB 照樣被當命中。失敗殘檔直接刪。
+    int ffCode = -1;
+    try {
+      await request.response.addStream(ff.stdout.transform(
+          StreamTransformer.fromHandlers(
+              handleData: (data, sink) { cacheSink?.add(data); sink.add(data); },
+              handleError: (e, st, sink) {},
+              handleDone: (sink) => sink.close())));
+      await request.response.close();
+      ffCode = await ff.exitCode;
+    } catch (_) {
+      try { ff.kill(); } catch (_) {}
+      try { await request.response.close(); } catch (_) {}
+    }
     await cacheSink?.close();
 
-    if (cacheEnabled && cacheFile != null && cacheFile.existsSync() && cacheFile.lengthSync() > 65536) {
+    if (cacheEnabled && cacheFile != null && ffCode == 0 &&
+        cacheFile.existsSync() && cacheFile.lengthSync() > 65536) {
       _cacheIndex[query] = cacheFile.path;
       _saveIndex();
       _enforceCacheLimit();
+    } else if (cacheFile != null) {
+      try { if (await cacheFile.exists()) await cacheFile.delete(); } catch (_) {}
     }
   }
 

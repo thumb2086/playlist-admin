@@ -53,7 +53,8 @@ class DiscordRpcService {
     if (_enabled && clientId.isNotEmpty) {
       try {
         _client = Client(clientId: clientId);
-        await _client!.connect();
+        // Discord 沒開時 connect 會 hang 住 UI：15s timeout。
+        await _client!.connect().timeout(const Duration(seconds: 15));
         _connected = true;
         LogManager.instance.info('DiscordRPC connected');
         if (onReady != null) onReady();
@@ -105,7 +106,7 @@ class DiscordRpcService {
       return;
     }
     try {
-      await _client!.setActivity(activity);
+      await _client!.setActivity(activity).timeout(const Duration(seconds: 10));
       LogManager.instance.info('DiscordRPC activity pushed: $title - $artist');
     } catch (e) {
       LogManager.instance.error('DiscordRPC setActivity FAILED: $e');

@@ -112,6 +112,8 @@ Future<String?> _resolveSong(AppConfig cfg, String query) async {
   if (direct.existsSync()) return direct.absolute.path;
   if (File('$q.mp3').existsSync()) return File('$q.mp3').absolute.path;
   final lib = cfg.libraryPath;
+  // 庫路徑不存在時 list() 直接拋 FileSystemException：先檢查。
+  if (lib.isEmpty || !await Directory(lib).exists()) return null;
   final lower = q.toLowerCase();
   await for (final e in Directory(lib).list(recursive: true, followLinks: false)) {
     if (e is File) {

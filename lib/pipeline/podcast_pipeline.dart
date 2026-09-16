@@ -50,9 +50,9 @@ class PodcastPipeline {
       return;
     }
 
-    final _stamp = DateTime.now().toString().substring(0, 19);
-    final _ver = appVersion.startsWith('v') ? appVersion : 'v$appVersion';
-    onLog('$_stamp  playlist-admin $_ver');
+    final stamp = DateTime.now().toString().substring(0, 19);
+    final ver = appVersion.startsWith('v') ? appVersion : 'v$appVersion';
+    onLog('$stamp  playlist-admin $ver');
 
     await GroqService.instance.loadFromEnv();
     // Also load from config if env didn't provide
@@ -115,7 +115,7 @@ class PodcastPipeline {
       String podcastName, String rssUrl, bool hasGroq, int stepIndex) async {
     final cache = await _loadCacheAsync();
     final podDir = PodcastService.instance.podcastDir(podcastName);
-    final ext = 'mp3';
+    const ext = 'mp3';
 
     // ── Cache validation: purge stale entries ─────────────────────
     // If cache says txt/srt=true but the file doesn't exist on disk,
@@ -244,7 +244,7 @@ class PodcastPipeline {
     await _saveCacheAsync(cache);
 
     if (tasks.isEmpty) {
-      onLog('  無新集數 (${alreadyHave} 集已處理過)');
+      onLog('  無新集數 ($alreadyHave 集已處理過)');
       return;
     }
     onLog('  需處理: ${tasks.length} 集 (×4 並行)');
@@ -253,15 +253,16 @@ class PodcastPipeline {
     int groqActive = 0;
     final groqLimit = ConfigService.instance.config.groqConcurrency.clamp(1, 8);
 
-    Future<void> _tryGroq() async {
+    Future<void> tryGroq() async {
       while (groqActive < groqLimit && groqQueue.isNotEmpty && !state.isCancelled) {
         final t = groqQueue.removeAt(0);
         groqActive++;
-        // fire and forget: continue processing queue while this runs
-        unawaited(_runGroq(t, podcastName, podDir, ext, cache, onLog, state).then((_) {
+        // fire and forget: continue processing queue while this runs.
+        // whenComplete 保證 throw 路徑也扣回計數，否則底部 while 轉不停。
+        unawaited(_runGroq(t, podcastName, podDir, ext, cache, onLog, state).whenComplete(() {
           groqActive--;
           _saveCacheAsync(cache);
-          _tryGroq(); // kick next
+          tryGroq(); // kick next
         }));
       }
     }
@@ -285,7 +286,7 @@ class PodcastPipeline {
             groqQueue.add(batch[j]);
           }
         }
-        _tryGroq();
+        tryGroq();
       }
 
       final done = (i + batch.length).clamp(0, total);
@@ -379,7 +380,9 @@ class PodcastPipeline {
 
   static int _commonPrefixLen(String a, String b) {
     int i = 0;
-    while (i < a.length && i < b.length && a[i] == b[i]) i++;
+    while (i < a.length && i < b.length && a[i] == b[i]) {
+      i++;
+    }
     return i;
   }
 
@@ -478,7 +481,8 @@ class PodcastPipeline {
     if (state.isCancelled) return false;
     // Stagger only real YT searches (0~1.2s) to avoid rate limit,
     // never delay episodes that skip instantly.
-    await Future.delayed(Duration(milliseconds: (t.index % 4) * 300));
+    // 用 title hash 而非全域 t.index：過濾後的 tasks 常同餘，會同時打 YT。
+    await Future.delayed(Duration(milliseconds: (t.episode.title.hashCode % 4).abs() * 300));
     final subResult = await PodcastService.instance.downloadSubtitles(t.episode.title, podcastName,
       onLog: (msg) => onLog('      $msg'),
     );

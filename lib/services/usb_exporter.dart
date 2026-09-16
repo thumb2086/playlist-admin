@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'config_service.dart';
 
@@ -22,6 +23,16 @@ class UsbExporter {
     final cfg = ConfigService.instance.config;
     final exportPath = targetDir ?? cfg.exportPath;
     final libraryPath = cfg.libraryPath;
+
+    // 防呆：exportPath 誤設會刪光使用者資料（recursive delete 不可逆）。
+    final norm = exportPath.replaceAll('/', '\\').toLowerCase();
+    bool sameAs(String p) => p.isNotEmpty && p.replaceAll('/', '\\').toLowerCase() == norm;
+    final isRoot = RegExp(r'^[a-z]:\\?$').hasMatch(norm);
+    if (exportPath.trim().isEmpty || isRoot ||
+        sameAs(libraryPath) || sameAs(cfg.basePath) || sameAs(cfg.playlistsPath)) {
+      log('  ❌ 匯出路徑不合法（空白/磁碟根目錄/與音樂庫相同），拒絕執行: $exportPath');
+      throw Exception('匯出路徑不合法: $exportPath');
+    }
 
     // Clean and recreate export dir
     final exportDir = Directory(exportPath);
@@ -63,24 +74,33 @@ class UsbExporter {
             continue;
           }
 
-          // Handle quality conversion
+          // Handle quality conversion (temp 放 systemTemp，crash 不殘留匯出目錄)
           String finalSrc = src;
+          String? tmpConverted;
           if (quality == 'mp3' || quality == 'flac') {
             final srcExt = src.toLowerCase().split('.').last;
             if (srcExt != quality) {
               final stem = File(src).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '');
-              final convertedPath = '$exportPath\\temp_${stem}_$plName.$quality';
+              tmpConverted = '${Directory.systemTemp.path}\\usb_exp_${stem.hashCode.toRadixString(16)}_${plTotal}_$total.$quality';
               final cmd = <String>[
                 'ffmpeg', '-y', '-i', src,
                 if (quality == 'mp3') ...['-codec:a', 'libmp3lame', '-qscale:a', '0'],
                 if (quality == 'flac') ...['-codec:a', 'flac'],
-                convertedPath,
+                tmpConverted,
               ];
-              final r = await Process.run(cmd[0], cmd.sublist(1), runInShell: true);
-              if (r.exitCode == 0) {
-                finalSrc = convertedPath;
-              } else {
-                log('  ⚠️ 轉換失敗，使用原始檔案: ${File(src).uri.pathSegments.last}');
+              try {
+                // runInShell:false：路徑含空格/& 不會被拆錯；單檔 300s timeout。
+                final r = await Process.run(cmd[0], cmd.sublist(1), runInShell: false)
+                    .timeout(const Duration(seconds: 300));
+                if (r.exitCode == 0) {
+                  finalSrc = tmpConverted;
+                } else {
+                  log('  ⚠️ 轉換失敗，使用原始檔案: ${File(src).uri.pathSegments.last}');
+                }
+              } on TimeoutException {
+                log('  ⚠️ 轉換逾時，使用原始檔案: ${File(src).uri.pathSegments.last}');
+              } catch (e) {
+                log('  ⚠️ 轉換異常，使用原始檔案: ${File(src).uri.pathSegments.last} ($e)');
               }
             }
           }
@@ -97,8 +117,8 @@ class UsbExporter {
           }
 
           // Clean temp file
-          if (finalSrc != src && await File(finalSrc).exists()) {
-            await File(finalSrc).delete();
+          if (tmpConverted != null) {
+            try { if (await File(tmpConverted).exists()) await File(tmpConverted).delete(); } catch (_) {}
           }
         }
 

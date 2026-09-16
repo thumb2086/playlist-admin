@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:http/http.dart' as http;
@@ -9,7 +8,6 @@ import '../services/config_service.dart';
 import '../services/spotify_session.dart';
 import '../services/spotify_gql_client.dart';
 import '../services/player_controller.dart';
-import '../services/playback_history.dart';
 import '../widgets/dark_theme.dart';
 import '../widgets/spotify_login_dialog.dart';
 import 'playlist_detail_page.dart';
@@ -110,12 +108,14 @@ class _HomePageState extends State<HomePage> {
       if (results[2] != null) {
         browse.addAll(_parseBrowse(results[2]!));
       }
-      if (mounted) setState(() {
+      if (mounted) {
+        setState(() {
         _sections = sections;
         _newReleases = releases;
         _browse = browse;
         _loading = false;
       });
+      }
     } catch (e) {
       if (mounted) setState(() { _loading = false; _error = '$e'; });
     }
@@ -124,7 +124,9 @@ class _HomePageState extends State<HomePage> {
   Future<Map<String, dynamic>?> _safeLoad(
       Future<Map<String, dynamic>> Function() fn) async {
     try {
-      return await fn();
+      // 401→refreshToken 內三段無外層 timeout，最壞單路 ~65s：
+      // 這裡 25s 封頂，逾時當空態（已有三路容錯，不卡死）。
+      return await fn().timeout(const Duration(seconds: 25));
     } catch (_) {
       return null;
     }
@@ -229,7 +231,7 @@ class _HomePageState extends State<HomePage> {
         else if (_error.isNotEmpty)
           Expanded(child: Center(child: Text('載入失敗: $_error', style: const TextStyle(color: AppColors.error))))
         else if (_sections.isEmpty && _newReleases.isEmpty && _browse.isEmpty)
-          Expanded(child: Center(child: Text('沒有可顯示的內容', style: const TextStyle(color: AppColors.textMuted))))
+          const Expanded(child: Center(child: Text('沒有可顯示的內容', style: TextStyle(color: AppColors.textMuted))))
         else
           Expanded(
             child: RefreshIndicator(
@@ -449,8 +451,10 @@ class _HomePageState extends State<HomePage> {
         return;
       }
       // Both playlist and RSS failed — show error.
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('歌單載入失敗')));
+      }
 
     } else if (uri.contains(':show:')) {
       final episodes = await _fetchPodcastEpisodes(c.name);
@@ -460,7 +464,7 @@ class _HomePageState extends State<HomePage> {
         ));
       } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('\ - 未訂閱此 Podcast，請在 Download 頁加入')));
+            const SnackBar(content: Text(' - 未訂閱此 Podcast，請在 Download 頁加入')));
       }
 
     } else if (uri.contains(':episode:')) {
@@ -532,32 +536,16 @@ class _HomePageState extends State<HomePage> {
         }
       } catch (e) { print('[HOME] quickPlay err: $e'); }
       // Playlist fetch failed — don't stream the playlist name.
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('歌單載入失敗')));
+      }
     } else if (uri.contains(':show:')) {
       PlayerController.instance.playPodcastShow(c.name);
     } else {
       // Episode / Album / Artist / Unknown — stream.
       PlayerController.instance.play(c.name, title: c.name);
     }
-  }
-
-  /// Find audio files in podcasts/ matching the show name, newest first.
-  static List<File> _findLocalEpisodes(String showName) {
-    final cfg = ConfigService.instance.config;
-    final podcastDir = Directory(cfg.podcastsPath);
-    if (!podcastDir.existsSync()) return [];
-    final lower = showName.toLowerCase();
-    final results = <File>[];
-    for (final d in podcastDir.listSync().whereType<Directory>()) {
-      if (d.uri.pathSegments.last.toLowerCase().contains(lower.substring(0, lower.length.clamp(0, 15)))) {
-        final audioFiles = d.listSync().whereType<File>().where((f) =>
-            f.path.endsWith('.mp3') || f.path.endsWith('.m4a') || f.path.endsWith('.wav')).toList()
-          ..sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
-        results.addAll(audioFiles);
-      }
-    }
-    return results;
   }
 
   List<SpotifyTrackItem> _extractPlaylistTracks(Map<String, dynamic> data) {
@@ -635,59 +623,4 @@ class _HomeCard {
   final String subtitle;
   final String? coverUrl;
   _HomeCard({required this.uri, required this.name, this.subtitle = '', this.coverUrl});
-}
-
-/// Bottom sheet listing a playlist's tracks with play buttons.
-class _PlaylistSheet extends StatelessWidget {
-  final String name;
-  final List<SpotifyTrackItem> tracks;
-  const _PlaylistSheet({required this.name, required this.tracks});
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: 480,
-      child: Column(children: [
-        Padding(
-          padding: const EdgeInsets.all(14),
-          child: Text(name, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
-        ),
-        Expanded(
-          child: ListView.builder(
-            itemCount: tracks.length,
-            itemBuilder: (ctx, i) {
-              final t = tracks[i];
-              return ListTile(
-                dense: true,
-                leading: ClipRRect(
-                  borderRadius: BorderRadius.circular(4),
-                  child: t.coverUrl != null
-                      ? CachedNetworkImage(imageUrl: t.coverUrl!, width: 36, height: 36, fit: BoxFit.cover,
-                          placeholder: (_, __) => Container(width: 36, height: 36, color: AppColors.surfaceLight),
-                          errorWidget: (_, __, ___) => Container(
-                              width: 36, height: 36, color: AppColors.surfaceLight,
-                              child: const Icon(Icons.music_note_rounded, size: 16, color: AppColors.textMuted)))
-                      : Container(width: 36, height: 36, color: AppColors.surfaceLight,
-                          child: const Icon(Icons.music_note_rounded, size: 16, color: AppColors.textMuted)),
-                ),
-                title: Text(t.name, maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12)),
-                subtitle: Text(t.artists.join(', '), maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 10, color: AppColors.textMuted)),
-                trailing: IconButton(
-                  icon: const Icon(Icons.play_arrow_rounded, color: AppColors.accent, size: 20),
-                  onPressed: () => _streamTrack(context, t),
-                ),
-              );
-            },
-          ),
-        ),
-      ]),
-    );
-  }
-
-  void _streamTrack(BuildContext context, SpotifyTrackItem t) {
-    Navigator.of(context).pop();
-    PlayerController.instance.play(t.displayName, title: t.name, artist: t.artists.join(', '));
-  }
 }

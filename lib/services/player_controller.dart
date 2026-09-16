@@ -1,8 +1,6 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
 import 'package:media_kit/media_kit.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -13,7 +11,6 @@ import '../services/smtc_service.dart';
 import '../services/playback_history.dart';
 import '../services/metadata_reader.dart';
 import '../services/jam_service.dart';
-import '../services/youtube_service.dart';
 
 /// Central playback controller: owns the MediaKit Player, queue, and all state.
 /// Used by both PlayerBar (bottom bar) and the queue drawer / PlayerPage.
@@ -47,8 +44,21 @@ class PlayerController {
   final List<PlaylistItem> _queueItems = [];
   // Playback history scrobble state.
   String _recordedSongKey = '';
-  // Cover art memory cache (path → bytes).
+  // Cover art memory cache (path → bytes). LRU capped: unbounded growth
+  // eats RAM the longer the app plays.
   final Map<String, Uint8List?> _artworkCache = {};
+  static const int _artworkCacheMax = 50;
+  void _artworkPut(String path, Uint8List? bytes) {
+    _artworkCache.remove(path);
+    _artworkCache[path] = bytes;
+    while (_artworkCache.length > _artworkCacheMax) {
+      _artworkCache.remove(_artworkCache.keys.first);
+    }
+  }
+
+  // media_kit stream subscriptions: must cancel in dispose.
+  final List<StreamSubscription> _playerSubs = [];
+  DateTime _lastPositionNotify = DateTime.fromMillisecondsSinceEpoch(0);
 
   // Getters
   Player get player => _player;
@@ -103,7 +113,7 @@ class PlayerController {
   void init() {
     _volume = ConfigService.instance.config.volume.clamp(0.0, 1.0);
     _player.setVolume(_volume);
-    _player.stream.completed.listen((_) {
+    _playerSubs.add(_player.stream.completed.listen((_) {
       if (jamFollowMode) return;
       if (_loop || _shuffle) {
         next();
@@ -111,16 +121,20 @@ class PlayerController {
         _isPlaying = false;
         _notify();
       }
-    });
-    _player.stream.position.listen((p) {
+    }));
+    _playerSubs.add(_player.stream.position.listen((p) {
       _position = p;
       _checkPlaybackRecord(p);
+      // position 每秒更新數十次：節流 notify，否則整頁高頻 rebuild。
+      final now = DateTime.now();
+      if (now.difference(_lastPositionNotify).inMilliseconds < 500) return;
+      _lastPositionNotify = now;
       _notify();
-    });
-    _player.stream.duration.listen((d) {
+    }));
+    _playerSubs.add(_player.stream.duration.listen((d) {
       _duration = d;
       _notify();
-    });
+    }));
     // Attach SMTC: media buttons → PlayerController.
     SmtcService.instance.attach(
       onPlayPause: togglePlay,
@@ -162,7 +176,7 @@ class PlayerController {
     _artist = artist ?? '';
     _coverPath = coverUrl;
     _recordedSongKey = '';
-    _statusText = '下載中: ${_title}';
+    _statusText = '下載中: $_title';
     _isPlaying = false;
     _notify();
     try {
@@ -197,7 +211,7 @@ class PlayerController {
       return;
     }
     // Check music library for matching file.
-    final local = _findLocalTrack(pathOrQuery);
+    final local = await _findLocalTrack(pathOrQuery);
     if (local != null) {
       await playFile(local, title: title, artist: artist, coverUrl: coverUrl);
       return;
@@ -240,7 +254,7 @@ class PlayerController {
       final ep = episodes.first;
       _title = ep['title'] ?? showName;
       _artist = showName;
-      _statusText = '播放: ${_title}';
+      _statusText = '播放: $_title';
       _notify();
       await _player.open(Media(ep['url']!));
       _isPlaying = true;
@@ -301,7 +315,7 @@ class PlayerController {
     }
 
     // 3. Check local music library.
-    final local = _findLocalTrack(item.audioQuery);
+    final local = await _findLocalTrack(item.audioQuery);
     if (local != null) {
       await playFile(local, title: item.name, artist: item.artist, coverUrl: item.coverUrl);
       return;
@@ -311,32 +325,70 @@ class PlayerController {
     await playStream(item.audioQuery, title: item.name, artist: item.artist, isrc: item.isrc, coverUrl: item.coverUrl);
   }
 
-  String? _findLocalTrack(String query) {
-    final cfg = ConfigService.instance.config;
-    final musicDir = Directory(cfg.musicPath);
-    if (!musicDir.existsSync()) return null;
-    final lower = query.toLowerCase();
-    for (final f in musicDir.listSync().whereType<File>()) {
-      if (f.path.endsWith('.mp3')) {
-        final stem = f.uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '').toLowerCase();
-        if (stem == lower || stem.contains(lower) || lower.contains(stem)) {
-          return f.path;
+  // 播放路徑 stem 索引：30 秒 TTL。原本每次點播都 listSync 全目錄凍 UI。
+  Map<String, String> _localStemIndex = {};
+  DateTime _localStemAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  Future<String?> _findLocalTrack(String query) async {
+    final now = DateTime.now();
+    if (now.difference(_localStemAt).inSeconds > 30 || _localStemIndex.isEmpty) {
+      final idx = <String, String>{};
+      try {
+        final musicDir = Directory(ConfigService.instance.config.musicPath);
+        if (await musicDir.exists()) {
+          await for (final f in musicDir.list()) {
+            if (f is File && f.path.endsWith('.mp3')) {
+              idx[File(f.path).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '').toLowerCase()] = f.path;
+            }
+          }
         }
-      }
+      } catch (_) {}
+      _localStemIndex = idx;
+      _localStemAt = now;
+    }
+    final lower = query.toLowerCase();
+    final hit = _localStemIndex[lower];
+    if (hit != null) return hit;
+    for (final e in _localStemIndex.entries) {
+      if (e.key.contains(lower) || lower.contains(e.key)) return e.value;
     }
     return null;
   }
 
   void _cacheRssAudio(PlaylistItem item) async {
     try {
-      final cacheDir = Directory('${ConfigService.instance.config.streamCachePath}');
+      final cacheDir = Directory(ConfigService.instance.config.streamCachePath);
       await cacheDir.create(recursive: true);
       final safeName = item.name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
       final outPath = '${cacheDir.path}\\$safeName.mp3';
-      if (File(outPath).existsSync()) return;
-      final resp = await http.get(Uri.parse(item.audioUrl!)).timeout(const Duration(seconds: 60));
-      if (resp.statusCode == 200) {
-        await File(outPath).writeAsBytes(resp.bodyBytes);
+      if (await File(outPath).exists()) return;
+      // 串流寫檔：整集 bodyBytes 進 RAM，大檔直接爆記憶體。
+      final client = http.Client();
+      try {
+        final req = http.Request('GET', Uri.parse(item.audioUrl!));
+        final resp = await client.send(req).timeout(const Duration(seconds: 60));
+        if (resp.statusCode != 200) return;
+        final total = resp.contentLength ?? -1;
+        final sink = File(outPath).openWrite();
+        int got = 0;
+        try {
+          await for (final chunk in resp.stream.timeout(const Duration(seconds: 60))) {
+            sink.add(chunk);
+            got += chunk.length;
+          }
+          await sink.flush();
+          await sink.close();
+        } catch (_) {
+          try { await sink.close(); } catch (_) {}
+          try { await File(outPath).delete(); } catch (_) {}
+          return;
+        }
+        // 提早斷流的截斷檔不可入庫（舊 http.get 會直接拋錯不寫檔）。
+        if (total > 0 && got < total) {
+          try { await File(outPath).delete(); } catch (_) {}
+        }
+      } finally {
+        client.close();
       }
     } catch (_) {}
   }
@@ -351,11 +403,14 @@ class PlayerController {
     // Only prefetch if not already cached locally.
     if (StreamServer.instance.findCached(nextQuery) != null) return;
     _prefetching = true;
-    StreamServer.instance.start().then((_) {
-      StreamServer.instance.resolveToFile(nextQuery).then((_) {
-        _prefetching = false;
-      }).catchError((_) { _prefetching = false; });
-    });
+    // timeout + 外層 catch 重置 flag：舊寫法失敗就卡死，預取永久停用。
+    StreamServer.instance.start()
+        .timeout(const Duration(seconds: 30))
+        .then((_) => StreamServer.instance
+            .resolveToFile(nextQuery)
+            .timeout(const Duration(minutes: 5)))
+        .then((_) { _prefetching = false; })
+        .catchError((_) { _prefetching = false; });
   }
 
   void setQueue(List<String> paths, {List<String>? titles, int startIndex = 0, List<PlaylistItem>? items}) {
@@ -404,16 +459,18 @@ class PlayerController {
     _notify();
   }
 
+  /// newIndex 語意：移除 oldIndex 之後的位置（配合 onReorderItem，
+  /// 舊 onReorder 往下拖會差一格）。
   void moveInQueue(int oldIndex, int newIndex) {
     if (oldIndex < 0 || oldIndex >= _queue.length) return;
-    if (newIndex < 0 || newIndex >= _queue.length) return;
+    if (newIndex < 0 || newIndex > _queue.length) return;
     final path = _queue.removeAt(oldIndex);
-    final title = _queueTitles.removeAt(oldIndex);
-    _queue.insert(newIndex, path);
-    _queueTitles.insert(newIndex, title);
+    final title = oldIndex < _queueTitles.length ? _queueTitles.removeAt(oldIndex) : '';
+    _queue.insert(newIndex.clamp(0, _queue.length), path);
+    _queueTitles.insert(newIndex.clamp(0, _queueTitles.length), title);
     if (oldIndex < _queueItems.length) {
       final item = _queueItems.removeAt(oldIndex);
-      _queueItems.insert(newIndex, item);
+      _queueItems.insert(newIndex.clamp(0, _queueItems.length), item);
     }
     if (_index == oldIndex) {
       _index = newIndex;
@@ -428,7 +485,7 @@ class PlayerController {
   void jumpTo(int index) {
     if (index < 0 || index >= _queue.length) return;
     _index = index;
-    if (index < _queueItems.length && _queueItems[index] != null) {
+    if (index < _queueItems.length) {
       playItem(_queueItems[index]);
     } else {
       play(_queue[index], title: _queueTitles[index]);
@@ -450,7 +507,7 @@ class PlayerController {
     } else {
       _index = (_index + 1) % _queue.length;
     }
-    if (_index < _queueItems.length && _queueItems[_index] != null) {
+    if (_index < _queueItems.length) {
       playItem(_queueItems[_index]);
     } else {
       play(_queue[_index], title: _queueTitles[_index]);
@@ -471,7 +528,7 @@ class PlayerController {
     } else {
       _index = (_index - 1 + _queue.length) % _queue.length;
     }
-    if (_index < _queueItems.length && _queueItems[_index] != null) {
+    if (_index < _queueItems.length) {
       playItem(_queueItems[_index]);
     } else {
       play(_queue[_index], title: _queueTitles[_index]);
@@ -617,10 +674,13 @@ class PlayerController {
   }
 
   /// Load embedded artwork from a local audio file in background.
+  /// 世代 guard：快速切歌時慢查詢回來不可覆蓋新歌封面。
+  int _artworkGen = 0;
   void _loadEmbeddedArtwork(String path) async {
+    final gen = ++_artworkGen;
     if (_artworkCache.containsKey(path)) {
       final cached = _artworkCache[path];
-      if (cached != null) {
+      if (cached != null && gen == _artworkGen) {
         _coverPath = 'mem:${path.hashCode}';
         _notify();
       }
@@ -628,7 +688,8 @@ class PlayerController {
     }
     try {
       final meta = await MetadataReader.read(path);
-      _artworkCache[path] = meta.artwork;
+      _artworkPut(path, meta.artwork);
+      if (gen != _artworkGen) return; // 已切歌：丟棄過期結果
       if (meta.artwork != null && meta.artwork!.isNotEmpty) {
         _coverPath = 'mem:${path.hashCode}';
         _notify();
@@ -638,10 +699,12 @@ class PlayerController {
   }
 
   /// Get cached artwork bytes (for PlayerBar to display).
-  Uint8List? getArtworkBytes() {
+  Uint8List? getArtworkBytes([String? forPath]) {
     final cp = _coverPath;
     if (cp == null || !cp.startsWith('mem:')) return null;
-    // Search all cached entries for matching hash.
+    // 直查 path（呼叫方傳入當前曲目路徑可完全避開 hash 掃描）；
+    // 不傳則 fallback 掃 hash（舊行為，相容）。
+    if (forPath != null) return _artworkCache[forPath];
     for (final entry in _artworkCache.entries) {
       if ('mem:${entry.key.hashCode}' == cp) return entry.value;
     }
@@ -661,7 +724,12 @@ class PlayerController {
   }
 
   void dispose() {
+    for (final s in _playerSubs) {
+      try { s.cancel(); } catch (_) {}
+    }
+    _playerSubs.clear();
     _smtcTimer?.cancel();
+    _sleepTimer?.cancel();
     _player.dispose();
   }
 }

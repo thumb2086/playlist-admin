@@ -4,6 +4,14 @@ import 'config_service.dart';
 class FavoritesService {
   static const playlistName = '_Favorites';
 
+  // toggle 是 load→改→write：連點兩下會交錯丟失一次更新，串行化。
+  static Future<void> _mutex = Future.value();
+  static Future<T> _locked<T>(Future<T> Function() fn) {
+    final next = _mutex.then((_) => fn());
+    _mutex = next.then((_) {}, onError: (_) {});
+    return next;
+  }
+
   static String get _filePath =>
       '${ConfigService.instance.config.playlistsPath}\\$playlistName.m3u8';
 
@@ -38,16 +46,18 @@ class FavoritesService {
     return favs.contains(_norm(File(songPath).absolute.path));
   }
 
-  static Future<bool> toggle(String songPath) async {
-    final favs = await load();
-    final target = _norm(File(songPath).absolute.path);
-    if (favs.contains(target)) {
-      favs.remove(target);
-    } else {
-      favs.add(target);
-    }
-    await _write(favs);
-    return favs.contains(target);
+  static Future<bool> toggle(String songPath) {
+    return _locked(() async {
+      final favs = await load();
+      final target = _norm(File(songPath).absolute.path);
+      if (favs.contains(target)) {
+        favs.remove(target);
+      } else {
+        favs.add(target);
+      }
+      await _write(favs);
+      return favs.contains(target);
+    });
   }
 
   static String normalize(String p) => _norm(p);

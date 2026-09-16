@@ -1,5 +1,5 @@
 import 'dart:io';
-import '../lib/services/audio_extractor.dart';
+import 'package:playlist_admin/services/audio_extractor.dart';
 
 Future<void> main() async {
   final cfg = AudioExtractorConfig();
@@ -19,7 +19,9 @@ Future<void> main() async {
         final v = await AudioExtractorEngine.probe(e.path);
         if (v != null) {
           print('probe: ${v.name} -> ${v.trackCount} tracks | ${v.sizeLabel} | ${v.durLabel}');
-          for (final t in v.tracks) print('  ${t.detail}');
+          for (final t in v.tracks) {
+            print('  ${t.detail}');
+          }
           exit(0);
         }
       }

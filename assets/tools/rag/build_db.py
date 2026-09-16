@@ -85,10 +85,12 @@ def read_text_file(path: Path) -> str:
 
 
 def split_sentences(text: str) -> list[str]:
-    """依中文句號斷句，過濾空白行"""
-    text = re.sub(r"\s+", "", text)
+    """依中文句號斷句，過濾空白行。
+    空白壓成單空格不斷字：舊寫法刪掉所有空白，英文全黏在一起傷 embedding。
+    （query.py 的 normalize 已同步改同一規則，否則 offset 對不上。）"""
+    text = re.sub(r"\s+", " ", text).strip()
     parts = re.split(r"(?<=[。！？!?；;])", text)
-    return [p for p in parts if len(p) >= 4]
+    return [p.strip() for p in parts if len(p.strip()) >= 4]
 
 
 def make_chunks(sentences: list[str], max_len: int = 600, overlap: int = 60) -> list[str]:
@@ -114,13 +116,14 @@ def make_chunks(sentences: list[str], max_len: int = 600, overlap: int = 60) -> 
 
 
 def detect_meta(path: Path) -> dict:
-    """從檔名/路徑猜節目與日期"""
+    """從檔名/路徑猜節目、日期與來源類型"""
     parts = path.parts
     show = parts[-2] if len(parts) >= 2 else "unknown"
     name = path.stem
     m = re.search(r"(20\d{2})[_\-_](\d{1,2})[_\-_](\d{1,2})", name)
     date = f"{m.group(1)}-{m.group(2).zfill(2)}-{m.group(3).zfill(2)}" if m else ""
-    return {"show": show, "file": name, "date": date}
+    source = "course" if re.search(r"夜工智|機械群|課程", str(path)) else "podcast"
+    return {"show": show, "file": name, "date": date, "source": source}
 
 
 def main() -> None:
@@ -131,9 +134,30 @@ def main() -> None:
     ap.add_argument("--reset", action="store_true", help="重建資料庫")
     ap.add_argument("--limit", type=int, default=0, help="只索引前 N 篇 (測試用)")
     ap.add_argument("--workers", type=int, default=6, help="併發 embedding 數")
+    ap.add_argument("--batch", type=int, default=64, help="每批 embedding 數量")
     args = ap.parse_args()
 
     client = chromadb.PersistentClient(path=args.db)
+    # 單一 writer：GUI pipeline 和 CLI 可能同時開 PersistentClient 寫同一 DB。
+    # （Dart 端已有互斥，這裡是第二道鎖。）
+    lock_file = Path(args.db) / ".build.lock"
+    try:
+        fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, "w") as lf:
+            lf.write(f"{os.getpid()}|{time.time()}")
+    except FileExistsError:
+        print("另一個 build_db 正在寫入此 DB，本次跳過（避免 ChromaDB 寫入衝突）")
+        sys.exit(2)
+    try:
+        _main_build(client, args)
+    finally:
+        try:
+            lock_file.unlink()
+        except Exception:
+            pass
+
+
+def _main_build(client, args) -> None:
     if args.reset:
         try:
             client.delete_collection("podcasts")
@@ -144,19 +168,91 @@ def main() -> None:
         metadata={"hnsw:space": "cosine"},
     )
 
-    # 已索引的檔名 (resume 用) - 分段讀取避免 SQL 變數超限
-    done_files = set()
+    # ── Dedup: remove duplicate sig entries, keep first only ──────
+    total = col.count()
+    if total > 0:
+        sig_to_ids: dict[str, list[str]] = {}
+        offset = 0
+        while offset < total:
+            batch = col.get(limit=5000, offset=offset, include=["metadatas"])
+            ids = batch["ids"]
+            metas = batch["metadatas"]
+            for rid, m in zip(ids, metas):
+                sig = (m or {}).get("sig", "")
+                if sig:
+                    sig_to_ids.setdefault(sig, []).append(rid)
+            offset += 5000
+        to_delete = [ids[1:] for ids in sig_to_ids.values() if len(ids) > 1]
+        flat_delete = [item for sublist in to_delete for item in sublist]
+        if flat_delete:
+            print(f"Dedup: removing {len(flat_delete)} duplicate records...")
+            for i in range(0, len(flat_delete), 4500):
+                col.delete(ids=flat_delete[i:i+4500])
+            print(f"Dedup done. New count: {col.count()}")
+
+    # 已索引內容 hash 去重 - 分段讀取避免 SQL 變數超限
+    done_sigs: set[str] = set()
     offset = 0
     while True:
         batch = col.get(limit=5000, offset=offset, include=["metadatas"])["metadatas"]
         if not batch:
             break
         for m in batch:
-            if m:
-                done_files.add(m.get("file", ""))
+            if m and m.get("sig"):
+                done_sigs.add(m["sig"])
         offset += 5000
         if offset > 1000000:
             break
+
+    # 一次性遷移: 舊版 chunks 沒有 sig — 從 metadata 的 path 讀檔補上，
+    # 避免 1662 篇全部被當新的重嵌入。
+    def file_sig(path: Path) -> str:
+        raw = path.read_bytes()
+        # Strip BOM and normalize whitespace to avoid false re-embeds
+        if raw.startswith(b'\xef\xbb\xbf'):
+            raw = raw[3:]
+        return hashlib.md5(raw).hexdigest()
+
+    migrated = 0
+    to_update_ids: list[str] = []
+    to_update_metas: list[dict] = []
+    offset = 0
+    while True:
+        got = col.get(limit=5000, offset=offset, include=["metadatas"])
+        batch = got["metadatas"]
+        ids = got["ids"]
+        if not batch:
+            break
+        for rid, m in zip(ids, batch):
+            if not m or m.get("sig"):
+                continue
+            p = m.get("path")
+            if not p or not os.path.exists(p):
+                continue
+            try:
+                sig = file_sig(Path(p))
+                m["sig"] = sig
+                done_sigs.add(sig)
+                to_update_ids.append(rid)
+                to_update_metas.append(m)
+                migrated += 1
+            except Exception:
+                pass
+        offset += 5000
+        if offset > 1000000:
+            break
+    # 寫回 DB：舊寫法只加記憶體 set，從不寫回，每次啟動重掃且刪檔殘留。
+    for i in range(0, len(to_update_ids), 4500):
+        try:
+            col.update(
+                ids=to_update_ids[i:i + 4500],
+                metadatas=to_update_metas[i:i + 4500],
+            )
+        except Exception as e:
+            print(f"migration write-back failed: {e}")
+            break
+    if migrated:
+        print(f"migrated {migrated} legacy chunks to content-sig dedup")
 
     # 無內容/失敗檔案的跳過清單:0 chunks 的檔案不會寫進 DB,
     # 若沒有持久狀態會每次 pipeline 都被當「待索引」重試。
@@ -169,13 +265,18 @@ def main() -> None:
         except Exception:
             skipped = set()
 
+    # 檔案內容 hash — 內容更新(來源切換)時 sig 變 → 重嵌入
+    def has_content(path: Path) -> bool:
+        return bool(make_chunks(split_sentences(read_text_file(path))))
+
     files = [
         f for f in sorted(Path(args.data).rglob("*.txt"))
-        if f.stem not in done_files and f.stem not in skipped
+        if file_sig(f) not in done_sigs
+        and not (f.stem in skipped and not has_content(f))
     ]
     if args.limit:
         files = files[: args.limit]
-    print(f"待索引 {len(files)} 篇 (已跳過 {len(done_files)} 篇, 無內容跳過 {len(skipped)} 篇)")
+    print(f"待索引 {len(files)} 篇 (已嵌入 {len(done_sigs)} 篇, 無內容跳過 {len(skipped)} 篇)")
 
     total_chunks = 0
     t_start = time.time()
@@ -200,22 +301,31 @@ def main() -> None:
             )
             continue
         meta = detect_meta(f)
+        sig = file_sig(f)
         try:
-            kept_chunks, vectors = embed_texts(args.model, chunks, workers=args.workers)
-        except requests.exceptions.HTTPError as e:
-            print(f"!! HTTP 錯誤 檔案={meta['file']} 前300字={chunks[0][:300] if chunks else ''}")
-            raise
+            kept_chunks, vectors = embed_texts(args.model, chunks, batch=args.batch, workers=args.workers)
         except requests.exceptions.ConnectionError:
             print("無法連線 Ollama，請先啟動 (ollama serve) 並 pull bge-m3")
             sys.exit(1)
+        except Exception as e:
+            # 單檔失敗（500/429/timeout）不可中斷整個索引：
+            # 跳過，下次增量 run 會自動補上（dedup：沒寫入就不在 done_sigs）。
+            print(f"!! 跳過 {meta['file']}: {e}")
+            continue
         if not kept_chunks:
             continue
+        # ID 混入 show+sig：舊寫法只有 stem，不同節目同檔名互蓋/拋 DuplicateID；
+        # 內容更新先刪同 path 舊 chunks，否則新舊並存。
+        try:
+            col.delete(where={"path": str(f)})
+        except Exception as e:
+            print(f"!! 清舊 chunks 失敗 {meta['file']}: {e}")
         ids = [
-            hashlib.md5(f"{meta['file']}|{j}".encode()).hexdigest()
+            hashlib.md5(f"{meta['show']}|{sig}|{j}".encode()).hexdigest()
             for j in range(len(kept_chunks))
         ]
         metadatas = [
-            {**meta, "chunk": j, "chars": len(c), "path": str(f)}
+            {**meta, "sig": sig, "chunk": j, "chars": len(c), "path": str(f)}
             for j, c in enumerate(kept_chunks)
         ]
         col.add(ids=ids, documents=kept_chunks, metadatas=metadatas, embeddings=vectors)

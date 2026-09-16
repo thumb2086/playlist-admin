@@ -8,7 +8,7 @@ class FfmpegInstaller {
   static Future<bool> isAvailable() async {
     try {
       final r = await Process.run('ffmpeg', ['-version'],
-          runInShell: true);
+          runInShell: true).timeout(const Duration(seconds: 15));
       return r.exitCode == 0;
     } catch (_) {
       return false;
@@ -23,7 +23,7 @@ class FfmpegInstaller {
           : '${Directory.current.path}\\$path';
       if (!File(resolved).existsSync()) return false;
       final r = await Process.run(resolved, ['-version'],
-          runInShell: true);
+          runInShell: true).timeout(const Duration(seconds: 15));
       return r.exitCode == 0;
     } catch (_) {
       return false;
@@ -44,18 +44,34 @@ class FfmpegInstaller {
   }
 
   static Future<bool> _downloadAndInstall(void Function(String) log) async {
+    final tempDir = Directory.systemTemp.createTempSync('ffmpeg_');
     try {
-      final tempDir = Directory.systemTemp.createTempSync('ffmpeg_');
       log('  下載中: $_downloadUrl');
-      final resp = await http.get(Uri.parse(_downloadUrl));
-      if (resp.statusCode != 200) {
-        log('  ❌ 下載失敗: HTTP ${resp.statusCode}');
-        tempDir.deleteSync(recursive: true);
-        return false;
-      }
-
+      // 串流下載：~80MB zip 不可全放 RAM；各段 timeout 防 hang。
       final zipPath = '${tempDir.path}\\ffmpeg.zip';
-      await File(zipPath).writeAsBytes(resp.bodyBytes);
+      final client = http.Client();
+      try {
+        final request = http.Request('GET', Uri.parse(_downloadUrl));
+        final resp = await client.send(request).timeout(const Duration(seconds: 30));
+        if (resp.statusCode != 200) {
+          log('  ❌ 下載失敗: HTTP ${resp.statusCode}');
+          return false;
+        }
+        final sink = File(zipPath).openWrite();
+        try {
+          await for (final chunk in resp.stream.timeout(const Duration(seconds: 60))) {
+            sink.add(chunk);
+          }
+          await sink.flush();
+          await sink.close();
+        } catch (e) {
+          try { await sink.close(); } catch (_) {}
+          log('  ❌ 下載中斷: $e');
+          return false;
+        }
+      } finally {
+        client.close();
+      }
 
       // Extract using PowerShell (Windows)
       final exeDir = '${Directory.current.path}\\bin';
@@ -65,7 +81,7 @@ class FfmpegInstaller {
       await Process.run('powershell', [
         '-Command',
         'Expand-Archive -Path "$zipPath" -DestinationPath "${tempDir.path}\\extracted" -Force',
-      ], runInShell: true);
+      ], runInShell: true).timeout(const Duration(minutes: 5));
 
       // Find ffmpeg.exe
       final extracted = Directory('${tempDir.path}\\extracted');
@@ -79,17 +95,18 @@ class FfmpegInstaller {
 
       if (found == null) {
         log('  ❌ 在壓縮檔中找不到 ffmpeg.exe');
-        tempDir.deleteSync(recursive: true);
         return false;
       }
 
       await File(found).copy('$exeDir\\ffmpeg.exe');
       log('  ✅ FFmpeg 已安裝到: $exeDir\\ffmpeg.exe');
-      tempDir.deleteSync(recursive: true);
       return true;
     } catch (e) {
       log('  ❌ 安裝失敗: $e');
       return false;
+    } finally {
+      // 任何路徑都清 temp（舊寫法 catch 裡漏刪）。
+      try { tempDir.deleteSync(recursive: true); } catch (_) {}
     }
   }
 }
