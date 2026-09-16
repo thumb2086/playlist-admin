@@ -221,7 +221,6 @@ class YoutubeService {
       '--no-playlist',
       '--no-overwrites',
       '--no-check-certificates',
-      '--extractor-args', 'youtube:player_client=tv,web_embedded,android;player_skip=webpage,configs',
       '-o', '$dlTemp.%(ext)s',
       '--retries', '3',
       '--fragment-retries', '10',
@@ -387,10 +386,8 @@ class YoutubeService {
     final dlDir = Directory.systemTemp.createTempSync('yt_dl_');
     final dlTemp = '${dlDir.path}\\audio';
 
-    // 複製 Python bridge 的完整 yt-dlp 設定（對齊 core/downloader.py）
-    // player_client: tv, web_embedded, android (避開 PO Token)
-    // player_skip: webpage, configs (減少 HTTP 請求)
-    // format: ba/b (bestaudio first, fallback to best)
+    // yt-dlp 預設 player client 即可；舊的 tv,web_embedded,android
+    // 已被 YouTube 封鎖（error 152）。
     final baseArgs = [
       '-x',
       '--audio-format', format,
@@ -398,7 +395,6 @@ class YoutubeService {
       '--no-playlist',
       '--no-overwrites',
       '--no-check-certificates',
-      '--extractor-args', 'youtube:player_client=tv,web_embedded,android;player_skip=webpage,configs',
       '-o', '$dlTemp.%(ext)s',
       '--retries', '3',
       '--fragment-retries', '10',
