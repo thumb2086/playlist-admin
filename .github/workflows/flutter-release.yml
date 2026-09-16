@@ -158,4 +158,12 @@ jobs:
           name: playlist-admin-Setup-${{ env.CHANNEL }}
           path: installer\playlist-admin-Setup-*.exe
 
-      # Release is handled by npm-publish.yml (builds + npm + tests + release)
+      - name: Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "playlist-admin v${{ env.APP_VERSION }}"
+          prerelease: ${{ env.PRERELEASE }}
+          files: installer\playlist-admin-Setup-*.exe
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
