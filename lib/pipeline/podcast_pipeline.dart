@@ -117,6 +117,13 @@ class PodcastPipeline {
     final podDir = PodcastService.instance.podcastDir(podcastName);
     const ext = 'mp3';
 
+    // ── Local directory mode: scan .txt files, no RSS/YouTube ──
+    final isLocalDir = _isLocalPath(rssUrl);
+    if (isLocalDir) {
+      await _processLocalDir(podcastName, rssUrl, cache);
+      return;
+    }
+
     // ── Cache validation: purge stale entries ─────────────────────
     // If cache says txt/srt=true but the file doesn't exist on disk,
     // reset to false so the episode gets re-processed.
@@ -544,6 +551,63 @@ class PodcastPipeline {
       // retried before spending Groq credits again.
       cache[t.key] = {'srt': false, 'txt': false, 'yt_status': '', 'status': 'error'};
     }
+  }
+
+  // ── Local directory helpers ────────────────────────────────────────
+
+  /// Detect local directory paths (e.g. "C:\..." or "\\server\...").
+  static bool _isLocalPath(String path) {
+    if (path.isEmpty) return false;
+    // Windows drive letter: C:\...
+    if (RegExp(r'^[a-zA-Z]:\\').hasMatch(path)) return true;
+    // UNC path: \\server\...
+    if (path.startsWith('\\\\')) return true;
+    // Relative path: .\ or ..\ or just a directory name
+    if (path.startsWith('.') || path.contains('\\') || path.contains('/')) {
+      // But not a URL
+      if (!path.startsWith('http://') && !path.startsWith('https://')) return true;
+    }
+    return false;
+  }
+
+  /// Process a local directory of MP3+TXT files (no RSS, no YouTube).
+  Future<void> _processLocalDir(
+      String podcastName, String dirPath, Map<String, Map<String, dynamic>> cache) async {
+    final dir = Directory(dirPath);
+    if (!await dir.exists()) {
+      onLog('  ❌ 本地目錄不存在: $dirPath');
+      return;
+    }
+
+    // Scan for .txt files — each is a transcription episode.
+    final txtFiles = <String, String>{}; // stem -> full path
+    await for (final f in dir.list()) {
+      if (f is File && f.path.endsWith('.txt')) {
+        final stem = f.uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '');
+        if (stem.length >= 3) txtFiles[stem] = f.path;
+      }
+    }
+
+    if (txtFiles.isEmpty) {
+      onLog('  📂 本地目錄: ${dir.path} (0 個逐字稿)');
+      return;
+    }
+
+    int alreadyHave = 0;
+    int newCount = 0;
+    for (final entry in txtFiles.entries) {
+      final key = '$podcastName|${entry.key}';
+      if (cache.containsKey(key) && cache[key]?['txt'] == true) {
+        alreadyHave++;
+      } else {
+        cache[key] = {'srt': false, 'txt': true, 'yt_status': 'local', 'status': 'ok'};
+        newCount++;
+      }
+    }
+    await _saveCacheAsync(cache);
+
+    final total = txtFiles.length;
+    onLog('  📂 本地目錄: ${dir.path} ($total 集, 已處理 $alreadyHave, 新增 $newCount)');
   }
 }
 
