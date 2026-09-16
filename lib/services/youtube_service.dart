@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import 'package:logger/logger.dart';
-import 'config_service.dart';
 
 final _log = Logger(printer: PrettyPrinter(methodCount: 0));
 
@@ -18,8 +17,6 @@ class YoutubeService {
 
   /// Create fresh instance per call to avoid stale connections.
   YoutubeExplode _fresh() => YoutubeExplode();
-
-  String get _ffmpeg => ConfigService.instance.config.resolvedFfmpegPath;
 
   // ── URL 解析 ──────────────────────────────────────────
   /// 從 YouTube URL 解析出 VideoId。
@@ -244,22 +241,30 @@ class YoutubeService {
 
     try {
       // 用 ytsearch1: 讓 yt-dlp 搜尋+下載一步到位
-      final proc = await Process.start(
-        'yt-dlp',
-        [...baseArgs, 'ytsearch1:$query'],
-        runInShell: true,
-      );
+      final proc = await _startYtDlp([...baseArgs, 'ytsearch1:$query']);
 
       String lastErr = '';
       String? finalPath;
-      proc.stdout.transform(SystemEncoding().decoder).transform(const LineSplitter()).listen((line) {
+      double lastPct = 0;
+      proc.stdout.transform(const SystemEncoding().decoder).transform(const LineSplitter()).listen((line) {
         // --print after_move:filepath 會輸出最終路徑
         if (line.contains('\\') || line.contains('/')) {
           finalPath = line.trim();
         }
       });
-      proc.stderr.transform(SystemEncoding().decoder).transform(const LineSplitter()).listen((line) {
-        lastErr = line;
+      proc.stderr.transform(const SystemEncoding().decoder).transform(const LineSplitter()).listen((line) {
+        // 累積完整 stderr：只留最後一行會洗掉關鍵錯誤（如 requested format）。
+        lastErr = '$lastErr\n$line';
+        if (lastErr.length > 4000) lastErr = lastErr.substring(lastErr.length - 4000);
+        // 解析下載百分比：[download]  45.2% of ... → onProgress(0.1~0.9)
+        final pctMatch = RegExp(r'\[download\]\s+([\d.]+)%').firstMatch(line);
+        if (pctMatch != null) {
+          final pct = ((double.tryParse(pctMatch.group(1)!) ?? 0).clamp(0.0, 100.0)).toDouble();
+          if (pct >= lastPct) {
+            lastPct = pct;
+            onProgress?.call(0.1 + pct / 100 * 0.8);
+          }
+        }
         // 從 stderr 解析標題
         if (line.contains('[download] Destination:')) {
           final titleMatch = RegExp(r'Destination: .+\\(.+)$').firstMatch(line);
@@ -311,8 +316,7 @@ class YoutubeService {
 
       final outDir = Directory(File(outputPath).parent.path);
       if (!await outDir.exists()) await outDir.create(recursive: true);
-      if (await File(outputPath).exists()) await File(outputPath).delete();
-      await found.rename(outputPath);
+      await _moveFile(found, outputPath);
 
       onProgress?.call(1.0);
       _log.i('yt-dlp 下載完成: ${outputPath.split('\\').last} (${fileSize ~/ 1024}KB)');
@@ -325,14 +329,41 @@ class YoutubeService {
     }
   }
 
+  /// 跨磁碟 rename 會拋 FileSystemException（systemTemp vs 音樂庫不同碟）：
+  /// 失敗改 copy+delete，下載成功不再回報 null。
+  static Future<void> _moveFile(File src, String dest) async {
+    if (await File(dest).exists()) await File(dest).delete();
+    try {
+      await src.rename(dest);
+    } on FileSystemException {
+      await src.copy(dest);
+      try { await src.delete(); } catch (_) {}
+    }
+  }
+
+  /// Windows 上 yt-dlp 可能是 .bat shim（CreateProcess 不跑腳本）：
+  /// 先 runInShell:false（歌名含 & | ; 不會被 cmd 切斷/注入），
+  /// 啟動失敗才 true 重試一次。
+  static Future<Process> _startYtDlp(List<String> args) async {
+    try {
+      return await Process.start('yt-dlp', args, runInShell: false);
+    } catch (_) {
+      _log.w('yt-dlp 直接啟動失敗，改用 shell 重試');
+      return await Process.start('yt-dlp', args, runInShell: true);
+    }
+  }
+
   // ── 底層下載 ─────────────────────────────────────────
-  /// 搜尋餅乾檔案（桌面上的 yt_cookies.txt）。
+  /// 搜尋餅乾檔案。
   static String? _cookiesPath;
   static String? _findCookies() {
     if (_cookiesPath != null) return _cookiesPath;
+    final home = Platform.environment['USERPROFILE'] ?? '';
+    final appData = Platform.environment['APPDATA'] ?? '';
     final paths = [
-      '${Platform.environment['USERPROFILE']}\\Desktop\\yt_cookies.txt',
-      '${Platform.environment['USERPROFILE']}\\Documents\\yt_cookies.txt',
+      '$home\\Desktop\\yt_cookies.txt',
+      '$home\\Documents\\yt_cookies.txt',
+      if (appData.isNotEmpty) '$appData\\playlist-admin\\yt_cookies.txt',
     ];
     for (final p in paths) {
       if (File(p).existsSync()) { _cookiesPath = p; return p; }
@@ -385,41 +416,34 @@ class YoutubeService {
     }
 
     try {
-      // 第一輪：標準下載
-      var proc = await Process.start(
-        'yt-dlp', [...baseArgs, ytUrl],
-        runInShell: true,
-      );
-      String lastErr = '';
-      proc.stderr.transform(SystemEncoding().decoder).transform(const LineSplitter()).listen((line) {
-        lastErr = line;
+      // 第一輪：標準下載（_startYtDlp 內優先無 shell，防 URL 的 & 被切斷）
+      var proc = await _startYtDlp([...baseArgs, ytUrl]);
+      var errBuf = StringBuffer();
+      proc.stderr.transform(const SystemEncoding().decoder).transform(const LineSplitter()).listen((line) {
+        errBuf.writeln(line);
+        if (errBuf.length > 4000) {
+          errBuf = StringBuffer(errBuf.toString().substring(errBuf.length - 4000));
+        }
       });
       var code = await proc.exitCode.timeout(
         const Duration(seconds: 180),
         onTimeout: () { proc.kill(); return -1; },
       );
 
-      // 第一輪失敗 → 降級 fallback（worstvideo+worstaudio）
-      if (code != 0 && lastErr.contains('requested format is not available')) {
+      // 第一輪失敗 → 降級 fallback（只換 -f，其餘設定含 cookies/headers 沿用，
+      // 否則降級反而更容易被 bot 擋）。
+      if (code != 0 && errBuf.toString().contains('requested format is not available')) {
         _log.w('yt-dlp 格式不可用，嘗試 fallback');
-        final fallbackArgs = [
-          '-x',
-          '--audio-format', format,
-          '-f', 'worstvideo[ext=mp4]+worstaudio/best',
-          '--no-playlist',
-          '--no-overwrites',
-          '--no-check-certificates',
-          '--extractor-args', 'youtube:player_client=tv,web_embedded,android;player_skip=webpage,configs',
-          '-o', '$dlTemp.%(ext)s',
-          '--retries', '3',
-          '--fragment-retries', '10',
-          '--socket-timeout', '60',
-          '--skip-unavailable-fragments',
-          '--ignore-errors',
-        ];
-        proc = await Process.start('yt-dlp', [...fallbackArgs, ytUrl], runInShell: true);
-        proc.stderr.transform(SystemEncoding().decoder).transform(const LineSplitter()).listen((line) {
-          lastErr = line;
+        final fallbackArgs = [...baseArgs];
+        final fIdx = fallbackArgs.indexOf('-f');
+        fallbackArgs[fIdx + 1] = 'worstvideo[ext=mp4]+worstaudio/best';
+        proc = await _startYtDlp([...fallbackArgs, ytUrl]);
+        errBuf = StringBuffer();
+        proc.stderr.transform(const SystemEncoding().decoder).transform(const LineSplitter()).listen((line) {
+          errBuf.writeln(line);
+          if (errBuf.length > 4000) {
+            errBuf = StringBuffer(errBuf.toString().substring(errBuf.length - 4000));
+          }
         });
         code = await proc.exitCode.timeout(
           const Duration(seconds: 180),
@@ -430,7 +454,8 @@ class YoutubeService {
       onProgress?.call(0.9);
 
       if (code != 0) {
-        _log.w('yt-dlp 失敗 (exit $code): $lastErr');
+        final lastErr = errBuf.toString();
+        _log.w('yt-dlp 失敗 (exit $code): ${lastErr.length > 300 ? lastErr.substring(lastErr.length - 300) : lastErr}');
         dlDir.deleteSync(recursive: true);
         return null;
       }
@@ -461,9 +486,8 @@ class YoutubeService {
       final outDir = Directory(File(outputPath).parent.path);
       if (!await outDir.exists()) await outDir.create(recursive: true);
 
-      // 移動到目標路徑
-      if (await File(outputPath).exists()) await File(outputPath).delete();
-      await found.rename(outputPath);
+      // 移動到目標路徑（跨磁碟自動降級 copy+delete）
+      await _moveFile(found, outputPath);
 
       onProgress?.call(1.0);
       _log.i('yt-dlp 下載完成: ${outputPath.split('\\').last} (${fileSize ~/ 1024}KB)');

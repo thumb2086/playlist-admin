@@ -129,6 +129,7 @@ class PipelineOrchestrator {
     int ok = 0;
     int fail = 0;
     int consecutiveFails = 0;
+    const maxConsecutiveFails = 10;
     final total = missing.length;
     final yt = YoutubeService.instance;
 
@@ -137,11 +138,23 @@ class PipelineOrchestrator {
       await state.waitIfPaused();
       if (state.isCancelled) return;
 
-      // 如果連續失敗太多次，等待較久（YouTube rate limit）
+      // 連續失敗太多次 → 中止（YouTube bot detection / 封鎖）。
+      if (consecutiveFails >= maxConsecutiveFails) {
+        onLog('  🛑 連續失敗 $consecutiveFails 次，疑似被 YouTube 封鎖，中止下載');
+        onLog('  💡 請確認 yt_cookies.txt 存在且有效（桌面或文件夾）');
+        break;
+      }
+
+      // 如果連續失敗 >= 3 次，等待 backoff（上限 60s）。
       if (consecutiveFails >= 3) {
-        final waitSec = (consecutiveFails - 2) * 15;
+        final waitSec = ((consecutiveFails - 2) * 15).clamp(0, 60);
         onLog('  ⏳ 連續失敗 $consecutiveFails 次，等待 ${waitSec}s 後重試…');
-        await Future<void>.delayed(Duration(seconds: waitSec));
+        for (int s = 0; s < waitSec; s++) {
+          if (state.isCancelled) return;
+          await state.waitIfPaused();
+          if (state.isCancelled) return;
+          await Future<void>.delayed(const Duration(seconds: 1));
+        }
       }
 
       final safeName = song.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
@@ -193,14 +206,13 @@ class PipelineOrchestrator {
     final plResults = await scraper.scrapeAll(urls, writeM3u8: false);
 
     // Snapshot: save ALL track names from scraper (not just resolved ones from m3u8).
+    // processAll 一次 load+save（舊寫法每歌單 2 load + 1 save）。
+    final removedMap = SnapshotManager.processAll(plResults);
     int totalRemoved = 0;
-    for (final entry in plResults.entries) {
-      final plName = entry.key;
-      final allTracks = entry.value;
-      final removed = SnapshotManager.processPlaylist(plName, allTracks);
-      if (removed > 0) {
-        onLog('  📋 $plName: 偵測到 $removed 首已移除歌曲');
-        totalRemoved += removed;
+    for (final entry in removedMap.entries) {
+      if (entry.value > 0) {
+        onLog('  📋 ${entry.key}: 偵測到 ${entry.value} 首已移除歌曲');
+        totalRemoved += entry.value;
       }
     }
     if (totalRemoved > 0) {
