@@ -21,6 +21,8 @@ Usage:
   playlist-admin favorite toggle <song>  Toggle favorite (我的最愛)
   playlist-admin rag build [--reset]     Build podcast RAG vector DB
   playlist-admin rag query "問題" [--topk N] [--show 節目] [--json]
+  playlist-admin study build [--reset]   Build study RAG (PDF + 課程)
+  playlist-admin study query "問題" [--topk N] [--category X] [--json]
 `;
 
 function projectRoot() {
@@ -121,6 +123,22 @@ function runRag(args) {
   forwardPy([script, ...args.slice(1)]);
 }
 
+function runStudy(args) {
+  const sub = args[0];
+  if (sub !== 'build' && sub !== 'query') {
+    console.error(`未知 study 子命令: ${sub ?? '(空)'}\n用法: playlist-admin study build | playlist-admin study query "問題"`);
+    process.exit(1);
+  }
+  const roots = [projectRoot(), packageRoot()].filter(Boolean);
+  const fname = sub === 'build' ? 'study_build.py' : 'study_query.py';
+  const script = roots.map((r) => path.join(r, 'rag', fname)).find((s) => fs.existsSync(s));
+  if (!script) {
+    console.error(`找不到 rag/${fname}。請在專案內執行，或設定 PA_ROOT`);
+    process.exit(1);
+  }
+  forwardPy([script, ...args.slice(1)]);
+}
+
 async function main() {
   const args = process.argv.slice(2);
   if (args.length === 0) {
@@ -129,6 +147,10 @@ async function main() {
   }
   if (args[0] === 'rag') {
     runRag(args.slice(1));
+    return;
+  }
+  if (args[0] === 'study') {
+    runStudy(args.slice(1));
     return;
   }
 
