@@ -221,6 +221,7 @@ class YoutubeService {
       '--no-playlist',
       '--no-overwrites',
       '--no-check-certificates',
+      '--extractor-args', 'youtube:player_client=mweb',
       '-o', '$dlTemp.%(ext)s',
       '--retries', '3',
       '--fragment-retries', '10',
@@ -386,8 +387,7 @@ class YoutubeService {
     final dlDir = Directory.systemTemp.createTempSync('yt_dl_');
     final dlTemp = '${dlDir.path}\\audio';
 
-    // yt-dlp 預設 player client 即可；舊的 tv,web_embedded,android
-    // 已被 YouTube 封鎖（error 152）。
+    // mweb player client: 目前唯一可用的下載路徑（android_vr 被 403, web 只有圖片）。
     final baseArgs = [
       '-x',
       '--audio-format', format,
@@ -395,6 +395,7 @@ class YoutubeService {
       '--no-playlist',
       '--no-overwrites',
       '--no-check-certificates',
+      '--extractor-args', 'youtube:player_client=mweb',
       '-o', '$dlTemp.%(ext)s',
       '--retries', '3',
       '--fragment-retries', '10',
