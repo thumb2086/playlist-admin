@@ -1,4 +1,4 @@
-#include <flutter/dart_project.h>
+﻿#include <flutter/dart_project.h>
 #include <flutter/flutter_view_controller.h>
 #include <windows.h>
 
@@ -14,8 +14,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   }
 
   // Initialize COM, so that it is available for use in the library and/or
-  // plugins.
-  ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  // plugins. 只在成功時配對 CoUninitialize；失敗直接結束（WinRT SMTC 需要 COM）。
+  const HRESULT comHr = ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  if (FAILED(comHr)) {
+    return EXIT_FAILURE;
+  }
 
   flutter::DartProject project(L"data");
 

@@ -1,9 +1,10 @@
-#include "smtc_controller.h"
+﻿#include "smtc_controller.h"
 
 #include <flutter/standard_method_codec.h>
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -69,7 +70,8 @@ struct SmtcControllerImpl {
   winrt::event_token buttonToken{};
   winrt::event_token seekToken{};
   // Last seek position requested from the OS, posted to the UI thread.
-  int64_t pendingSeekMs = 0;
+  // atomic：SMTC 回呼執行緒寫、UI 執行緒（HandleSystemMediaButton）讀。
+  std::atomic<int64_t> pendingSeekMs{0};
 };
 
 // Button codes posted from the SMTC event thread to the UI thread.
@@ -239,6 +241,9 @@ void SmtcController::ApplyUpdate(const flutter::EncodableMap& map) {
       const int len = MultiByteToWideChar(CP_UTF8, 0, s->c_str(),
                                           static_cast<int>(s->size()),
                                           nullptr, 0);
+      if (len <= 0) {
+        return std::wstring();
+      }
       std::wstring out(len, L'\0');
       MultiByteToWideChar(CP_UTF8, 0, s->c_str(),
                           static_cast<int>(s->size()), &out[0], len);
@@ -285,15 +290,10 @@ void SmtcController::ApplyUpdate(const flutter::EncodableMap& map) {
 
     auto updater = impl_->smtc.DisplayUpdater();
     updater.Type(winrt::MediaPlaybackType::Music);
-    if (!title.empty()) {
-      updater.MusicProperties().Title(winrt::hstring(title));
-    }
-    if (!artist.empty()) {
-      updater.MusicProperties().Artist(winrt::hstring(artist));
-    }
-    if (!album.empty()) {
-      updater.MusicProperties().AlbumTitle(winrt::hstring(album));
-    }
+    // 全量寫入（含空字串）：換歌缺欄位時清空上一首殘留，否則 flyout 顯示舊資訊。
+    updater.MusicProperties().Title(winrt::hstring(title));
+    updater.MusicProperties().Artist(winrt::hstring(artist));
+    updater.MusicProperties().AlbumTitle(winrt::hstring(album));
     if (!artworkUrl.empty()) {
       try {
         auto ref = winrt::RandomAccessStreamReference::CreateFromUri(
@@ -303,22 +303,23 @@ void SmtcController::ApplyUpdate(const flutter::EncodableMap& map) {
         SmtcLog(std::string("thumbnail FAILED: ") +
                 winrt::to_string(e.message()));
       }
+    } else {
+      updater.Thumbnail(nullptr);
     }
     updater.Update();
 
     // Update timeline first, then playback status (order matters for the
-    // flyout to render the progress bar).
-    if (endTimeMs > 0) {
-      try {
-        auto timeline = winrt::SystemMediaTransportControlsTimelineProperties();
-        timeline.StartTime(std::chrono::milliseconds(0));
-        timeline.EndTime(std::chrono::milliseconds(endTimeMs));
-        timeline.Position(std::chrono::milliseconds(positionMs));
-        impl_->smtc.UpdateTimelineProperties(timeline);
-      } catch (const winrt::hresult_error& e) {
-        SmtcLog(std::string("timeline FAILED: ") +
-                winrt::to_string(e.message()));
-      }
+    // flyout to render the progress bar). 無時長時推零 timeline 清掉舊進度條。
+    try {
+      auto timeline = winrt::SystemMediaTransportControlsTimelineProperties();
+      timeline.StartTime(std::chrono::milliseconds(0));
+      timeline.EndTime(std::chrono::milliseconds((std::max<int64_t>)(0, endTimeMs)));
+      timeline.Position(std::chrono::milliseconds(
+          (std::max<int64_t>)(0, (std::min<int64_t>)(positionMs, endTimeMs))));
+      impl_->smtc.UpdateTimelineProperties(timeline);
+    } catch (const winrt::hresult_error& e) {
+      SmtcLog(std::string("timeline FAILED: ") +
+              winrt::to_string(e.message()));
     }
 
     impl_->smtc.PlaybackStatus(

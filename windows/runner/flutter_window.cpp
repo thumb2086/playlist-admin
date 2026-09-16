@@ -1,4 +1,4 @@
-#include "flutter_window.h"
+﻿#include "flutter_window.h"
 
 #include <optional>
 
@@ -44,10 +44,11 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  // 先拆 SMTC 再放 engine：反過來會讓 WM_APP 回呼打到已死的 messenger。
+  smtc_controller_.reset();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
-  smtc_controller_.reset();
 
   Win32Window::OnDestroy();
 }
