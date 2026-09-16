@@ -137,10 +137,22 @@ def main() -> None:
     ap.add_argument("--batch", type=int, default=64, help="每批 embedding 數量")
     args = ap.parse_args()
 
-    client = chromadb.PersistentClient(path=args.db)
-    # 單一 writer：GUI pipeline 和 CLI 可能同時開 PersistentClient 寫同一 DB。
-    # （Dart 端已有互斥，這裡是第二道鎖。）
+    # 先拿鎖再開 PersistentClient：反過來雙進程仍會同時開 SQLite。
     lock_file = Path(args.db) / ".build.lock"
+    if lock_file.exists():
+        # stale 鎖：mtime 超過 30 分鐘（kill -9 殘留）直接清掉重拿。
+        try:
+            age = time.time() - lock_file.stat().st_mtime
+        except Exception:
+            age = 0
+        if age < 1800:
+            print("另一個 build_db 正在寫入此 DB，本次跳過（避免 ChromaDB 寫入衝突）")
+            sys.exit(2)
+        try:
+            lock_file.unlink()
+            print("清掉過期 build lock，繼續執行")
+        except Exception:
+            pass
     try:
         fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         with os.fdopen(fd, "w") as lf:
@@ -148,6 +160,8 @@ def main() -> None:
     except FileExistsError:
         print("另一個 build_db 正在寫入此 DB，本次跳過（避免 ChromaDB 寫入衝突）")
         sys.exit(2)
+
+    client = chromadb.PersistentClient(path=args.db)
     try:
         _main_build(client, args)
     finally:
@@ -269,9 +283,31 @@ def _main_build(client, args) -> None:
     def has_content(path: Path) -> bool:
         return bool(make_chunks(split_sentences(read_text_file(path))))
 
+    # 過濾非 podcast 的 .txt：目錄黑名單 + 檔名/大小門檻
+    _SKIP_DIRS = {'podcast_rag', '__pycache__', 'chroma_db', 'node_modules', '.git'}
+    _SKIP_STEMS = {'README', 'changelog', 'license', 'requirements', 'setup', 'config'}
+    _MIN_TXT_BYTES = 100  # podcast 逐字稿至少 ~100 bytes
+
+    def _is_valid_podcast_txt(f: Path) -> bool:
+        # 跳過黑名單目錄下的所有檔案
+        for part in f.relative_to(Path(args.data)).parts[:-1]:
+            if part in _SKIP_DIRS:
+                return False
+        # 跳過已知非逐字稿檔名
+        if f.stem.lower() in _SKIP_STEMS:
+            return False
+        # 跳過太短的檔案（通常是設定檔或說明）
+        try:
+            if f.stat().st_size < _MIN_TXT_BYTES:
+                return False
+        except OSError:
+            return False
+        return True
+
     files = [
         f for f in sorted(Path(args.data).rglob("*.txt"))
-        if file_sig(f) not in done_sigs
+        if _is_valid_podcast_txt(f)
+        and file_sig(f) not in done_sigs
         and not (f.stem in skipped and not has_content(f))
     ]
     if args.limit:
@@ -314,21 +350,27 @@ def _main_build(client, args) -> None:
             continue
         if not kept_chunks:
             continue
-        # ID 混入 show+sig：舊寫法只有 stem，不同節目同檔名互蓋/拋 DuplicateID；
-        # 內容更新先刪同 path 舊 chunks，否則新舊並存。
+        # ID 混入 show+sig+檔名：同節目同內容不同檔也互不相撞；
+        # 寫入成功立刻登記 done_sigs（批次內第二檔直接跳過，不等下次 run）。
         try:
             col.delete(where={"path": str(f)})
         except Exception as e:
             print(f"!! 清舊 chunks 失敗 {meta['file']}: {e}")
         ids = [
-            hashlib.md5(f"{meta['show']}|{sig}|{j}".encode()).hexdigest()
+            hashlib.md5(f"{meta['show']}|{meta['file']}|{sig}|{j}".encode()).hexdigest()
             for j in range(len(kept_chunks))
         ]
         metadatas = [
             {**meta, "sig": sig, "chunk": j, "chars": len(c), "path": str(f)}
             for j, c in enumerate(kept_chunks)
         ]
-        col.add(ids=ids, documents=kept_chunks, metadatas=metadatas, embeddings=vectors)
+        try:
+            col.add(ids=ids, documents=kept_chunks, metadatas=metadatas, embeddings=vectors)
+        except Exception as e:
+            # DuplicateID 等單檔失敗不可崩整個 build：下次增量補上。
+            print(f"!! 寫入失敗跳過 {meta['file']}: {e}")
+            continue
+        done_sigs.add(sig)
         total_chunks += len(kept_chunks)
         if i % 5 == 0 or i == len(files):
             elapsed = time.time() - t_start

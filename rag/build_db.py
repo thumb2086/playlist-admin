@@ -283,9 +283,31 @@ def _main_build(client, args) -> None:
     def has_content(path: Path) -> bool:
         return bool(make_chunks(split_sentences(read_text_file(path))))
 
+    # 過濾非 podcast 的 .txt：目錄黑名單 + 檔名/大小門檻
+    _SKIP_DIRS = {'podcast_rag', '__pycache__', 'chroma_db', 'node_modules', '.git'}
+    _SKIP_STEMS = {'README', 'changelog', 'license', 'requirements', 'setup', 'config'}
+    _MIN_TXT_BYTES = 100  # podcast 逐字稿至少 ~100 bytes
+
+    def _is_valid_podcast_txt(f: Path) -> bool:
+        # 跳過黑名單目錄下的所有檔案
+        for part in f.relative_to(Path(args.data)).parts[:-1]:
+            if part in _SKIP_DIRS:
+                return False
+        # 跳過已知非逐字稿檔名
+        if f.stem.lower() in _SKIP_STEMS:
+            return False
+        # 跳過太短的檔案（通常是設定檔或說明）
+        try:
+            if f.stat().st_size < _MIN_TXT_BYTES:
+                return False
+        except OSError:
+            return False
+        return True
+
     files = [
         f for f in sorted(Path(args.data).rglob("*.txt"))
-        if file_sig(f) not in done_sigs
+        if _is_valid_podcast_txt(f)
+        and file_sig(f) not in done_sigs
         and not (f.stem in skipped and not has_content(f))
     ]
     if args.limit:
