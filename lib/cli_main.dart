@@ -59,6 +59,11 @@ Downloaded: ${cfg.lastUpdated.length}''');
     case 'favorite':
       await _favoriteCmd(args.sublist(1), cfg);
       break;
+
+    default:
+      stderr.writeln('未知命令: $cmd');
+      print('可用命令: pipeline, podcast, status, favorite');
+      exit(1);
   }
 }
 

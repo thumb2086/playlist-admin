@@ -66,9 +66,13 @@ class RagService {
     proc.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen((line) {
       if (line.trim().isNotEmpty) onLog(line.trim());
     });
-    await proc.exitCode;
+    final exitCode = await proc.exitCode;
     if (!completer.isCompleted) {
-      completer.complete();
+      if (exitCode == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(Exception('build_db.py exited with code $exitCode'));
+      }
     }
     await completer.future;
   }

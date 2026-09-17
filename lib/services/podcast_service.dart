@@ -270,17 +270,27 @@ class PodcastService {
           else if (type == 'complete') { onLog('字幕下載完成'); result = PodcastSubtitleResult.found; }
         } catch (_) { onLog(line); }
       });
-      // 等待 yt-dlp 完成，每秒檢查 cancel
       final completer = Completer<int>();
       final timer = Timer.periodic(const Duration(seconds: 1), (_) {
         if (isCancelled?.call() == true && !completer.isCompleted) {
-          try { proc.kill(); } catch (_) {}
+          if (Platform.isWindows) {
+            Process.run('taskkill', ['/pid', '${proc.pid}', '/T', '/F']);
+          } else {
+            proc.kill(ProcessSignal.sigterm);
+          }
           completer.complete(-1);
         }
       });
-      Future.delayed(const Duration(seconds: 180), () {
-        if (!completer.isCompleted) {
-          try { proc.kill(); } catch (_) {}
+      var timeoutDone = false;
+      // ignore: unused_local_variable
+      final _ = Future.delayed(const Duration(seconds: 180), () {
+        if (!completer.isCompleted && !timeoutDone) {
+          // Windows: runInShell spawns cmd.exe; must kill process tree
+          if (Platform.isWindows) {
+            Process.run('taskkill', ['/pid', '${proc.pid}', '/T', '/F']);
+          } else {
+            proc.kill(ProcessSignal.sigterm);
+          }
           onLog('字幕下載逾時 (180s)，下次重試');
           completer.complete(-1);
         }
@@ -290,6 +300,7 @@ class PodcastService {
       });
       await completer.future;
       timer.cancel();
+      timeoutDone = true;
       try {
         await outDone.timeout(const Duration(seconds: 10));
       } catch (_) {}

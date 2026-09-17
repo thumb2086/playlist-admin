@@ -76,7 +76,7 @@ class PipelineOrchestrator {
   /// toggled in the music pipeline, so run it directly).
   Future<void> runRagOnly() async {
     onLog('--- Podcast RAG index ---');
-    _stepRag((_) {});
+    await _stepRag((_) {});
   }
 
   Future<void> _stepDownload(void Function(double) progress) async {
@@ -191,7 +191,10 @@ class PipelineOrchestrator {
       progress((done / total * 100).toDouble());
     }
 
-    onLog('下載完成: $ok 成功, $fail 失敗 (共 $total 首)');
+    final skipped = total - done;
+    final parts = ['$ok 成功', '$fail 失敗'];
+    if (skipped > 0) parts.add('$skipped 跳過');
+    onLog('下載完成: ${parts.join(", ")} (共 $total 首)');
     progress(100);
   }
 

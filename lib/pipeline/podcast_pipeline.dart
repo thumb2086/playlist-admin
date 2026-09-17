@@ -288,7 +288,7 @@ class PodcastPipeline {
       final results = await Future.wait(batchFutures);
       await _saveCacheAsync(cache);
       if (hasGroq) {
-        for (int j = 0; j < batch.length; j++) {
+        for (int j = 0; j < results.length; j++) {
           if (results[j] && j < batch.length) {
             groqQueue.add(batch[j]);
           }
@@ -306,10 +306,11 @@ class PodcastPipeline {
       await Future.delayed(const Duration(seconds: 1));
     }
 
-    final srtCount = cache.values.where((v) => v['srt'] == true).length;
-    final txtDone = cache.values.where((v) => v['txt'] == true).length;
-    final errCount = cache.values.where((v) => v['status'] == 'error').length;
-    onLog('  $podcastName 完成: 總處理 ${cache.length} 集 (SRT $srtCount, 逐字稿 $txtDone, 錯誤 $errCount)');
+    final podEntries = cache.entries.where((e) => e.key.startsWith(prefix)).map((e) => e.value).toList();
+    final srtCount = podEntries.where((v) => v['srt'] == true).length;
+    final txtDone = podEntries.where((v) => v['txt'] == true).length;
+    final errCount = podEntries.where((v) => v['status'] == 'error').length;
+    onLog('  $podcastName 完成: 總處理 ${podEntries.length} 集 (SRT $srtCount, 逐字稿 $txtDone, 錯誤 $errCount)');
   }
 
   /// Resolve the actual SRT file for an episode. yt-dlp may save
@@ -452,7 +453,11 @@ class PodcastPipeline {
         );
       } catch (e) {
         onLog('    ❌ 下載失敗');
-        cache[t.key] = {'srt': false, 'txt': false, 'yt_status': '', 'status': 'error'};
+      cache[t.key] = {
+        'srt': false, 'txt': false,
+        'yt_status': cache[t.key]?['yt_status'] ?? '',  // preserve 'not_found'
+        'status': 'error',
+      };
         return false;
       }
     }
@@ -597,6 +602,16 @@ class PodcastPipeline {
 
     int alreadyHave = 0;
     int newCount = 0;
+    // Purge stale cache entries for files that no longer exist
+    final prefix = '$podcastName|';
+    final currentStems = txtFiles.keys.toSet();
+    for (final key in cache.keys.where((k) => k.startsWith(prefix)).toList()) {
+      final stem = key.substring(prefix.length);
+      if (cache[key]?['txt'] == true && !currentStems.contains(stem)) {
+        cache[key]!['txt'] = false;
+        cache[key]!['status'] = '';
+      }
+    }
     for (final entry in txtFiles.entries) {
       final key = '$podcastName|${entry.key}';
       if (cache.containsKey(key) && cache[key]?['txt'] == true) {

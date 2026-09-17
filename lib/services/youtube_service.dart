@@ -285,8 +285,10 @@ class YoutubeService {
         }
       });
       // 180s hard timeout
-      Future.delayed(const Duration(seconds: 180), () {
-        if (!completer.isCompleted) {
+      var timeoutDone = false;
+      // ignore: unused_local_variable
+      final _ = Future.delayed(const Duration(seconds: 180), () {
+        if (!completer.isCompleted && !timeoutDone) {
           proc.kill();
           completer.complete(-1);
         }
@@ -296,6 +298,7 @@ class YoutubeService {
       });
       final code = await completer.future;
       timer.cancel();
+      timeoutDone = true;
 
       onProgress?.call(0.9);
 
