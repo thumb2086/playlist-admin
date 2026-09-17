@@ -236,6 +236,7 @@ class PodcastService {
     String episodeTitle,
     String podcastName, {
     required void Function(String log) onLog,
+    bool Function()? isCancelled,
   }) async {
     final outDir = _podcastDir(podcastName);
     final safeName = normalizeFileName(episodeTitle);
@@ -269,16 +270,26 @@ class PodcastService {
           else if (type == 'complete') { onLog('字幕下載完成'); result = PodcastSubtitleResult.found; }
         } catch (_) { onLog(line); }
       });
-      // exitCode 必須有 timeout：yt-dlp 僵住時整批會等到天荒地老。
-      // transient 失敗不燒 not_found，下次重試（pipeline 已如此處理）。
-      await proc.exitCode.timeout(
-        const Duration(seconds: 180),
-        onTimeout: () {
+      // 等待 yt-dlp 完成，每秒檢查 cancel
+      final completer = Completer<int>();
+      final timer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (isCancelled?.call() == true && !completer.isCompleted) {
+          try { proc.kill(); } catch (_) {}
+          completer.complete(-1);
+        }
+      });
+      Future.delayed(const Duration(seconds: 180), () {
+        if (!completer.isCompleted) {
           try { proc.kill(); } catch (_) {}
           onLog('字幕下載逾時 (180s)，下次重試');
-          return -1;
-        },
-      );
+          completer.complete(-1);
+        }
+      });
+      proc.exitCode.then((c) {
+        if (!completer.isCompleted) completer.complete(c);
+      });
+      await completer.future;
+      timer.cancel();
       try {
         await outDone.timeout(const Duration(seconds: 10));
       } catch (_) {}

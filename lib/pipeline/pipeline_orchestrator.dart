@@ -169,6 +169,7 @@ class PipelineOrchestrator {
           song,
           outputPath: tmpPath,
           onTitle: (title) { if (title != null) onLog('    ⬇️ $title'); },
+          isCancelled: () => state.isCancelled,
         );
         if (savedPath != null && File(tmpPath).existsSync()) {
           if (File(outPath).existsSync()) await File(outPath).delete();

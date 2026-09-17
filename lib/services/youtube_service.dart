@@ -209,6 +209,7 @@ class YoutubeService {
     String format = 'mp3',
     void Function(String? title)? onTitle,
     void Function(double progress)? onProgress,
+    bool Function()? isCancelled,
   }) async {
     onProgress?.call(0.05);
     final dlDir = Directory.systemTemp.createTempSync('yt_dl_');
@@ -274,10 +275,27 @@ class YoutubeService {
         }
       });
 
-      final code = await proc.exitCode.timeout(
-        const Duration(seconds: 180),
-        onTimeout: () { proc.kill(); return -1; },
-      );
+      // 等待 yt-dlp 完成，每秒檢查 cancel（取代舊的 180s timeout）
+      final exitFuture = proc.exitCode;
+      final completer = Completer<int>();
+      final timer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (isCancelled?.call() == true && !completer.isCompleted) {
+          proc.kill();
+          completer.complete(-1);
+        }
+      });
+      // 180s hard timeout
+      Future.delayed(const Duration(seconds: 180), () {
+        if (!completer.isCompleted) {
+          proc.kill();
+          completer.complete(-1);
+        }
+      });
+      exitFuture.then((c) {
+        if (!completer.isCompleted) completer.complete(c);
+      });
+      final code = await completer.future;
+      timer.cancel();
 
       onProgress?.call(0.9);
 

@@ -448,6 +448,7 @@ class PodcastPipeline {
           podcastName: podcastName,
           knownTitle: t.episode.title,
           knownAudioUrl: t.episode.audioUrl,
+          isCancelled: () => state.isCancelled,
         );
       } catch (e) {
         onLog('    ❌ 下載失敗');
@@ -492,6 +493,7 @@ class PodcastPipeline {
     await Future.delayed(Duration(milliseconds: (t.episode.title.hashCode % 4).abs() * 300));
     final subResult = await PodcastService.instance.downloadSubtitles(t.episode.title, podcastName,
       onLog: (msg) => onLog('      $msg'),
+      isCancelled: () => state.isCancelled,
     );
     final srtAfter = await _findSrtAsync(podDir, name);
     if (subResult == PodcastSubtitleResult.found && srtAfter != null) {
