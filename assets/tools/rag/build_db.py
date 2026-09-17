@@ -284,7 +284,15 @@ def _main_build(client, args) -> None:
         return bool(make_chunks(split_sentences(read_text_file(path))))
 
     # 過濾非 podcast 的 .txt：目錄黑名單 + 檔名/大小門檻
-    _SKIP_DIRS = {'podcast_rag', '__pycache__', 'chroma_db', 'node_modules', '.git'}
+    _SKIP_DIRS = {
+        'podcast_rag', '__pycache__', 'chroma_db', 'node_modules', '.git',
+        # 課程逐字稿已移到 study collection，不該出現在 podcast DB
+        'T夜工智CoCo英文S', 'T夜工智張瑀國文S', 'T夜工智胡傑數學S',
+        '機械群劉徹機械力學', '機械群劉徹機械力學S',
+        '機械群許凱機件原理', '機械群許凱機件原理S',
+        '機械群陳海程機械製圖', '機械群陳海程機械製圖S',
+        '機械群陳海程機械製造與實習', '機械群陳海程機械製造與實習S',
+    }
     _SKIP_STEMS = {'README', 'changelog', 'license', 'requirements', 'setup', 'config'}
     _MIN_TXT_BYTES = 100  # podcast 逐字稿至少 ~100 bytes
 
