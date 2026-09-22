@@ -10,6 +10,7 @@ import '../services/playlist_parser.dart';
 import '../services/lufs_service.dart';
 import '../services/rag_service.dart';
 import '../services/youtube_service.dart';
+import '../version.dart';
 
 class PipelineOrchestrator {
   final AppConfig config;
@@ -25,6 +26,11 @@ class PipelineOrchestrator {
   }) : state = state ?? PipelineState();
 
   Future<void> run({int fromStep = 0, int? toStep}) async {
+    // 比照 Podcast Pipeline：開頭印時間戳 + 版本號。
+    final stamp = DateTime.now().toString().substring(0, 19);
+    final ver = appVersion.startsWith('v') ? appVersion : 'v$appVersion';
+    onLog('$stamp  playlist-admin $ver');
+
     final steps = <(String, double, Future<void> Function(void Function(double)))>[
       ('Scrape Spotify playlists', 20.0, _stepScrape),
       ('Download missing tracks', 30.0, _stepDownload),
@@ -48,7 +54,8 @@ class PipelineOrchestrator {
       await state.waitIfPaused();
       if (state.isCancelled) break;
 
-      onLog('--- Step ${i + 1}/${steps.length}: ${steps[i].$1} ---');
+      final ts = DateTime.now().toString().substring(0, 19);
+      onLog('$ts --- Step ${i + 1}/${steps.length}: ${steps[i].$1} ---');
       onProgress(0, 100, i);
 
       try {
@@ -105,6 +112,18 @@ class PipelineOrchestrator {
       progress(100); return;
     }
     onLog('播放清單共 ${allSongs.length} 首歌曲');
+    // 診斷：cookies / yt-dlp 狀態先印，失敗時不用猜。
+    final cookiesPath = YoutubeService.cookiesPathForDiag;
+    if (cookiesPath == null) {
+      onLog('  ⚠️ 找不到 yt_cookies.txt（桌面/文件/APPDATA），YouTube 極可能擋 bot');
+    } else {
+      onLog('  🍪 cookies: $cookiesPath');
+    }
+    try {
+      final ver = await Process.run('yt-dlp', ['--version'], runInShell: false);
+      final v = (ver.stdout as String? ?? '').trim().split('\n').first.trim();
+      if (v.isNotEmpty) onLog('  🔧 yt-dlp $v');
+    } catch (_) {}
 
     // Check which already exist in musicPath.
     final existing = <String>{};
@@ -162,6 +181,7 @@ class PipelineOrchestrator {
 
       onLog('  [$done/$total] $song');
 
+      String? failReason;
       try {
         onLog('    ⬇️ 搜尋+下載中…');
         final tmpPath = '${musicDir.path}\\dl_${safeName.hashCode.toRadixString(16)}.mp3';
@@ -170,6 +190,7 @@ class PipelineOrchestrator {
           outputPath: tmpPath,
           onTitle: (title) { if (title != null) onLog('    ⬇️ $title'); },
           isCancelled: () => state.isCancelled,
+          onError: (err) { failReason = err; },
         );
         if (savedPath != null && File(tmpPath).existsSync()) {
           if (File(outPath).existsSync()) await File(outPath).delete();
@@ -178,12 +199,12 @@ class PipelineOrchestrator {
           ok++;
           consecutiveFails = 0;
         } else {
-          onLog('    ❌ 下載失敗');
+          onLog('    ❌ 下載失敗${failReason != null ? '：$failReason' : ''}');
           fail++;
           consecutiveFails++;
         }
       } catch (e) {
-        onLog('  ❌ 異常: $song → $e');
+        onLog('  ❌ 異常: $song → $e${failReason != null ? '（$failReason）' : ''}');
         fail++;
         consecutiveFails++;
       }

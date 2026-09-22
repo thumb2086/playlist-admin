@@ -138,10 +138,12 @@ class YoutubeService {
     required String outputPath,
     String format = 'mp3',
     void Function(double progress)? onProgress,
+    void Function(String err)? onError,
   }) async {
     final videoId = parseVideoId(url);
     if (videoId == null) {
       _log.e('無法解析 YouTube URL: $url');
+      onError?.call('無法解析 YouTube URL');
       return null;
     }
 
@@ -150,6 +152,7 @@ class YoutubeService {
     final audioUrl = await getAudioUrl(videoId.value);
     if (audioUrl == null) {
       _log.e('無法取得音訊串流: $url');
+      onError?.call('無法取得音訊串流（可能 bot 驗證/cookies 失效）');
       return null;
     }
 
@@ -161,6 +164,7 @@ class YoutubeService {
       format: format,
       onProgress: onProgress,
       videoId: videoId.value,
+      onError: onError,
     );
 
     return result;
@@ -176,12 +180,14 @@ class YoutubeService {
     required String outputPath,
     String format = 'mp3',
     void Function(double progress)? onProgress,
+    void Function(String err)? onError,
   }) async {
     // 搜尋 + 取得音訊 URL
     onProgress?.call(0.05);
     final result = await resolveStream(query);
     if (result == null) {
       _log.e('搜尋下載失敗: $query');
+      onError?.call('YouTube 搜尋無結果或被擋（bot 驗證）：請檢查 yt_cookies.txt');
       return null;
     }
 
@@ -193,6 +199,7 @@ class YoutubeService {
       format: format,
       onProgress: onProgress,
       videoId: result.videoId,
+      onError: onError,
     );
 
     if (savedPath != null) {
@@ -210,6 +217,7 @@ class YoutubeService {
     void Function(String? title)? onTitle,
     void Function(double progress)? onProgress,
     bool Function()? isCancelled,
+    void Function(String err)? onError,
   }) async {
     onProgress?.call(0.05);
     final dlDir = Directory.systemTemp.createTempSync('yt_dl_');
@@ -304,6 +312,7 @@ class YoutubeService {
 
       if (code != 0) {
         _log.w('yt-dlp 搜尋下載失敗 (exit $code): $lastErr');
+        onError?.call(_summarizeYtDlpError(lastErr, code));
         dlDir.deleteSync(recursive: true);
         return null;
       }
@@ -324,6 +333,7 @@ class YoutubeService {
 
       if (found == null || !await found.exists()) {
         _log.w('yt-dlp 找不到輸出檔案');
+        onError?.call(_summarizeYtDlpError(lastErr, code));
         dlDir.deleteSync(recursive: true);
         return null;
       }
@@ -331,6 +341,7 @@ class YoutubeService {
       final fileSize = await found.length();
       if (fileSize < 1024) {
         _log.w('yt-dlp 輸出檔案太小 (${fileSize}B)');
+        onError?.call('輸出檔案太小 (${fileSize}B)，可能被 YouTube 擋下');
         dlDir.deleteSync(recursive: true);
         return null;
       }
@@ -344,10 +355,40 @@ class YoutubeService {
       return outputPath;
     } catch (e) {
       _log.e('yt-dlp 異常: $e');
+      onError?.call('yt-dlp 異常: $e');
       return null;
     } finally {
       try { dlDir.deleteSync(recursive: true); } catch (_) {}
     }
+  }
+
+  /// 把 yt-dlp 冗長 stderr 濃縮成 UI 可讀的一行原因。
+  static String _summarizeYtDlpError(String stderr, int exitCode) {
+    final lines = stderr
+        .split('\n')
+        .map((l) => l.replaceAll(RegExp(r'^\s*\[.*?\]\\s*'), '').trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+    // 優先找關鍵字：bot 驗證 / cookies / format / 403 / timeout。
+    for (final l in lines.reversed) {
+      final low = l.toLowerCase();
+      if (low.contains('not a bot') || low.contains('sign in to confirm')) {
+        return 'YouTube 要求登入驗證 (bot check)：請更新 yt_cookies.txt（需登入 YouTube 後匯出）';
+      }
+      if (low.contains('cookies')) return l.length > 200 ? l.substring(0, 200) : l;
+      if (low.contains('requested format')) return 'requested format 不可用，已跳過';
+      if (low.contains('403') || low.contains('forbidden')) return 'YouTube 403 拒絕：疑似 IP 被擋或 cookies 失效';
+      if (low.contains('timeout') || low.contains('timed out')) return '連線逾時：請重試';
+      if (low.contains('unavailable') || low.contains('private') || low.contains('deleted')) {
+        return l.length > 200 ? l.substring(0, 200) : l;
+      }
+    }
+    if (lines.isNotEmpty) {
+      final last = lines.last;
+      final short = last.length > 200 ? last.substring(last.length - 200) : last;
+      return '$short (exit $exitCode)';
+    }
+    return 'yt-dlp 失敗 (exit $exitCode)，詳見 logs';
   }
 
   /// 跨磁碟 rename 會拋 FileSystemException（systemTemp vs 音樂庫不同碟）：
@@ -400,6 +441,7 @@ class YoutubeService {
     String format = 'mp3',
     void Function(double progress)? onProgress,
     String? videoId,
+    void Function(String err)? onError,
   }) async {
     final ytUrl = videoId != null ? 'https://www.youtube.com/watch?v=$videoId' : audioUrl;
     onProgress?.call(0.1);
@@ -474,6 +516,7 @@ class YoutubeService {
       if (code != 0) {
         final lastErr = errBuf.toString();
         _log.w('yt-dlp 失敗 (exit $code): ${lastErr.length > 300 ? lastErr.substring(lastErr.length - 300) : lastErr}');
+        onError?.call(_summarizeYtDlpError(lastErr, code));
         dlDir.deleteSync(recursive: true);
         return null;
       }
@@ -512,11 +555,15 @@ class YoutubeService {
       return outputPath;
     } catch (e) {
       _log.e('yt-dlp 異常: $e');
+      onError?.call('yt-dlp 異常: $e');
       return null;
     } finally {
       try { dlDir.deleteSync(recursive: true); } catch (_) {}
     }
   }
+
+  /// 給 Pipeline 診斷用：回傳目前找到的 cookies 路徑（若無則 null）。
+  static String? get cookiesPathForDiag => _findCookies();
 
   void close() {
     _closed = true;

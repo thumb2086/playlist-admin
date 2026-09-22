@@ -7,6 +7,8 @@ import '../services/i18n.dart';
 import '../services/chinese_converter.dart';
 import '../services/rag_service.dart';
 import '../services/history_recorder.dart';
+import '../services/log_manager.dart';
+import '../version.dart';
 import '../pipeline/pipeline_orchestrator.dart';
 import '../pipeline/podcast_pipeline.dart';
 import '../models/pipeline_step.dart';
@@ -80,11 +82,14 @@ class _PipelinePageState extends State<PipelinePage> {
   void _musicLog(String msg) {
     _musicPending.add(msg);
     _scheduleLogFlush();
+    // 同時寫檔：UI 只留 1500 行，檔案才是完整證據（含版本號開頭）。
+    try { LogManager.instance.info('[music] $msg'); } catch (_) {}
   }
 
   void _podcastLog(String msg) {
     _podcastPending.add(msg);
     _scheduleLogFlush();
+    try { LogManager.instance.info('[podcast] $msg'); } catch (_) {}
   }
 
   void _scheduleLogFlush() {
@@ -139,7 +144,7 @@ class _PipelinePageState extends State<PipelinePage> {
     if (_musicRunning) return;
     setState(() { _musicRunning = true; _musicProgress = 0; _musicStep = fromStep; });
     _musicState = PipelineState();
-    _musicLog(t('pipeline.starting'));
+    _musicLog('${t('pipeline.starting')} (v$appVersion)');
     await Future<void>.delayed(const Duration(milliseconds: 50));
 
     try {
@@ -216,7 +221,7 @@ class _PipelinePageState extends State<PipelinePage> {
     if (_podcastRunning) return;
     setState(() { _podcastRunning = true; _podcastProgress = 0; });
     _podcastState = PipelineState();
-    _podcastLog('Podcast Pipeline 啟動中…');
+    _podcastLog('Podcast Pipeline 啟動中… (v$appVersion)');
     await Future<void>.delayed(const Duration(milliseconds: 50));
 
     try {

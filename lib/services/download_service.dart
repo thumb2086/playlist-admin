@@ -52,20 +52,22 @@ class DownloadService {
     onLog('🔍 搜尋: $songName');
     onProgress(0.05);
 
+    String? failReason;
     try {
       final result = await YoutubeService.instance.downloadBySearch(
         songName,
         outputPath: outPath,
         format: format,
         onProgress: (p) => onProgress(p),
+        onError: (err) { failReason = err; },
       );
 
       if (result != null) {
         onLog('✅ 下載完成: $result');
         onProgress(1.0);
       } else {
-        onLog('❌ 下載失敗: $songName');
-        throw Exception('下載失敗: $songName');
+        onLog('❌ 下載失敗: $songName${failReason != null ? '：$failReason' : ''}');
+        throw Exception('下載失敗: $songName${failReason != null ? '：$failReason' : ''}');
       }
     } catch (e) {
       onLog('❌ $e');
@@ -84,19 +86,22 @@ class DownloadService {
     onLog('🔗 解析 YouTube URL...');
     onProgress(0.1);
 
+    String? failReason;
     try {
       final result = await YoutubeService.instance.downloadFromUrl(
         url,
         outputPath: outputPath,
         format: format,
         onProgress: (p) => onProgress(p),
+        onError: (err) { failReason = err; },
       );
 
       if (result != null) {
         onLog('✅ 下載完成: $result');
         onProgress(1.0);
       } else {
-        onLog('❌ 下載失敗: $url');
+        // downloadFromUrl 內部已透出 onError？若無則給通用提示。
+        onLog('❌ 下載失敗: $url${failReason != null ? '：$failReason' : '（可能 bot 驗證/cookies 失效，詳見 logs）'}');
         throw Exception('下載失敗: $url');
       }
     } catch (e) {

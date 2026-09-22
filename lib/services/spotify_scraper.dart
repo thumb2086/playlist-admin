@@ -110,11 +110,29 @@ class SpotifyScraper {
     for (final url in urls) {
       processed++;
       log('[$processed/${urls.length}] 處理: $url');
-      try {
-        final result = await _scrapeOne(url, writeM3u8: writeM3u8);
-        if (result != null) results[result.$1] = result.$2;
-      } catch (e) {
-        log('  錯誤: $e');
+      // Embed 偶發 timeout / 瞬時回空（曾導致 Daily Mix 6 等解析失敗）：失敗再試一次。
+      (String, List<String>)? result;
+      Object? lastErr;
+      for (int attempt = 0; attempt < 2; attempt++) {
+        if (attempt > 0) {
+          log('  ⏳ 解析失敗，3s 後重試…');
+          await Future<void>.delayed(const Duration(seconds: 3));
+        }
+        lastErr = null;
+        try {
+          result = await _scrapeOne(url, writeM3u8: writeM3u8);
+        } catch (e) {
+          lastErr = e;
+          log('  錯誤: $e');
+        }
+        if (result != null) break;
+      }
+      if (result != null) {
+        results[result.$1] = result.$2;
+      } else if (lastErr != null) {
+        log('  ❌ 重試後仍失敗，保留舊歌單資料');
+      } else {
+        log('  ❌ 重試後仍失敗，保留舊歌單資料');
       }
     }
     return results;

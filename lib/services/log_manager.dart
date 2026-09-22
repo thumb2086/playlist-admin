@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import '../version.dart';
 
 class LogManager {
   static final LogManager _instance = LogManager._();
@@ -23,7 +24,7 @@ class LogManager {
         '${_p2(now.hour)}${_p2(now.minute)}${_p2(now.second)}.log';
     _logPath = '${logDir.path}\\$name';
     _cleanup(logDir.path);
-    info('--- 系統啟動 ---');
+    info('--- 系統啟動 v$appVersion ---');
   }
 
   String _p2(int n) => n.toString().padLeft(2, '0');
