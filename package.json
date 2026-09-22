@@ -1,6 +1,6 @@
 {
   "name": "playlist-admin",
-  "version": "2.15.29",
+  "version": "2.15.30",
   "description": "playlist-admin CLI - pipeline, podcast, music + podcast RAG + study RAG (PDF 試題/課本)",
   "type": "module",
   "bin": {
@@ -27,6 +27,10 @@
     "spotube"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/thumb2086/playlist-admin"
+  },
   "engines": {
     "node": ">=20"
   },
