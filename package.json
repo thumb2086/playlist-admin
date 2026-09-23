@@ -1,6 +1,6 @@
 {
   "name": "playlist-admin",
-  "version": "2.15.30",
+  "version": "2.15.31",
   "description": "playlist-admin CLI - pipeline, podcast, music + podcast RAG + study RAG (PDF 試題/課本)",
   "type": "module",
   "bin": {
