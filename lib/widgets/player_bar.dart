@@ -61,6 +61,9 @@ class _PlayerBarState extends State<PlayerBar> {
   @override
   Widget build(BuildContext context) {
     final hasTrack = _ctrl.hasTrack;
+    // 直接點歌（首頁卡片）不設 queue：title 已載入就該能控制播放，
+    // 否則暫停/seek/循環全部停用 =「播放控制失效」。
+    final canPlay = hasTrack || _ctrl.title.isNotEmpty;
     final statusText = _ctrl.statusText;
     final dur = _ctrl.duration;
     final pos = _seeking ? Duration(seconds: _seekValue.toInt()) : _ctrl.position;
@@ -75,7 +78,9 @@ class _PlayerBarState extends State<PlayerBar> {
       padding: const EdgeInsets.symmetric(horizontal: 12),
       child: Row(children: [
         // --- Cover + Title/Artist ---
-        if (hasTrack) ...[
+        // 顯示也用 canPlay：直接播放（首頁卡/show▶）沒設 queue，舊的 hasTrack
+        // 分支會掉進「無封面槽＋灰字」的 else（診斷已證 art URL 有送到）。
+        if (canPlay) ...[
           ClipRRect(
             borderRadius: BorderRadius.circular(6),
             child: Container(
@@ -105,11 +110,11 @@ class _PlayerBarState extends State<PlayerBar> {
           SizedBox(
             width: 140,
             child: Text(
-              statusText.isNotEmpty ? statusText : (hasTrack ? _ctrl.title : '未播放'),
+              statusText.isNotEmpty ? statusText : (_ctrl.title.isNotEmpty ? _ctrl.title : '未播放'),
               maxLines: 1, overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 fontSize: 12,
-                color: statusText.isNotEmpty ? Colors.orange : (hasTrack ? AppColors.text : AppColors.textMuted.withValues(alpha: 0.5)),
+                color: statusText.isNotEmpty ? Colors.orange : (canPlay ? AppColors.text : AppColors.textMuted.withValues(alpha: 0.5)),
               ),
             ),
           ),
@@ -128,13 +133,13 @@ class _PlayerBarState extends State<PlayerBar> {
         Container(
           width: 40, height: 40,
           decoration: BoxDecoration(
-            color: hasTrack ? Colors.white : AppColors.surfaceLight,
+            color: canPlay ? Colors.white : AppColors.surfaceLight,
             shape: BoxShape.circle,
           ),
           child: IconButton(
             icon: Icon(_ctrl.isPlaying ? Icons.pause_rounded : Icons.play_arrow_rounded,
                 size: 24, color: Colors.black),
-            onPressed: hasTrack ? _ctrl.togglePlay : null,
+            onPressed: canPlay ? _ctrl.togglePlay : null,
             padding: EdgeInsets.zero,
           ),
         ),
@@ -151,7 +156,7 @@ class _PlayerBarState extends State<PlayerBar> {
         IconButton(
           icon: Icon(Icons.shuffle_rounded, size: 16,
               color: _ctrl.shuffle ? AppColors.accent : AppColors.textMuted),
-          onPressed: hasTrack ? _ctrl.toggleShuffle : null,
+          onPressed: canPlay ? _ctrl.toggleShuffle : null,
           tooltip: _ctrl.shuffle ? '隨機播放 (開)' : '隨機播放 (關)',
           padding: EdgeInsets.zero,
           constraints: const BoxConstraints(minWidth: 24),
@@ -159,7 +164,7 @@ class _PlayerBarState extends State<PlayerBar> {
         IconButton(
           icon: Icon(_ctrl.loop ? Icons.repeat_rounded : Icons.repeat_one_rounded, size: 16,
               color: _ctrl.loop ? AppColors.accent : AppColors.textMuted),
-          onPressed: hasTrack ? _ctrl.toggleLoop : null,
+          onPressed: canPlay ? _ctrl.toggleLoop : null,
           tooltip: _ctrl.loop ? '循環播放' : '單曲循環',
           padding: EdgeInsets.zero,
           constraints: const BoxConstraints(minWidth: 24),
@@ -180,7 +185,7 @@ class _PlayerBarState extends State<PlayerBar> {
                 child: Slider(
                   value: _seeking ? _seekValue : pos.inMilliseconds.toDouble().clamp(0, maxDur),
                   max: maxDur,
-                  onChanged: hasTrack ? (v) => setState(() { _seeking = true; _seekValue = v; }) : null,
+                  onChanged: canPlay ? (v) => setState(() { _seeking = true; _seekValue = v; }) : null,
                   onChangeEnd: (v) {
                     _seeking = false;
                     _ctrl.seek(Duration(milliseconds: v.toInt()));
@@ -222,7 +227,7 @@ class _PlayerBarState extends State<PlayerBar> {
         IconButton(
           icon: Icon(Icons.bedtime_outlined, size: 18,
               color: _ctrl.sleepEndsAt != null ? Colors.orange : AppColors.textMuted),
-          onPressed: hasTrack ? () => _showSleepMenu(context) : null,
+          onPressed: canPlay ? () => _showSleepMenu(context) : null,
           tooltip: _ctrl.sleepEndsAt != null ? '睡眠定時器 (${_ctrl.sleepRemainingText})' : '睡眠定時器',
           padding: EdgeInsets.zero,
           constraints: const BoxConstraints(minWidth: 28),

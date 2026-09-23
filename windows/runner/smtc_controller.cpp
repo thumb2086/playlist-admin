@@ -108,12 +108,31 @@ SmtcController::SmtcController(flutter::BinaryMessenger* messenger, HWND window)
     impl_->smtc.IsStopEnabled(true);
     impl_->smtc.PlaybackStatus(winrt::MediaPlaybackStatus::Closed);
 
+    // 預設展示資訊：Dart 第一次 push 之前，flyout 不可落到 Windows 的
+    // fallback（曾顯示 exe 路徑 / GUID 字串）。Title 固定給 app 名。
+    try {
+      auto updater = impl_->smtc.DisplayUpdater();
+      updater.Type(winrt::MediaPlaybackType::Music);
+      updater.MusicProperties().Title(L"playlist-admin");
+      updater.MusicProperties().Artist(L"");
+      updater.MusicProperties().AlbumTitle(L"");
+      updater.Thumbnail(nullptr);
+      updater.Update();
+      SmtcLog("SmtcController: default display metadata set");
+    } catch (const winrt::hresult_error& e) {
+      SmtcLog(std::string("SmtcController: default metadata FAILED: ") +
+              winrt::to_string(e.message()));
+    }
+
     // Button events arrive on the SMTC thread; marshal to the UI thread via
     // a WM_APP message so the Flutter channel is only touched on the platform
     // thread.
+    // 診斷：每個按鈕事件都記，確認 shell → event → WM_APP → Dart 鏈路死在哪。
     impl_->buttonToken = impl_->smtc.ButtonPressed(
         [this](winrt::SystemMediaTransportControls const&,
                winrt::SystemMediaTransportControlsButtonPressedEventArgs const& args) {
+          SmtcLog(std::string("ButtonPressed event: code=") +
+                  std::to_string(static_cast<int>(args.Button())));
           int code = 0;
           switch (args.Button()) {
             case winrt::SystemMediaTransportControlsButton::Play:
@@ -174,6 +193,7 @@ SmtcController::~SmtcController() {
 }
 
 void SmtcController::HandleSystemMediaButton(int buttonCode) {
+  SmtcLog("WM_APP handled: code=" + std::to_string(buttonCode));
   if (buttonCode == kMediaSeek) {
     // Send seek position as a separate channel event with ms value.
     flutter::EncodableMap payload;
@@ -204,6 +224,7 @@ void SmtcController::SendButtonEvent(const std::string& event) {
   if (event.empty()) {
     return;
   }
+  SmtcLog("channel onButton -> '" + event + "'");
   flutter::EncodableValue value(event);
   channel_->InvokeMethod("onButton", std::make_unique<flutter::EncodableValue>(value));
 }
@@ -263,6 +284,25 @@ void SmtcController::ApplyUpdate(const flutter::EncodableMap& map) {
     const std::wstring album = getStr("album");
     const std::wstring artworkUrl = getStr("artworkUrl");
     const bool playing = getBool("playing", false);
+
+    // 診斷：記錄實際推入的 payload（GUID/亂碼來源定位用）。wstring → UTF-8。
+    try {
+      auto w2u8 = [](const std::wstring& w) -> std::string {
+        if (w.empty()) return std::string();
+        const int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(),
+                                          static_cast<int>(w.size()),
+                                          nullptr, 0, nullptr, nullptr);
+        if (n <= 0) return std::string();
+        std::string out(n, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()),
+                            &out[0], n, nullptr, nullptr);
+        return out;
+      };
+      SmtcLog("ApplyUpdate title=[" + w2u8(title) + "] artist=[" +
+              w2u8(artist) + "] art=[" + w2u8(artworkUrl) +
+              "] playing=" + (playing ? "1" : "0"));
+    } catch (...) {
+    }
 
     // Timeline: positionMs/endTimeMs let the OS media flyout render a
     // progress bar with a draggable seek thumb.

@@ -9,6 +9,7 @@ import '../services/config_service.dart';
 import '../services/favorites_service.dart';
 import '../services/youtube_service.dart';
 import '../widgets/dark_theme.dart';
+import '../services/podcast_service.dart';
 
 /// Unified detail page for music playlists AND podcast shows.
 /// Supports per-track download with checkmarks for already-downloaded items.
@@ -19,6 +20,8 @@ class PlaylistDetailPage extends StatefulWidget {
   final List<PlaylistItem> items;
   final bool isPodcast;
   final String? spotifyUrl;
+  /// Podcast 節目的 RSS feed — 提供時 header 顯示「訂閱」鈕（未訂閱可就地訂閱）。
+  final String? subscribeUrl;
 
   const PlaylistDetailPage({
     super.key,
@@ -28,6 +31,7 @@ class PlaylistDetailPage extends StatefulWidget {
     required this.items,
     this.isPodcast = false,
     this.spotifyUrl,
+    this.subscribeUrl,
   });
 
   @override
@@ -44,6 +48,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   /// Which tracks are already on disk (filled async after first frame).
   Set<int> _localTracks = {};
   Set<String> _favorites = {};
+  bool _subscribed = false;
 
   @override
   void initState() {
@@ -133,6 +138,24 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
           }
         }
       }
+      // 單集候選（有 audioUrl 或無 ISRC）→ podcasts\ 資料夾也算已下載。
+      if (!hit) {
+        final it = widget.items[i];
+        final isEp = (it.audioUrl != null && it.audioUrl!.isNotEmpty) ||
+            (it.isrc ?? '').isEmpty;
+        if (isEp) {
+          final shows = <String>{
+            it.artist,
+            PlayerController.instance.matchSubscribedShow(it.artist),
+          };
+          for (final s in shows) {
+            if (s.isEmpty) continue;
+            if (PodcastService.instance
+                .isEpisodeDownloaded(it.name, it.audioUrl ?? '',
+                    podcastName: s)) { hit = true; break; }
+          }
+        }
+      }
       if (hit) result.add(i);
     }
     return result;
@@ -155,6 +178,43 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     final item = widget.items[index];
     if (mounted) setState(() { _downloading.add(index); _progress[index] = 0; });
     try {
+      // ── 單集判別：有 audioUrl，或無 ISRC（Spotify episode 沒有 isrc）→
+      //    RSS 解析 → 下載到 podcasts\<節目>\（跟 podcast pipeline 同資料夾），
+      //    絕不混進音樂庫（否則會被 _Unsorted 收進歌單）。
+      final isEpisodeCandidate = (item.audioUrl != null && item.audioUrl!.isNotEmpty) ||
+          ((item.isrc ?? '').isEmpty && item.audioUrl == null);
+      PlaylistItem? ep;
+      if (item.audioUrl != null && item.audioUrl!.isNotEmpty) {
+        ep = item;
+      } else if (isEpisodeCandidate) {
+        ep = await PlayerController.instance
+            .findEpisodeByTitle(item.name, showHint: item.artist);
+      }
+      if (ep != null) {
+        final show = PlayerController.instance.matchSubscribedShow(ep.artist);
+        debugPrint('[DL] $index episode -> podcasts\\$show');
+        await PodcastService.instance.downloadEpisode(
+          '',
+          0,
+          (p) { if (mounted) setState(() => _progress[index] = p * 0.95); },
+          podcastName: show,
+          knownTitle: ep.name,
+          knownAudioUrl: ep.audioUrl,
+        );
+        final ok = PodcastService.instance
+            .isEpisodeDownloaded(ep.name, ep.audioUrl ?? '', podcastName: show);
+        if (ok) {
+          if (mounted) {
+            setState(() { _downloaded.add(index); _progress[index] = 1.0; });
+          }
+        } else if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('單集下載失敗: ${ep.name}'),
+              duration: const Duration(seconds: 2)));
+        }
+        return;
+      }
+      // ── 非單集（真歌）→ 原音樂下載路徑（進音樂庫，歌單 m3u8 會收錄）。
       final cfg = ConfigService.instance.config;
       final musicDir = Directory(cfg.musicPath);
       await musicDir.create(recursive: true);
@@ -223,6 +283,23 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
 
   /// 整單下載開關：true 跑 serial，false 停在當前這首後。
   bool _downloadingAll = false;
+
+  /// 已訂閱狀態：進頁面即判 config（不只依賴點過訂閱鈕的 flag）。
+  bool get _alreadySubscribed =>
+      _subscribed ||
+      ConfigService.instance.config.podcastSubscriptions.containsKey(widget.title);
+
+  /// 就地訂閱：寫入 config（跟 Download 頁同一份 podcastSubscriptions）。
+  void _subscribe() {
+    final url = widget.subscribeUrl;
+    if (url == null || url.isEmpty) return;
+    final cfg = ConfigService.instance.config;
+    cfg.podcastSubscriptions[widget.title] = url;
+    ConfigService.instance.save();
+    if (mounted) setState(() => _subscribed = true);
+    ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已訂閱「${widget.title}」— Pipeline 也會抓它的新集數')));
+  }
 
   Future<void> _downloadAll() async {
     // 跑一半再按一次 = 取消。
@@ -339,19 +416,33 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                     ),
                   ),
-                  if (!widget.isPodcast) ...[
+                  // Podcast 節目：可就地訂閱（不用回 Download 頁）。
+                  if (widget.isPodcast && (widget.subscribeUrl?.isNotEmpty ?? false)) ...[
                     const SizedBox(width: 8),
                     OutlinedButton.icon(
-                      onPressed: _downloadAll,
-                      icon: Icon(_downloadingAll ? Icons.stop_rounded : Icons.download_rounded, size: 16),
-                      label: Text(_downloadingAll ? '取消下載' : (localCount > 0 ? '下載 ($localCount/$totalCount)' : '下載全部')),
+                      onPressed: _alreadySubscribed ? null : _subscribe,
+                      icon: Icon(_alreadySubscribed ? Icons.check_rounded : Icons.add_rounded, size: 16),
+                      label: Text(_alreadySubscribed ? '已訂閱' : '訂閱'),
                       style: OutlinedButton.styleFrom(
-                        foregroundColor: AppColors.text,
+                        foregroundColor: _alreadySubscribed ? AppColors.textMuted : AppColors.accent,
                         side: const BorderSide(color: AppColors.border),
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       ),
                     ),
                   ],
+                  const SizedBox(width: 8),
+                  // 下載鈕不再排除 podcast：單集走 _downloadTrack 的 RSS 分支
+                  // 進 podcasts\<節目>\（跟 pipeline 同資料夾）。
+                  OutlinedButton.icon(
+                    onPressed: _downloadAll,
+                    icon: Icon(_downloadingAll ? Icons.stop_rounded : Icons.download_rounded, size: 16),
+                    label: Text(_downloadingAll ? '取消下載' : (localCount > 0 ? '下載 ($localCount/$totalCount)' : '下載全部')),
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: AppColors.text,
+                      side: const BorderSide(color: AppColors.border),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    ),
+                  ),
                 ]),
               ],
             ),

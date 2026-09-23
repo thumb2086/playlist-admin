@@ -11,6 +11,9 @@ import '../services/smtc_service.dart';
 import '../services/playback_history.dart';
 import '../services/metadata_reader.dart';
 import '../services/jam_service.dart';
+import '../services/log_manager.dart';
+import '../services/podcast_service.dart';
+import '../models/podcast_episode.dart';
 
 /// Central playback controller: owns the MediaKit Player, queue, and all state.
 /// Used by both PlayerBar (bottom bar) and the queue drawer / PlayerPage.
@@ -59,6 +62,8 @@ class PlayerController {
   // media_kit stream subscriptions: must cancel in dispose.
   final List<StreamSubscription> _playerSubs = [];
   DateTime _lastPositionNotify = DateTime.fromMillisecondsSinceEpoch(0);
+  // mpv 開檔失敗旗標：誤導 completed → 自動跳歌的防護（見 completed listener）。
+  bool _loadFailed = false;
 
   // Getters
   Player get player => _player;
@@ -93,7 +98,7 @@ class PlayerController {
     _sleepEndsAt = null;
     if (duration == null) { _notify(); return; }
     _sleepTimer = Timer(duration, () {
-      if (_isPlaying) { _player.pause(); _isPlaying = false; }
+      if (_isPlaying) { _player.pause(); _isPlaying = false; _pushSmtc(); }
       _sleepEndsAt = null;
       _notify();
     });
@@ -112,18 +117,32 @@ class PlayerController {
 
   void init() {
     _volume = ConfigService.instance.config.volume.clamp(0.0, 1.0);
-    _player.setVolume(_volume);
+    // media_kit 音量刻度是 0~100（mpv），app 內部是 0~1（audioplayers 遷移遺跡）。
+    // 不 ×100 的話 UI 顯示100%實際只有1%，再乘系統主音量 = 人耳聽不見的無聲播放。
+    _player.setVolume(_volume * 100);
     _playerSubs.add(_player.stream.completed.listen((_) {
       if (jamFollowMode) return;
+      if (_loadFailed) {
+        // 開檔失敗 ≠ 播完：不自動跳，否則 50 首的失敗佇列會連環空轉。
+        _loadFailed = false;
+        _isPlaying = false;
+        _notify();
+        _pushSmtc();
+        return;
+      }
       if (_loop || _shuffle) {
         next();
       } else {
         _isPlaying = false;
         _notify();
+        _pushSmtc(); // 播完停住：卡片若不更新會停在 Playing，按了像沒反應
       }
     }));
     _playerSubs.add(_player.stream.position.listen((p) {
       _position = p;
+      if (p > Duration.zero && _statusText.startsWith('播放錯誤')) {
+        _statusText = ''; // 已在動：剛才的 error 是雜訊，清掉
+      }
       _checkPlaybackRecord(p);
       // position 每秒更新數十次：節流 notify，否則整頁高頻 rebuild。
       final now = DateTime.now();
@@ -134,6 +153,24 @@ class PlayerController {
     _playerSubs.add(_player.stream.duration.listen((d) {
       _duration = d;
       _notify();
+    }));
+    // mpv 開不起來（404 等）→ 顯示錯誤並停；已在播時的 error 多半是串流
+    // 雜訊，只記 log 不動播放狀態（否則「按鈕狀態怪=播著卻顯示▶」）。
+    _playerSubs.add(_player.stream.error.listen((msg) {
+      if (msg.isEmpty) return;
+      LogManager.instance.info('[player] mpv error: $msg');
+      // 字幕自動載入失敗（相鄰 .srt 缺失/長檔名）＝無害雜訊，絕不可殺播放。
+      final low = msg.toLowerCase();
+      if (low.contains('.srt') || low.contains('external file') ||
+          low.contains('sub') || low.contains('subtitle')) {
+        return;
+      }
+      if (_position > Duration.zero) return; // 有進度 = 正在播 → 雜訊
+      _loadFailed = true; // completed 不可把失敗當播完去自動跳下一首
+      _statusText = '播放錯誤: $msg';
+      _isPlaying = false;
+      _notify();
+      _pushSmtc();
     }));
     // Attach SMTC: media buttons → PlayerController.
     SmtcService.instance.attach(
@@ -148,12 +185,16 @@ class PlayerController {
       if (!_isPlaying) return;
       _pushSmtc();
     });
+    // 啟動即推一次：沒播過歌時也要讓 flyout 顯示 app 名而非系統預設值。
+    _pushSmtc();
   }
 
   /// Play a local file.
   Future<void> playFile(String path, {String? title, String? artist, String? coverUrl}) async {
     StreamServer.instance.stopActive();
     await _player.stop();
+    _position = Duration.zero; // 開新檔歸零：error 判斷(見 listener)依賴它
+    _statusText = ''; // 入口清殘留錯誤（playFile 不設 statusText，不清會帶到下一首）
     _title = title ?? _titleFromPath(path);
     _artist = artist ?? _artistFromPath(path);
     _coverPath = coverUrl;
@@ -169,39 +210,32 @@ class PlayerController {
     _pushSmtc();
   }
 
-  /// Play via download-then-play: resolve → ffmpeg download → play local mp3.
+  /// True streaming: 開 local HTTP 端點讓 mpv 邊下邊播，不再等整首下載完
+  /// （舊 resolveToFile = download-then-play，一首歌要卡 10~30 秒才出聲）。
+  /// 下一首仍由 _prefetchNext 後台完整下載入快取，換歌不卡。
   Future<void> playStream(String query, {String? title, String? artist, String? isrc, String? coverUrl}) async {
     await _player.stop();
+    _position = Duration.zero; // 開新檔歸零（見 error listener）
     _title = title ?? query;
     _artist = artist ?? '';
     _coverPath = coverUrl;
     _recordedSongKey = '';
-    _statusText = '下載中: $_title';
-    _isPlaying = false;
+    _statusText = '';
+    _isPlaying = true;
     _notify();
     try {
       await StreamServer.instance.start();
-      final localPath = await StreamServer.instance.resolveToFile(query, isrc: isrc)
-          .timeout(const Duration(seconds: 60), onTimeout: () {
-        _statusText = '下載逾時: $query';
-        _notify();
-        return '';
-      });
-      if (localPath.isEmpty || !File(localPath).existsSync()) {
-        _statusText = '找不到: $query';
-        _notify();
-        return;
-      }
-      _statusText = '';
-      _isPlaying = true;
-      await _player.open(Media(Uri.file(localPath).toString()));
+      final url =
+          '${StreamServer.instance.baseUrl}/stream/${Uri.encodeComponent(query)}';
+      await _player.open(Media(url));
       _pushSmtc();
       _prefetchNext();
     } catch (e) {
-      _statusText = '錯誤: $e';
+      _statusText = '串流錯誤: $e';
+      _isPlaying = false;
       _notify();
+      _pushSmtc();
     }
-    _notify();
   }
 
   /// Smart play: local file if path exists, otherwise search music library, then stream.
@@ -220,18 +254,33 @@ class PlayerController {
   }
 
   /// Play podcast show: look up RSS feed, get episodes, play latest.
-  Future<void> playPodcastShow(String showName) async {
+  Future<void> playPodcastShow(String showName, {String? coverUrl}) async {
     StreamServer.instance.stopActive();
     await _player.stop();
+    _position = Duration.zero; // 開新檔歸零（見 error listener）
     _title = showName;
+    _artist = showName; // 舊版從不設 artist → 殘留上一首的歌手名
+    _coverPath = coverUrl; // 呼叫端（Spotify 卡片）封面當保底
     _statusText = '載入 Podcast: $showName';
     _isPlaying = false;
     _notify();
     try {
       final cfg = ConfigService.instance.config;
-      final rssUrl = cfg.podcastSubscriptions[showName];
+      var rssUrl = cfg.podcastSubscriptions[showName];
+      // 未訂閱的節目 → iTunes 搜同名節目拿 feed 兜底（訂閱清單外也能聽）。
       if (rssUrl == null || rssUrl.isEmpty) {
-        _statusText = '找不到 RSS: $showName';
+        try {
+          final shows = await PodcastService.instance.searchPodcasts(showName);
+          final hit = shows.where((s) => s.feedUrl.isNotEmpty).firstOrNull;
+          if (hit != null) {
+            rssUrl = hit.feedUrl;
+            _statusText = '載入 Podcast: $showName（未訂閱，iTunes 解析）';
+            _notify();
+          }
+        } catch (_) {}
+      }
+      if (rssUrl == null || rssUrl.isEmpty) {
+        _statusText = '找不到 RSS: $showName（未訂閱且 iTunes 無結果）';
         _notify();
         return;
       }
@@ -244,6 +293,12 @@ class PlayerController {
         return;
       }
       // Parse XML for episodes with audio URLs.
+      // 封面 fallback 鏈：channel 層 itunes:image → 首個單集層 image →
+      // 呼叫端卡片封面（coverUrl 參數已在入口設過，只在 RSS 有圖時覆蓋）。
+      final chCover = RegExp(r'<itunes:image[^>]*href="([^"]+)"').firstMatch(resp.body)?.group(1) ??
+          RegExp(r'<image>\s*<url>([^<]+)</url>\s*</image>', dotAll: true)
+              .firstMatch(resp.body)?.group(1);
+      if (chCover != null) _coverPath = chCover;
       final episodes = _parseRssEpisodes(resp.body);
       if (episodes.isEmpty) {
         _statusText = '找不到集數: $showName';
@@ -254,7 +309,7 @@ class PlayerController {
       final ep = episodes.first;
       _title = ep['title'] ?? showName;
       _artist = showName;
-      _statusText = '播放: $_title';
+      _statusText = ''; // 標題已足夠；舊的「播放: …」會永久佔著狀態列（橘字）
       _notify();
       await _player.open(Media(ep['url']!));
       _isPlaying = true;
@@ -288,6 +343,8 @@ class PlayerController {
   Future<void> playItem(PlaylistItem item) async {
     StreamServer.instance.stopActive();
     await _player.stop();
+    _position = Duration.zero; // 開新檔歸零（見 error listener）
+    _statusText = ''; // 入口清殘留錯誤（分支需要時會再設）
     _title = item.name;
     _artist = item.artist;
     _coverPath = item.coverUrl;
@@ -296,7 +353,13 @@ class PlayerController {
 
     // 1. Direct RSS URL (podcast).
     if (item.audioUrl != null && item.audioUrl!.isNotEmpty) {
-      _statusText = '播放: ${item.name}';
+      _statusText = ''; // 標題已足夠；舊的「播放: …」會永久蓋掉歌名顯示
+      // 本機優先：podcasts\<節目>\ 已下載過 → 播檔案，不燒網路。
+      final localEp = _findLocalEpisode(item.name, item.artist);
+      if (localEp != null) {
+        await playFile(localEp, title: item.name, artist: item.artist, coverUrl: item.coverUrl);
+        return;
+      }
       _isPlaying = true;
       _notify();
       // Cache RSS audio: play URL, cache in background.
@@ -321,8 +384,132 @@ class PlayerController {
       return;
     }
 
+    // 3.5. 本機單集優先（podcasts\ 是天然索引，不需要 M3U8）；
+    //      沒有本機檔才做 RSS 二段解析（已訂閱 → iTunes showHint）。
+    final localEpDirect = _findLocalEpisode(item.name, item.artist);
+    if (localEpDirect != null) {
+      await playFile(localEpDirect, title: item.name, artist: item.artist, coverUrl: item.coverUrl);
+      return;
+    }
+    final ep = await findEpisodeByTitle(item.name, showHint: item.artist);
+    if (ep != null) {
+      _statusText = '';
+      await playItem(ep);
+      return;
+    }
+
     // 4. Stream via YouTube.
     await playStream(item.audioQuery, title: item.name, artist: item.artist, isrc: item.isrc, coverUrl: item.coverUrl);
+  }
+
+  /// 單集標題解析（public：PlaylistDetailPage 下載也走同一套判別）。
+  /// 1) 已訂閱節目的 RSS（平行、feed 快取 10 分鐘）
+  /// 2) showHint（Spotify episode 的 artist 位常是節目名）→ iTunes 搜節目
+  ///    → 取前 3 個 feed 找該集 — 覆蓋「沒訂閱但歌單裡有」的單集。
+  final Map<String, ({DateTime at, List<PodcastEpisode> eps})> _epFeedCache = {};
+  final Map<String, ({DateTime at, PlaylistItem? item})> _epResolveCache = {};
+
+  Future<List<PodcastEpisode>> _episodesCached(String feedUrl) async {
+    final hit = _epFeedCache[feedUrl];
+    if (hit != null && DateTime.now().difference(hit.at) < const Duration(minutes: 10)) {
+      return hit.eps;
+    }
+    final eps = (await PodcastService.instance.fetchEpisodes(feedUrl)).episodes;
+    if (_epFeedCache.length > 64) _epFeedCache.clear();
+    _epFeedCache[feedUrl] = (at: DateTime.now(), eps: eps);
+    return eps;
+  }
+
+  Future<PlaylistItem?> findEpisodeByTitle(String title, {String? showHint}) async {
+    final t = title.trim();
+    if (t.isEmpty) return null;
+    final mem = _epResolveCache[t];
+    if (mem != null && DateTime.now().difference(mem.at) < const Duration(minutes: 10)) {
+      return mem.item;
+    }
+    PlaylistItem? found;
+
+    // Phase 1: subscribed feeds.
+    final subs = ConfigService.instance.config.podcastSubscriptions;
+    if (subs.isNotEmpty) {
+      final results = await Future.wait(subs.entries.map((e) async {
+        try {
+          final eps = await _episodesCached(e.value);
+          for (final ep in eps) {
+            if (ep.title == t && ep.audioUrl.startsWith('http')) {
+              return _epItem(ep.title, e.key, ep.audioUrl);
+            }
+          }
+        } catch (_) {}
+        return null;
+      }));
+      for (final r in results) {
+        if (r != null) { found = r; break; }
+      }
+    }
+
+    // Phase 2: iTunes search by show hint.
+    final hint = (showHint ?? '').trim();
+    if (found == null && hint.isNotEmpty) {
+      try {
+        final shows = await PodcastService.instance.searchPodcasts(hint);
+        final feeds = shows.take(3).map((s) => s.feedUrl).where((u) => u.isNotEmpty);
+        final results = await Future.wait(feeds.map((u) async {
+          try {
+            final eps = await _episodesCached(u);
+            for (final ep in eps) {
+              if (ep.title == t && ep.audioUrl.startsWith('http')) {
+                return _epItem(ep.title, matchSubscribedShow(hint), ep.audioUrl);
+              }
+            }
+          } catch (_) {}
+          return null;
+        }));
+        for (final r in results) {
+          if (r != null) { found = r; break; }
+        }
+      } catch (_) {}
+    }
+
+    if (_epResolveCache.length > 256) _epResolveCache.clear();
+    _epResolveCache[t] = (at: DateTime.now(), item: found);
+    return found;
+  }
+
+  /// show 提示對回訂閱 key（Spotify artist='科技浪' vs 訂閱 key='科技浪 Tech.wav'），
+  /// 確保下載落在 pipeline 同一個 podcasts\<節目>\ 資料夾。Public：下載頁共用。
+  String matchSubscribedShow(String hint) {
+    final subs = ConfigService.instance.config.podcastSubscriptions;
+    if (hint.isEmpty) return hint;
+    for (final k in subs.keys) {
+      if (k == hint || k.contains(hint) || hint.contains(k)) return k;
+    }
+    return hint;
+  }
+
+  PlaylistItem _epItem(String title, String show, String audioUrl) => PlaylistItem(
+      name: title, artist: show, audioQuery: title, audioUrl: audioUrl);
+
+  /// 找本機單集檔：podcasts\<節目>\（含對回的訂閱 key 資料夾）與根目錄。
+  /// 找不到回 null；資料夾不存在時 podcastDir 會建（無害）。
+  String? _findLocalEpisode(String title, String show) {
+    try {
+      final safe = PodcastService.normalizeFileName(title);
+      if (safe.isEmpty) return null;
+      final roots = <String>{};
+      final key = matchSubscribedShow(show);
+      if (key.isNotEmpty) roots.add(PodcastService.instance.podcastDir(key));
+      final raw = show.trim();
+      if (raw.isNotEmpty) roots.add(PodcastService.instance.podcastDir(raw));
+      roots.add(PodcastService.instance.podcastDir(''));
+      for (final dir in roots) {
+        for (final ext in ['mp3', 'm4a', 'mp4', 'wav', 'aac']) {
+          final f = File('$dir\\$safe.$ext');
+          if (f.existsSync()) return f.path;
+        }
+      }
+    } catch (_) {}
+    return null;
   }
 
   // 播放路徑 stem 索引：30 秒 TTL。原本每次點播都 listSync 全目錄凍 UI。
@@ -497,7 +684,11 @@ class PlayerController {
       JamService.instance.next();
       return;
     }
-    if (_queue.isEmpty) return;
+    if (_queue.isEmpty) {
+      // 空佇列也要同步 SMTC：否則卡片停在 Playing，看起來像壞了。
+      _pushSmtc();
+      return;
+    }
     if (_shuffle) {
       if (_shuffleOrder.isEmpty) _buildShuffleOrder();
       final pos = _shuffleOrder.indexOf(_index);
@@ -580,6 +771,7 @@ class PlayerController {
     await _player.stop();
     _isPlaying = false;
     _notify();
+    _pushSmtc();
   }
 
   /// 播放一個遠端 URL（jam 成員收到房主提供的串流 URL 時用）。
@@ -633,7 +825,7 @@ class PlayerController {
 
   Future<void> setVolume(double v) async {
     _volume = v.clamp(0.0, 1.0);
-    await _player.setVolume(_volume);
+    await _player.setVolume(_volume * 100); // media_kit 0~100，見 init()
     ConfigService.instance.config.volume = _volume;
     ConfigService.instance.save();
     _notify();

@@ -1,6 +1,8 @@
 ﻿#include <flutter/dart_project.h>
 #include <flutter/flutter_view_controller.h>
 #include <windows.h>
+#include <shobjidl.h>  // SetCurrentProcessExplicitAppUserModelID
+#pragma comment(lib, "shell32.lib")
 
 #include "flutter_window.h"
 #include "utils.h"
@@ -19,6 +21,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   if (FAILED(comHr)) {
     return EXIT_FAILURE;
   }
+
+  // SMTC 卡片的應用程式名稱：無 AUMID 的 Win32 app 從非安裝路徑執行時
+  // Windows 顯示「未知的應用程式」。給固定 AUMID 統一顯示 playlist-admin。
+  ::SetCurrentProcessExplicitAppUserModelID(L"thumb2086.playlist-admin");
 
   flutter::DartProject project(L"data");
 

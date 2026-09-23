@@ -108,7 +108,14 @@ class StreamServer {
   Future<void> _handle(HttpRequest request) async {
     final path = request.uri.pathSegments;
     if (path.isNotEmpty && path[0] == 'stream' && path.length >= 2) {
-      final query = Uri.decodeComponent(path.sublist(1).join('/'));
+      // pathSegments 已解碼過一次；mpv 可能重編碼，二次 decodeComponent 會
+      // 對殘留的裸 % 拋 ArgumentError — 必須包住（歷史炸點：未捕獲 →
+      // 連線斷 → mpv "Failed to open" → 單集播不出來）。
+      String query = path.sublist(1).join('/');
+      try {
+        final dec = Uri.decodeComponent(query);
+        if (dec.isNotEmpty) query = dec;
+      } catch (_) {}
       try {
         final cached = _cacheIndex[query];
         if (cached != null && File(cached).existsSync()) {

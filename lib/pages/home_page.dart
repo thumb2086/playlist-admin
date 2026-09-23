@@ -7,6 +7,7 @@ import '../models/playlist_item.dart';
 import '../services/config_service.dart';
 import '../services/spotify_session.dart';
 import '../services/spotify_gql_client.dart';
+import '../services/podcast_service.dart';
 import '../services/player_controller.dart';
 import '../widgets/dark_theme.dart';
 import '../widgets/spotify_login_dialog.dart';
@@ -351,8 +352,13 @@ class _HomePageState extends State<HomePage> {
     ]);
   }
 
+  /// Spotify 給的 uri 形式不定：`spotify:episode:xxx` / `https://…/episode/xxx`
+  /// 都有，冒號檢查會漏 → 掉進 else 被當音樂串流（歷史 bug）。
+  static bool _uriHas(String uri, String kind) =>
+      uri.contains(':$kind:') || uri.contains('/$kind/');
+
   Widget _card(_HomeCard c) {
-    final isPodcast = c.uri.contains(':show:') || c.uri.contains(':episode:');
+    final isPodcast = _uriHas(c.uri, 'show') || _uriHas(c.uri, 'episode');
     return Stack(
       children: [
         // Main card body — tap navigates to detail page.
@@ -420,7 +426,7 @@ class _HomePageState extends State<HomePage> {
     final uri = c.uri;
     if (uri.isEmpty) return;
 
-    if (uri.contains(':playlist:')) {
+    if (_uriHas(uri, 'playlist')) {
       final id = uri.split(':').last;
       try {
         final tracks = _trackCache[id] ?? await () async {
@@ -456,24 +462,85 @@ class _HomePageState extends State<HomePage> {
           const SnackBar(content: Text('歌單載入失敗')));
       }
 
-    } else if (uri.contains(':show:')) {
-      final episodes = await _fetchPodcastEpisodes(c.name);
+    } else if (_uriHas(uri, 'show')) {
+      var episodes = await _fetchPodcastEpisodes(c.name);
+      String? feedUrl = ConfigService.instance.config.podcastSubscriptions[c.name];
+      // 未訂閱的節目：iTunes 找 feed → 抓集數列表（跟播放的兜底對稱），
+      // 讓沒訂閱的也能進列表自己選集，不再被踢回。
+      if (episodes.isEmpty) {
+        try {
+          final shows = await PodcastService.instance.searchPodcasts(c.name);
+          feedUrl = shows
+              .map((s) => s.feedUrl)
+              .where((u) => u.isNotEmpty)
+              .firstOrNull;
+          if (feedUrl != null) episodes = await _fetchEpisodesByFeed(feedUrl, c.name);
+        } catch (_) {}
+      }
       if (episodes.isNotEmpty && mounted) {
         MainShell.showDetail(PlaylistDetailPage(
           title: c.name, coverUrl: c.coverUrl, items: episodes, isPodcast: true,
+          subscribeUrl: feedUrl,
         ));
       } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text(' - 未訂閱此 Podcast，請在 Download 頁加入')));
+            const SnackBar(content: Text('找不到此節目的集數（未訂閱且 iTunes 無結果）')));
       }
 
-    } else if (uri.contains(':episode:')) {
-      PlayerController.instance.playPodcastShow(c.name);
+    } else if (_uriHas(uri, 'episode')) {
+      await _playEpisodeCard(c);
 
     } else {
       // Album, Artist, or unknown — try streaming.
-      PlayerController.instance.play(c.name, title: c.name);
+      PlayerController.instance.play(c.name, title: c.name, coverUrl: c.coverUrl);
     }
+  }
+
+  /// Episode 卡片：Spotify 只給單集標題，拿標題去已訂閱 RSS 裡找（有 cache）。
+  /// 找到 → 整個節目入 queue 並播該集；找不到 → 明確提示，不拿標題騙 YouTube。
+  Future<void> _playEpisodeCard(_HomeCard c) async {
+    PlaylistItem? hit;
+    final subs = ConfigService.instance.config.podcastSubscriptions;
+    final all = await Future.wait(subs.keys.map((show) async {
+      try {
+        return await _fetchPodcastEpisodes(show);
+      } catch (_) {
+        return <PlaylistItem>[];
+      }
+    }));
+    for (final eps in all) {
+      for (final e in eps) {
+        if (e.name == c.name) { hit = e; break; }
+      }
+      if (hit != null) break;
+    }
+    if (hit == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('找不到此單集（可能未訂閱該節目）: ${c.name}')));
+      }
+      return;
+    }
+    final episode = hit; // final：closure 內才享有非空提升
+    final showName = episode.artist;
+    final eps = await _fetchPodcastEpisodes(showName);
+    final idx = eps.indexWhere((e) => e.name == episode.name);
+    PlayerController.instance.setQueue(
+      eps.map((e) => e.audioQuery).toList(),
+      titles: eps.map((e) => e.name).toList(),
+      startIndex: idx < 0 ? 0 : idx,
+      items: eps,
+    );
+    // RSS 沒帶封面時用卡片封面（播放條縮圖）。
+    var playTarget = episode;
+    if (playTarget.coverUrl == null && c.coverUrl != null) {
+      playTarget = PlaylistItem(
+        name: episode.name, artist: episode.artist,
+        audioQuery: episode.audioQuery, audioUrl: episode.audioUrl,
+        coverUrl: c.coverUrl,
+      );
+    }
+    PlayerController.instance.playItem(playTarget);
   }
 
   Future<List<PlaylistItem>> _fetchPodcastEpisodes(String showName) async {
@@ -492,11 +559,29 @@ class _HomePageState extends State<HomePage> {
     } catch (_) { return []; }
   }
 
+  /// 直接以 feed URL 抓集數（未訂閱節目的 iTunes 兜底用）。
+  Future<List<PlaylistItem>> _fetchEpisodesByFeed(String feedUrl, String showName) async {
+    final key = 'feed:$feedUrl';
+    if (_rssCache.containsKey(key)) return _rssCache[key]!;
+    try {
+      final resp = await http.get(Uri.parse(feedUrl),
+          headers: {'User-Agent': 'Mozilla/5.0'}).timeout(const Duration(seconds: 15));
+      if (resp.statusCode != 200) return [];
+      final body = utf8.decode(resp.bodyBytes, allowMalformed: true);
+      final items = _parseRssToItems(body, showName);
+      _rssCache[key] = items;
+      return items;
+    } catch (_) { return []; }
+  }
+
   List<PlaylistItem> _parseRssToItems(String xml, String showName) {
     final items = <PlaylistItem>[];
     final itemRe = RegExp(r'<item>(.*?)</item>', dotAll: true);
     final titleRe = RegExp(r'<title><!\[CDATA\[(.*?)\]\]></title>|<title>(.*?)</title>');
     final urlRe = RegExp(r'<enclosure[^>]+url="([^"]+)"');
+    // 節目封面：itunes:image 優先，退回 <image><url>。
+    final coverRe = RegExp(r'<itunes:image[^>]*href="([^"]+)"');
+    final coverAltRe = RegExp(r'<image>\s*<url>([^<]+)</url>\s*</image>', dotAll: true);
     for (final m in itemRe.allMatches(xml)) {
       final item = m.group(1)!;
       final titleM = titleRe.firstMatch(item);
@@ -504,9 +589,11 @@ class _HomePageState extends State<HomePage> {
       final urlM = urlRe.firstMatch(item);
       final url = urlM?.group(1) ?? '';
       if (url.isNotEmpty) {
+        final coverM = coverRe.firstMatch(item) ?? coverAltRe.firstMatch(item);
         items.add(PlaylistItem(
           name: title.isNotEmpty ? title : showName,
           artist: showName, audioQuery: title, audioUrl: url,
+          coverUrl: coverM?.group(1),
         ));
       }
     }
@@ -517,7 +604,7 @@ class _HomePageState extends State<HomePage> {
   Future<void> _onQuickPlay(_HomeCard c) async {
     final uri = c.uri;
     if (uri.isEmpty) return;
-    if (uri.contains(':playlist:')) {
+    if (_uriHas(uri, 'playlist')) {
       final id = uri.split(':').last;
       try {
         final tracks = _trackCache[id] ?? await () async {
@@ -531,7 +618,8 @@ class _HomePageState extends State<HomePage> {
           final titles = tracks.map((t) => t.name).toList();
           PlayerController.instance.setQueue(paths, titles: titles, startIndex: 0);
           PlayerController.instance.play(tracks.first.displayName,
-              title: tracks.first.name, artist: tracks.first.artists.join(', '));
+              title: tracks.first.name, artist: tracks.first.artists.join(', '),
+              coverUrl: tracks.first.coverUrl);
           return;
         }
       } catch (e) { print('[HOME] quickPlay err: $e'); }
@@ -540,11 +628,13 @@ class _HomePageState extends State<HomePage> {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('歌單載入失敗')));
       }
-    } else if (uri.contains(':show:')) {
-      PlayerController.instance.playPodcastShow(c.name);
+    } else if (_uriHas(uri, 'show')) {
+      PlayerController.instance.playPodcastShow(c.name, coverUrl: c.coverUrl);
+    } else if (_uriHas(uri, 'episode')) {
+      await _playEpisodeCard(c);
     } else {
-      // Episode / Album / Artist / Unknown — stream.
-      PlayerController.instance.play(c.name, title: c.name);
+      // Album / Artist — stream as music.
+      PlayerController.instance.play(c.name, title: c.name, coverUrl: c.coverUrl);
     }
   }
 
