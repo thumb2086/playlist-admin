@@ -32,24 +32,38 @@ class _PlayerBarState extends State<PlayerBar> {
 
   void _onState() => setState(() {});
 
-  Widget _buildCover() {
+  Widget _buildCover({double iconSize = 24}) {
     final cp = _ctrl.coverPath;
-    if (cp == null) return const Icon(Icons.music_note_rounded, color: AppColors.textMuted, size: 24);
+    if (cp == null) return Icon(Icons.music_note_rounded, color: AppColors.textMuted, size: iconSize);
     final bytes = _ctrl.getArtworkBytes();
     if (bytes != null) {
       return Image.memory(bytes, fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => const Icon(Icons.music_note_rounded, color: AppColors.textMuted, size: 24));
+          errorBuilder: (_, __, ___) => Icon(Icons.music_note_rounded, color: AppColors.textMuted, size: iconSize));
     }
     if (cp.startsWith('http')) {
       return CachedNetworkImage(imageUrl: cp, fit: BoxFit.cover,
-          placeholder: (_, __) => const Icon(Icons.music_note_rounded, color: AppColors.textMuted, size: 24),
-          errorWidget: (_, __, ___) => const Icon(Icons.music_note_rounded, color: AppColors.textMuted, size: 24));
+          placeholder: (_, __) => Icon(Icons.music_note_rounded, color: AppColors.textMuted, size: iconSize),
+          errorWidget: (_, __, ___) => Icon(Icons.music_note_rounded, color: AppColors.textMuted, size: iconSize));
     }
     if (File(cp).existsSync()) {
       return Image.file(File(cp), fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => const Icon(Icons.music_note_rounded, color: AppColors.textMuted, size: 24));
+          errorBuilder: (_, __, ___) => Icon(Icons.music_note_rounded, color: AppColors.textMuted, size: iconSize));
     }
-    return const Icon(Icons.music_note_rounded, color: AppColors.textMuted, size: 24);
+    return Icon(Icons.music_note_rounded, color: AppColors.textMuted, size: iconSize);
+  }
+
+  /// 點縮圖 → Spotify 式詳細面板：大封面 + 曲目資訊 + 品質。
+  /// 面板是 Stateful：訂閱 PlayerController，位元率/取樣率等 mpv 稍後
+  /// 才回報的值會即時補上（開在 00:00 時不會永遠空著）。
+  void _showTrackDetail() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppColors.card,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (_) => _TrackDetailSheet(coverBuilder: (s) => _buildCover(iconSize: s)),
+    );
   }
 
   String _fmt(Duration d) {
@@ -81,12 +95,16 @@ class _PlayerBarState extends State<PlayerBar> {
         // 顯示也用 canPlay：直接播放（首頁卡/show▶）沒設 queue，舊的 hasTrack
         // 分支會掉進「無封面槽＋灰字」的 else（診斷已證 art URL 有送到）。
         if (canPlay) ...[
-          ClipRRect(
-            borderRadius: BorderRadius.circular(6),
-            child: Container(
-              width: 48, height: 48,
-              color: AppColors.surfaceLight,
-              child: _buildCover(),
+          GestureDetector(
+            // Spotify 式：點縮圖 → 詳細面板（專輯/品質/來源）。
+            onTap: _showTrackDetail,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: Container(
+                width: 48, height: 48,
+                color: AppColors.surfaceLight,
+                child: _buildCover(),
+              ),
             ),
           ),
           const SizedBox(width: 10),
@@ -280,6 +298,137 @@ class _PlayerBarState extends State<PlayerBar> {
           onTap: () { Navigator.pop(ctx); _ctrl.setSleepTimer(null); },
         ),
       ])),
+    );
+  }
+}
+
+/// 詳細面板本體：訂閱 PlayerController 即時刷新（位元率/取樣率稍後回報會補上）。
+class _TrackDetailSheet extends StatefulWidget {
+  final Widget Function(double size) coverBuilder;
+  const _TrackDetailSheet({required this.coverBuilder});
+
+  @override
+  State<_TrackDetailSheet> createState() => _TrackDetailSheetState();
+}
+
+class _TrackDetailSheetState extends State<_TrackDetailSheet> {
+  final _c = PlayerController.instance;
+
+  @override
+  void initState() {
+    super.initState();
+    _c.addListener(_onChange);
+  }
+
+  @override
+  void dispose() {
+    _c.removeListener(_onChange);
+    super.dispose();
+  }
+
+  void _onChange() {
+    if (mounted) setState(() {});
+  }
+
+  String _fmt(Duration d) {
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '$m:$s';
+  }
+
+  Widget _row(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(children: [
+        SizedBox(
+            width: 56,
+            child: Text(label,
+                style: const TextStyle(fontSize: 12, color: AppColors.textMuted))),
+        Expanded(
+            child: Text(value,
+                style: const TextStyle(fontSize: 12, fontFamily: 'Consolas'))),
+      ]),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = _c;
+    final kbps = c.bitrateKbps;
+    final sr = c.sampleRate;
+    final ch = c.channelCount;
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+        child: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Expanded(
+                  child: Center(
+                      child: Container(
+                          width: 36, height: 4,
+                          decoration: BoxDecoration(
+                              color: AppColors.border,
+                              borderRadius: BorderRadius.circular(2))))),
+              // 明確的關閉鈕：點外部之外的回頭路。
+              IconButton(
+                onPressed: () => Navigator.of(context).maybePop(),
+                icon: const Icon(Icons.close_rounded, size: 18),
+                color: AppColors.textMuted,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 24),
+              ),
+            ]),
+            const SizedBox(height: 8),
+            Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: Container(
+                    width: 120, height: 120,
+                    color: AppColors.surfaceLight,
+                    child: widget.coverBuilder(48)),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(c.title, maxLines: 3, overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                              fontSize: 16, fontWeight: FontWeight.w700, height: 1.3)),
+                      const SizedBox(height: 6),
+                      if (c.artist.isNotEmpty)
+                        Text(c.artist, maxLines: 2, overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 13, color: AppColors.textMuted)),
+                      if (c.album.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Text('專輯：${c.album}', maxLines: 2, overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
+                      ],
+                      const SizedBox(height: 4),
+                      Text('${_fmt(c.position)} / ${_fmt(c.duration)}',
+                          style: const TextStyle(
+                              fontSize: 12, fontFamily: 'Consolas',
+                              color: AppColors.textMuted)),
+                    ]),
+              ),
+            ]),
+            const SizedBox(height: 16),
+            const Divider(height: 1, color: AppColors.border),
+            const SizedBox(height: 12),
+            const Text('品質', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 8),
+            _row('位元率', kbps != null ? '${kbps.toStringAsFixed(0)} kbps' : '—（尚未回報）'),
+            _row('取樣率',
+                sr != null ? (sr >= 1000 ? '${(sr / 1000).toStringAsFixed(1)} kHz' : '$sr Hz') : '—'),
+            _row('聲道',
+                ch == null ? '—' : (ch == 1 ? '單聲道' : ch == 2 ? '立體聲（2ch）' : '$ch ch')),
+            _row('格式', c.audioFormat ?? '—'),
+            _row('來源', c.sourceKind.isEmpty ? '—' : c.sourceKind),
+            if (c.sourceDetail.isNotEmpty) _row('細節', c.sourceDetail),
+          ]),
+        ),
+      ),
     );
   }
 }

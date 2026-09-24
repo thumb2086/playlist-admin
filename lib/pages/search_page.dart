@@ -152,10 +152,10 @@ class _SearchPageState extends State<SearchPage> {
   Future<void> _play(SpotifyTrackItem t) async {
     final local = _findLocal(t);
     if (local != null) {
-      PlayerController.instance.play(local, title: t.name, artist: t.artists.join(', '), coverUrl: t.coverUrl);
+      PlayerController.instance.play(local, title: t.name, artist: t.artists.join(', '), coverUrl: t.coverUrl, album: t.album);
       return;
     }
-    PlayerController.instance.play(t.displayName, title: t.name, artist: t.artists.join(', '), coverUrl: t.coverUrl);
+    PlayerController.instance.play(t.displayName, title: t.name, artist: t.artists.join(', '), coverUrl: t.coverUrl, album: t.album);
   }
 
   @override

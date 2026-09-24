@@ -1,7 +1,10 @@
+import 'dart:async';
 import 'dart:io';
+import 'package:media_kit/media_kit.dart';
 import 'models/config_model.dart';
 import 'services/config_service.dart';
 import 'services/favorites_service.dart';
+import 'services/stream_server.dart';
 import 'pipeline/pipeline_orchestrator.dart';
 import 'pipeline/podcast_pipeline.dart';
 import 'models/pipeline_step.dart';
@@ -19,6 +22,7 @@ Usage:
   dart cli_main.dart pipeline                   Run full pipeline
   dart cli_main.dart pipeline --step N          Run single step
   dart cli_main.dart status                     Show status
+  dart cli_main.dart play <歌曲名>               播放（本機庫優先，找不到走串流）
   dart cli_main.dart favorite list              List favorite songs
   dart cli_main.dart favorite toggle <song>     Toggle favorite (我的最愛) by filename or path
 ''');
@@ -56,6 +60,14 @@ Playlists: ${cfg.urlNames.length}
 Downloaded: ${cfg.lastUpdated.length}''');
       break;
 
+    case 'play':
+      if (args.length < 2) {
+        print('Usage: playlist-admin play <歌曲名或關鍵字>');
+        return;
+      }
+      await _playCmd(args.sublist(1).join(' ').trim());
+      break;
+
     case 'favorite':
       await _favoriteCmd(args.sublist(1), cfg);
       break;
@@ -64,6 +76,73 @@ Downloaded: ${cfg.lastUpdated.length}''');
       stderr.writeln('未知命令: $cmd');
       print('可用命令: pipeline, podcast, status, favorite');
       exit(1);
+  }
+}
+
+/// CLI 播放：本機庫優先，找不到走本地串流端點（邊下邊播）。
+/// 無 GUI／不碰 SmtcService（那需要 Flutter engine）；Ctrl+C 即停。
+Future<void> _playCmd(String query) async {
+  if (query.isEmpty) {
+    print('Usage: playlist-admin play <歌曲名或關鍵字>');
+    return;
+  }
+  final cfg = ConfigService.instance.config;
+
+  // 本機音樂庫比對（stem 全等或互含）。
+  String? local;
+  try {
+    final dir = Directory(cfg.musicPath);
+    if (dir.existsSync()) {
+      final lower = query.toLowerCase();
+      for (final f in dir.listSync()) {
+        if (f is! File || !f.path.toLowerCase().endsWith('.mp3')) continue;
+        final stem = f.uri.pathSegments.last
+            .replaceAll(RegExp(r'\.\w+$'), '')
+            .toLowerCase();
+        if (stem == lower || stem.contains(lower) || lower.contains(stem)) {
+          local = f.path;
+          break;
+        }
+      }
+    }
+  } catch (_) {}
+
+  MediaKit.ensureInitialized();
+  final player = Player();
+  player.setVolume(70); // media_kit 0~100
+  // mpv 內部 log 直通 CLI：定位「Failed to open」的真正理由。
+  player.stream.log.listen((l) {
+    if (l.prefix == 'cplayer' && l.text.contains('Exiting')) return;
+    print('[mpvlog] ${l.prefix}: ${l.text}');
+  });
+  try {
+    if (local != null) {
+      print('播放（本機）: ${local.split(Platform.pathSeparator).last}');
+      await player.open(Media(Uri.file(local).toString()));
+    } else {
+      await StreamServer.instance.start();
+      final url =
+          '${StreamServer.instance.baseUrl}/stream/${Uri.encodeComponent(query)}';
+      print('播放（串流）: $query');
+      await player.open(Media(url));
+    }
+    player.stream.error.listen((e) => print('[mpv] $e'));
+    final dur = await player.stream.duration.first
+        .timeout(const Duration(seconds: 20))
+        .catchError((_) => Duration.zero);
+    if (dur > Duration.zero) {
+      print('時長: ${dur.inMinutes}:${(dur.inSeconds % 60).toString().padLeft(2, '0')}');
+    }
+    print('（播完自動結束 / Ctrl+C 隨時中止）');
+    // 等單曲播完；開檔失敗(mpv error)→ 有回報地結束，不吊著等 completed。
+    await Future.any([
+      player.stream.completed.first,
+      player.stream.error.first.then((e) => throw Exception('播放失敗: $e')),
+    ]).timeout(const Duration(hours: 2));
+    print('播放結束');
+  } finally {
+    try { await player.dispose(); } catch (_) {}
+    try { await StreamServer.instance.stop(); } catch (_) {}
   }
 }
 

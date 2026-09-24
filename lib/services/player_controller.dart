@@ -41,6 +41,38 @@ class PlayerController {
   Timer? _sleepTimer;
   DateTime? _sleepEndsAt;
   bool _prefetching = false;
+  // ── 詳細面板（點縮圖彈出）的資料：來源 + 即時音訊參數 + 專輯 ──
+  String _sourceKind = '';
+  String _sourceDetail = '';
+  double? _bitrateRaw; // mpv audio-bitrate：可能 bps 或 kbps，顯示端自適應
+  int? _sampleRate;
+  int? _channelCount;
+  String? _audioFormat;
+  String _album = '';
+
+  /// 每次換歌重置音訊參數（舊值屬上一首）。
+  void _resetAudioInfo() {
+    _bitrateRaw = null;
+    _sampleRate = null;
+    _channelCount = null;
+    _audioFormat = null;
+    _album = '';
+  }
+
+  String get sourceKind => _sourceKind;
+  String get sourceDetail => _sourceDetail;
+  String get album => _album;
+  int? get sampleRate => _sampleRate;
+  int? get channelCount => _channelCount;
+  String? get audioFormat => _audioFormat;
+
+  /// 位元率 kbps：mpv 有時回 bps(>10000) 有時 kbps，自適應。
+  double? get bitrateKbps {
+    final b = _bitrateRaw;
+    if (b == null || b <= 0) return null;
+    return b > 10000 ? b / 1000.0 : b;
+  }
+
   // 在「一起聽」房間內以成員身份連線時為 true：控制動作改送給房主。
   bool jamFollowMode = false;
   // PlaylistItem data for prefetch (query + isrc per queue slot).
@@ -154,6 +186,15 @@ class PlayerController {
       _duration = d;
       _notify();
     }));
+    // 詳細面板：即時解碼參數（取樣率/聲道/格式）+ 位元率。
+    _playerSubs.add(_player.stream.audioParams.listen((p) {
+      _sampleRate = p.sampleRate;
+      _channelCount = p.channelCount;
+      _audioFormat = p.format;
+    }));
+    _playerSubs.add(_player.stream.audioBitrate.listen((b) {
+      _bitrateRaw = b;
+    }));
     // mpv 開不起來（404 等）→ 顯示錯誤並停；已在播時的 error 多半是串流
     // 雜訊，只記 log 不動播放狀態（否則「按鈕狀態怪=播著卻顯示▶」）。
     _playerSubs.add(_player.stream.error.listen((msg) {
@@ -190,11 +231,16 @@ class PlayerController {
   }
 
   /// Play a local file.
-  Future<void> playFile(String path, {String? title, String? artist, String? coverUrl}) async {
+  Future<void> playFile(String path,
+      {String? title, String? artist, String? coverUrl, String? album}) async {
     StreamServer.instance.stopActive();
     await _player.stop();
     _position = Duration.zero; // 開新檔歸零：error 判斷(見 listener)依賴它
     _statusText = ''; // 入口清殘留錯誤（playFile 不設 statusText，不清會帶到下一首）
+    _resetAudioInfo();
+    _sourceKind = '本機檔案';
+    _sourceDetail = path.split(Platform.pathSeparator).last;
+    _album = album ?? ''; // Spotify album 先佔位，ID3 讀到再覆蓋
     _title = title ?? _titleFromPath(path);
     _artist = artist ?? _artistFromPath(path);
     _coverPath = coverUrl;
@@ -213,9 +259,13 @@ class PlayerController {
   /// True streaming: 開 local HTTP 端點讓 mpv 邊下邊播，不再等整首下載完
   /// （舊 resolveToFile = download-then-play，一首歌要卡 10~30 秒才出聲）。
   /// 下一首仍由 _prefetchNext 後台完整下載入快取，換歌不卡。
-  Future<void> playStream(String query, {String? title, String? artist, String? isrc, String? coverUrl}) async {
+  Future<void> playStream(String query,
+      {String? title, String? artist, String? isrc, String? coverUrl, String? album}) async {
     await _player.stop();
     _position = Duration.zero; // 開新檔歸零（見 error listener）
+    _resetAudioInfo();
+    _album = album ?? '';
+    _sourceKind = '線上串流（YouTube → 即時轉檔）';
     _title = title ?? query;
     _artist = artist ?? '';
     _coverPath = coverUrl;
@@ -225,8 +275,13 @@ class PlayerController {
     _notify();
     try {
       await StreamServer.instance.start();
+      // 來源細節要在 start() 之後記：之前取會拿到 port 0（server 未 bind）。
+      _sourceDetail =
+          StreamServer.instance.baseUrl.replaceFirst('http://', '');
+      // 防御：清掉尾巴懸空分隔符（artsits 空時曾產生「title - 」→ 404）。
+      final cleanQuery = query.trim().replaceAll(RegExp(r'\s*-\s*$'), '').trim();
       final url =
-          '${StreamServer.instance.baseUrl}/stream/${Uri.encodeComponent(query)}';
+          '${StreamServer.instance.baseUrl}/stream/${Uri.encodeComponent(cleanQuery.isEmpty ? query : cleanQuery)}';
       await _player.open(Media(url));
       _pushSmtc();
       _prefetchNext();
@@ -239,18 +294,26 @@ class PlayerController {
   }
 
   /// Smart play: local file if path exists, otherwise search music library, then stream.
-  Future<void> play(String pathOrQuery, {String? title, String? artist, String? isrc, String? coverUrl}) async {
+  Future<void> play(String pathOrQuery,
+      {String? title, String? artist, String? isrc, String? coverUrl, String? album}) async {
     if (File(pathOrQuery).existsSync()) {
-      await playFile(pathOrQuery, title: title, artist: artist, coverUrl: coverUrl);
+      await playFile(pathOrQuery,
+          title: title, artist: artist, coverUrl: coverUrl, album: album);
       return;
     }
     // Check music library for matching file.
     final local = await _findLocalTrack(pathOrQuery);
     if (local != null) {
-      await playFile(local, title: title, artist: artist, coverUrl: coverUrl);
+      await playFile(local,
+          title: title, artist: artist, coverUrl: coverUrl, album: album);
       return;
     }
-    await playStream(pathOrQuery, title: title, artist: artist, isrc: isrc, coverUrl: coverUrl);
+    await playStream(pathOrQuery,
+        title: title,
+        artist: artist,
+        isrc: isrc,
+        coverUrl: coverUrl,
+        album: album);
   }
 
   /// Play podcast show: look up RSS feed, get episodes, play latest.
@@ -307,6 +370,9 @@ class PlayerController {
       }
       // Play first episode (latest).
       final ep = episodes.first;
+      _resetAudioInfo();
+      _sourceKind = 'RSS 直連（Podcast）';
+      _sourceDetail = Uri.tryParse(ep['url'] ?? '')?.host ?? '';
       _title = ep['title'] ?? showName;
       _artist = showName;
       _statusText = ''; // 標題已足夠；舊的「播放: …」會永久佔著狀態列（橘字）
@@ -345,6 +411,8 @@ class PlayerController {
     await _player.stop();
     _position = Duration.zero; // 開新檔歸零（見 error listener）
     _statusText = ''; // 入口清殘留錯誤（分支需要時會再設）
+    _resetAudioInfo();
+    _album = item.album ?? '';
     _title = item.name;
     _artist = item.artist;
     _coverPath = item.coverUrl;
@@ -354,6 +422,8 @@ class PlayerController {
     // 1. Direct RSS URL (podcast).
     if (item.audioUrl != null && item.audioUrl!.isNotEmpty) {
       _statusText = ''; // 標題已足夠；舊的「播放: …」會永久蓋掉歌名顯示
+      _sourceKind = 'RSS 直連（Podcast）';
+      _sourceDetail = Uri.tryParse(item.audioUrl!)?.host ?? '';
       // 本機優先：podcasts\<節目>\ 已下載過 → 播檔案，不燒網路。
       final localEp = _findLocalEpisode(item.name, item.artist);
       if (localEp != null) {
@@ -882,11 +952,12 @@ class PlayerController {
       final meta = await MetadataReader.read(path);
       _artworkPut(path, meta.artwork);
       if (gen != _artworkGen) return; // 已切歌：丟棄過期結果
+      if (meta.album != null && meta.album!.isNotEmpty) _album = meta.album!;
       if (meta.artwork != null && meta.artwork!.isNotEmpty) {
-        _coverPath = 'mem:${path.hashCode}';
-        _notify();
+        _coverPath = 'mem:${path.hashCode}'; // 內嵌封面（回歸防護：不可漏）
         _pushSmtc();
       }
+      _notify(); // 專輯/封面任一有值都讓面板拿得到
     } catch (_) {}
   }
 

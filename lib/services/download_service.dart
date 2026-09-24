@@ -170,7 +170,7 @@ class DownloadService {
     final proc = await Process.start(
       _pythonPath,
       [bridge, 'batch-download', format, songsJson],
-      runInShell: true,
+      runInShell: false, // JSON 可能含 &（歌名）：不可經 cmd
       workingDirectory: ConfigService.instance.config.basePath,
       environment: env,
     );

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'widgets/dark_theme.dart';
 import 'pages/home_page.dart';
 import 'pages/search_page.dart';
@@ -16,6 +17,7 @@ import 'services/update_service.dart';
 import 'services/version_checker.dart';
 import 'widgets/update_dialog.dart';
 import 'widgets/player_bar.dart';
+import 'services/player_controller.dart';
 
 class PlaylistAdminApp extends StatefulWidget {
   const PlaylistAdminApp({super.key});
@@ -193,7 +195,14 @@ class _MainShellState extends State<MainShell> {
   @override
   Widget build(BuildContext context) {
     _context = context;
-    return LayoutBuilder(builder: (context, constraints) {
+    // 空格鍵 = 播放/暫停（全專案原本沒有任何鍵盤快捷鍵綁定）。
+    // 焦點在控制鈕上時由該鈕先吃掉空格（行為一致），無焦點時走這裡。
+    return CallbackShortcuts(
+      bindings: <ShortcutActivator, VoidCallback>{
+        const SingleActivator(LogicalKeyboardKey.space): () =>
+            PlayerController.instance.togglePlay(),
+      },
+      child: LayoutBuilder(builder: (context, constraints) {
       final mobile = constraints.maxWidth < 760;
       return Scaffold(
         body: Column(children: [
@@ -262,7 +271,8 @@ class _MainShellState extends State<MainShell> {
             ),
         ]),
       );
-    });
+      }),
+    );
   }
 }
 

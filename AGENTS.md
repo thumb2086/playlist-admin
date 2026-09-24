@@ -16,6 +16,7 @@
 
 ### 版本號規則
 - `pubspec.yaml` 裡的 `version` 保持不動（3.0.0-beta.1 或預設值即可）
+- `package.json` 的 `version` 也**不用手動改** — CI（`npm-publish.yml` 的 Bump step）發版時會從 git tag 自動填入
 - `lib/version.dart` 的 `APP_VERSION` 由 build 時的 `--dart-define=APP_VERSION=` 注入
 - CI 從 tag 解析版本號：`v2.14.0` → `APP_VERSION=2.14.0`
 
@@ -69,13 +70,16 @@ npm 包名：`playlist-admin`（帳號 `thumb2087`，已搶注）
 版本號：跟 Flutter GUI 對齊（如 GUI v2.15.14 → npm 2.15.14）
 
 ### 步驟
-1. 更新 `package.json` 的 `version` 跟 GUI 對齊
-2. `npm publish`
+**不用手動做任何事**：打 tag 推上去，CI（`npm-publish.yml`）自動完成：
+1. 從 git tag 填入 `package.json` version
+2. OIDC（Trusted Publishing）發佈到 npm → smoke test
+
+（不需手動改 package.json、不需 npm login、不需 `npm publish`）
 
 ### 注意
-- `npm publish` 會自動 `npm pkg fix` 修正 bin 路徑
+- 發佈走 npm Trusted Publishing（OIDC），不需要任何 npm token/secret
 - 包含：`cli/index.js`、`rag/*.py`、`rag/README.md`
-- 如果 `npm publish` 四處 404，確認 `npm whoami` 是 `thumb2087`
+- 版本略過發失敗時看 workflow log：E_STAGE_REQUIRED/EOTP/403 各對應 token 型態問題（已由 OIDC 根除）
 
 ## RAG 腳本同步
 

@@ -225,8 +225,11 @@ class SpotifyTrackItem {
   String get title => name;
 
   /// Display "Title - Artist" (matches library file naming).
-  String get displayName =>
-      '$name - ${artists.join(', ')}';
+  /// artists 空時不可輸出尾巴「 - 」：會污染串流 query → YouTube 搜尋失敗 404。
+  String get displayName {
+    final a = artists.where((s) => s.trim().isNotEmpty).join(', ');
+    return a.isEmpty ? name : '$name - $a';
+  }
 
   static String? coverFromSources(dynamic sources) {
     if (sources is! List || sources.isEmpty) return null;

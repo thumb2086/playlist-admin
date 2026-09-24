@@ -248,9 +248,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       final proc = await Process.start(
         ffmpeg,
         ['-y', '-i', streamResult.audioUrl, '-vn', '-acodec', 'libmp3lame', '-q:a', '0', '-ac', '2', tmpPath],
-        runInShell: true,
-      );
-      // stdout 也要排空，否則輸出大時 pipe 塞住 deadlock；
+        runInShell: false, // URL 含 &：不可經 cmd（分隔符會腰斬 ffmpeg 參數）
+        );
+      // stderr 也要排空，否則輸出大時 pipe 塞住 deadlock；
       // 先掛 exitCode timeout 再收 stderr，避免 ffmpeg 僵住時 join 永遠等不到。
       unawaited(proc.stdout.drain());
       final codeFuture = proc.exitCode.timeout(

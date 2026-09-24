@@ -253,7 +253,7 @@ class PodcastService {
       final proc = await Process.start(
         'python',
         ['tools\\flutter_download_bridge.py', 'youtube-subs', query, outputPath, podcastName],
-        runInShell: true,
+        runInShell: false, // query 可能含 &（集名）：不可經 cmd
         workingDirectory: ConfigService.instance.config.basePath,
         environment: {'PYTHONIOENCODING': 'utf-8'},
       );

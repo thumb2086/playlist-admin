@@ -443,7 +443,7 @@ class _HomePageState extends State<HomePage> {
             items: tracks.map((t) => PlaylistItem(
               name: t.name, artist: t.artists.join(', '),
               durationMs: t.durationMs, coverUrl: t.coverUrl,
-              audioQuery: t.displayName, isrc: t.isrc,
+              audioQuery: t.displayName, isrc: t.isrc, album: t.album,
             )).toList(),
           ));
           return;
@@ -619,7 +619,7 @@ class _HomePageState extends State<HomePage> {
           PlayerController.instance.setQueue(paths, titles: titles, startIndex: 0);
           PlayerController.instance.play(tracks.first.displayName,
               title: tracks.first.name, artist: tracks.first.artists.join(', '),
-              coverUrl: tracks.first.coverUrl);
+              coverUrl: tracks.first.coverUrl, album: tracks.first.album);
           return;
         }
       } catch (e) { print('[HOME] quickPlay err: $e'); }

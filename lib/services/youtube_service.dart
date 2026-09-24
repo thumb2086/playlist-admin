@@ -98,31 +98,95 @@ class YoutubeService {
   }
 
   /// 根據查詢一次搞定：搜尋 → 取最佳音訊 URL。
-  /// 回傳 best match 的 URL 和元資料。自動重試 1 次。
+  /// 舊實作用 youtube_explode 搜尋/manifest（不支援 cookies）→ 被 YouTube
+  /// bot 擋死（mpv 404 "Failed to open"）。改走 yt-dlp + yt_cookies：
+  /// ① ytsearch1: 拿 id/title/channel/duration ② -g 取 bestaudio 直鏈。
+  /// 兩段皆實測可過（純 yt-dlp + cookies 找得到歌）。
   Future<YoutubeStreamResult?> resolveStream(String query) async {
     for (int attempt = 0; attempt < 2; attempt++) {
       try {
-        final results = await search(query, limit: 5)
-            .timeout(const Duration(seconds: 20), onTimeout: () => []);
-        if (results.isEmpty) continue;
+        final ck = _findCookies();
+        // ① 搜尋：id \t title \t channel \t duration(s)
+        final searchArgs = <String>[
+          '--no-warnings',
+          '--no-playlist',
+          '--skip-download',
+          '--socket-timeout', '20',
+          '--retries', '2',
+          '--print', '%(id)s\t%(title)s\t%(channel)s\t%(duration)s',
+          if (ck != null) ...['--cookies', ck],
+          'ytsearch1:$query',
+        ];
+        final proc = await _startYtDlp(searchArgs);
+        final outBuf = StringBuffer();
+        final errBuf = StringBuffer();
+        // yt-dlp 輸出是 SystemEncoding(cp950)：用 utf8 解中文歌名會 FormatException。
+        proc.stdout.transform(const SystemEncoding().decoder).listen(outBuf.write);
+        proc.stderr.transform(const SystemEncoding().decoder).listen(errBuf.write);
+        final code = await proc.exitCode.timeout(const Duration(seconds: 25),
+            onTimeout: () {
+          proc.kill();
+          return -1;
+        });
+        final line = outBuf.toString().split('\n').firstWhere((l) => l.trim().isNotEmpty,
+            orElse: () => '');
+        if (code != 0 || line.isEmpty) {
+          print('[resolve] search fail code=$code line="${line.trim()}" err=${errBuf.toString().split('\n').first.trim()}');
+          if (attempt == 0) await Future.delayed(const Duration(seconds: 1));
+          continue;
+        }
+        final parts = line.split('\t');
+        final videoId = parts.isNotEmpty ? parts[0].trim() : '';
+        final title = parts.length > 1 && parts[1].trim().isNotEmpty ? parts[1].trim() : query;
+        final author = parts.length > 2 ? parts[2].trim() : '';
+        final durSec = parts.length > 3 ? (int.tryParse(parts[3].trim()) ?? 0) : 0;
+        if (videoId.isEmpty) {
+          if (attempt == 0) await Future.delayed(const Duration(seconds: 1));
+          continue;
+        }
 
-        final best = results.first;
-        final url = await getAudioUrl(best.videoId)
-            .timeout(const Duration(seconds: 15), onTimeout: () => null);
-        if (url == null) continue;
-
-        return YoutubeStreamResult(
-          videoId: best.videoId,
-          title: best.title,
-          author: best.author,
-          duration: best.duration,
-          thumbnailUrl: best.thumbnailUrl,
-          audioUrl: url,
-        );
+        // ② 取音訊直鏈（-g）。
+        final urlArgs = <String>[
+          '--no-warnings',
+          '--no-playlist',
+          '-g',
+          '-f', 'bestaudio/best',
+          '--socket-timeout', '20',
+          if (ck != null) ...['--cookies', ck],
+          'https://www.youtube.com/watch?v=$videoId',
+        ];
+        final proc2 = await _startYtDlp(urlArgs);
+        final out2 = StringBuffer();
+        final err2 = StringBuffer();
+        proc2.stdout.transform(const SystemEncoding().decoder).listen(out2.write);
+        proc2.stderr.transform(const SystemEncoding().decoder).listen(err2.write);
+        final code2 = await proc2.exitCode.timeout(const Duration(seconds: 30),
+            onTimeout: () {
+          proc2.kill();
+          return -1;
+        });
+        final url = out2.toString().split('\n').map((l) => l.trim()).firstWhere(
+            (l) => l.startsWith('http'),
+            orElse: () => '');
+        if (code2 == 0 && url.isNotEmpty) {
+          print('[resolve] ok id=$videoId url_len=${url.length}');
+          _log.i('yt-dlp resolve "$query" → $videoId');
+          return YoutubeStreamResult(
+            videoId: videoId,
+            title: title,
+            author: author,
+            duration: Duration(seconds: durSec),
+            thumbnailUrl: 'https://i.ytimg.com/vi/$videoId/hqdefault.jpg',
+            audioUrl: url,
+          );
+        }
+        _log.e('yt-dlp -g 失敗 code=$code2: ${err2.toString().split('\n').take(2).join(' | ')}');
+        print('[resolve] get-url fail code=$code2 err=${err2.toString().split('\n').first.trim()}');
       } catch (e) {
-        _log.e('YouTube resolve 失敗 (attempt ${attempt + 1}): $e');
-        if (attempt == 0) await Future.delayed(const Duration(seconds: 1));
+        print('[resolve] exception: $e');
+        _log.e('resolveStream 異常: $e');
       }
+      if (attempt == 0) await Future.delayed(const Duration(seconds: 1));
     }
     return null;
   }
@@ -411,7 +475,7 @@ class YoutubeService {
       return await Process.start('yt-dlp', args, runInShell: false);
     } catch (_) {
       _log.w('yt-dlp 直接啟動失敗，改用 shell 重試');
-      return await Process.start('yt-dlp', args, runInShell: true);
+      return await Process.start('yt-dlp', args, runInShell: false);
     }
   }
 
