@@ -4,6 +4,7 @@ import 'package:media_kit/media_kit.dart';
 import 'models/config_model.dart';
 import 'services/config_service.dart';
 import 'services/favorites_service.dart';
+import 'services/library_organizer.dart';
 import 'services/stream_server.dart';
 import 'pipeline/pipeline_orchestrator.dart';
 import 'pipeline/podcast_pipeline.dart';
@@ -23,6 +24,7 @@ Usage:
   dart cli_main.dart pipeline --step N          Run single step
   dart cli_main.dart status                     Show status
   dart cli_main.dart play <歌曲名>               播放（本機庫優先，找不到走串流）
+  dart cli_main.dart organize                    歌單外歌曲移入「未分類」資料夾（歌單原位）
   dart cli_main.dart favorite list              List favorite songs
   dart cli_main.dart favorite toggle <song>     Toggle favorite (我的最愛) by filename or path
 ''');
@@ -68,13 +70,18 @@ Downloaded: ${cfg.lastUpdated.length}''');
       await _playCmd(args.sublist(1).join(' ').trim());
       break;
 
+    case 'organize':
+      print('整理中：歌單外歌曲 → ${LibraryOrganizer.unsortedDirName}\\（歌單內原位）...');
+      await LibraryOrganizer.organize(log: print);
+      break;
+
     case 'favorite':
       await _favoriteCmd(args.sublist(1), cfg);
       break;
 
     default:
       stderr.writeln('未知命令: $cmd');
-      print('可用命令: pipeline, podcast, status, favorite');
+      print('可用命令: pipeline, podcast, status, favorite, play, organize');
       exit(1);
   }
 }
@@ -94,7 +101,7 @@ Future<void> _playCmd(String query) async {
     final dir = Directory(cfg.musicPath);
     if (dir.existsSync()) {
       final lower = query.toLowerCase();
-      for (final f in dir.listSync()) {
+      for (final f in dir.listSync(recursive: true)) {
         if (f is! File || !f.path.toLowerCase().endsWith('.mp3')) continue;
         final stem = f.uri.pathSegments.last
             .replaceAll(RegExp(r'\.\w+$'), '')

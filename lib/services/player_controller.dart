@@ -593,7 +593,7 @@ class PlayerController {
       try {
         final musicDir = Directory(ConfigService.instance.config.musicPath);
         if (await musicDir.exists()) {
-          await for (final f in musicDir.list()) {
+          await for (final f in musicDir.list(recursive: true, followLinks: false)) {
             if (f is File && f.path.endsWith('.mp3')) {
               idx[File(f.path).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '').toLowerCase()] = f.path;
             }

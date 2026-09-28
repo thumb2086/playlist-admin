@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'config_service.dart';
+import 'library_organizer.dart';
 
 class UsbExportResult {
   final int copied;
@@ -66,7 +67,18 @@ class UsbExporter {
           String src = trimmed;
           if (!File(src).existsSync()) {
             final fname = File(src).uri.pathSegments.last;
-            src = '$libraryPath\\$fname';
+            // 1) m3u8 內的相對路徑 → 以該 m3u8 所在目錄為基準解析
+            //（歌單外歌曲整理進 music\未分類\ 後 _Unsorted 用 ../music/未分類/x）
+            final relPath = trimmed.replaceAll('/', '\\');
+            final rel = File('${File(plFile).parent.path}\\$relPath');
+            if (rel.existsSync()) {
+              src = rel.path;
+            } else if (File('$libraryPath\\$fname').existsSync()) {
+              src = '$libraryPath\\$fname';
+            } else if (File('$libraryPath\\${LibraryOrganizer.unsortedDirName}\\$fname')
+                .existsSync()) {
+              src = '$libraryPath\\${LibraryOrganizer.unsortedDirName}\\$fname';
+            }
           }
           if (!File(src).existsSync()) {
             log('  ⚠️ 找不到檔案: $trimmed');

@@ -100,7 +100,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     final musicDir = Directory(cfg.musicPath);
     final localFiles = <String>{};
     if (await musicDir.exists()) {
-      await for (final f in musicDir.list()) {
+      await for (final f in musicDir.list(recursive: true, followLinks: false)) {
         if (f is File && f.path.endsWith('.mp3')) {
           localFiles.add(f.uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '').toLowerCase());
         }

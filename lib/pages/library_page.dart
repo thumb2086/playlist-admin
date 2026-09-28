@@ -6,6 +6,7 @@ import '../services/i18n.dart';
 import '../services/usb_exporter.dart';
 import '../services/playlist_parser.dart';
 import '../services/history_recorder.dart';
+import '../services/library_organizer.dart';
 import '../models/playlist.dart';
 import '../widgets/dark_theme.dart';
 
@@ -17,6 +18,7 @@ class LibraryPage extends StatefulWidget {
 
 class LibraryPageState extends State<LibraryPage> {
   bool _exporting = false;
+  bool _organizing = false;
   final _urlCtrl = TextEditingController();
   Map<String, _PlStats> _stats = {};
   bool _loading = false;
@@ -163,6 +165,24 @@ class LibraryPageState extends State<LibraryPage> {
     setState(() {});
   }
 
+  /// 歌單整理：歌單外歌曲 → 未分類\（歌單原位，m3u8 路徑不變）。
+  Future<void> _organize() async {
+    if (_organizing) return;
+    setState(() => _organizing = true);
+    try {
+      final r = await LibraryOrganizer.organize(log: (m) => debugPrint(m));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(
+                '整理完成：歌單保留 ${r.kept} 首、移入${LibraryOrganizer.unsortedDirName} ${r.moved} 首'),
+            duration: const Duration(seconds: 3)));
+        await _refresh();
+      }
+    } finally {
+      if (mounted) setState(() => _organizing = false);
+    }
+  }
+
   Future<void> _export() async {
     if (_exporting) return;
     final plDir = Directory(ConfigService.instance.config.playlistsPath);
@@ -242,6 +262,17 @@ class LibraryPageState extends State<LibraryPage> {
                   style: IconButton.styleFrom(backgroundColor: AppColors.surfaceLight),
                 ),
                 const SizedBox(width: 4),
+                const SizedBox(width: 4),
+                IconButton(
+                  onPressed: _organizing ? null : _organize,
+                  icon: _organizing
+                      ? const SizedBox(
+                          width: 18, height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.folder_special_outlined),
+                  tooltip: '歌單外歌曲移到「${LibraryOrganizer.unsortedDirName}」資料夾',
+                  style: IconButton.styleFrom(backgroundColor: AppColors.surfaceLight),
+                ),
                 IconButton(
                   onPressed: _export,
                   icon: const Icon(Icons.usb_rounded),

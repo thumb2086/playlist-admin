@@ -138,7 +138,7 @@ class _SpotubePageState extends State<SpotubePage> {
     final musicDir = Directory(cfg.musicPath);
     final existing = <String>{};
     if (await musicDir.exists()) {
-      await for (final f in musicDir.list()) {
+      await for (final f in musicDir.list(recursive: true, followLinks: false)) {
         if (f is File) {
           final stem = File(f.path).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '');
           existing.add(stem);

@@ -126,9 +126,10 @@ class PipelineOrchestrator {
     } catch (_) {}
 
     // Check which already exist in musicPath.
+    // recursive：歌單外歌曲可能已被整理進子資料夾（未分類），不可誤判缺檔重下。
     final existing = <String>{};
     if (await musicDir.exists()) {
-      await for (final f in musicDir.list()) {
+      await for (final f in musicDir.list(recursive: true, followLinks: false)) {
         if (f is File) {
           final stem = File(f.path).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '');
           existing.add(stem.toLowerCase());
@@ -268,10 +269,11 @@ class PipelineOrchestrator {
     }
 
     // Build audio index: scan musicPath for existing files.
+    // recursive：含未分類子資料夾（整理後仍要能解析）。
     final musicDir = Directory(config.musicPath);
     final audioIndex = <String, String>{}; // lowerCase_stem -> full path
     if (await musicDir.exists()) {
-      await for (final f in musicDir.list()) {
+      await for (final f in musicDir.list(recursive: true, followLinks: false)) {
         if (f is File) {
           final low = f.path.toLowerCase();
           if (low.endsWith('.mp3') || low.endsWith('.m4a') || low.endsWith('.flac') || low.endsWith('.wav')) {
