@@ -67,6 +67,12 @@ class VersionChecker {
   static Future<VersionInfo> checkForUpdate() async {
     try {
       final token = ConfigService.instance.config.githubToken;
+      final wantBeta = ConfigService.instance.config.receiveBetaUpdates;
+      // Beta 開關打開 → 查 releases 清單（含 prerelease）取最新一筆；
+      // 否則維持 releases/latest（GitHub 自動排除 pre-release）。
+      final url = wantBeta
+          ? 'https://api.github.com/repos/$_owner/$_repo/releases?per_page=15'
+          : _apiUrl;
       final headers = <String, String>{'User-Agent': 'playlist-admin/2.0'};
       if (token.isNotEmpty) headers['Authorization'] = 'Bearer $token';
       http.Response? resp;
@@ -74,7 +80,7 @@ class VersionChecker {
       for (int attempt = 0; attempt < 3; attempt++) {
         try {
           resp = await http.get(
-            Uri.parse(_apiUrl),
+            Uri.parse(url),
             headers: headers,
           ).timeout(const Duration(seconds: 15));
         } on TimeoutException {
@@ -92,8 +98,21 @@ class VersionChecker {
       if (resp == null || resp.statusCode != 200) {
         return VersionInfo(latestVersion: currentVersion, htmlUrl: '', hasUpdate: false);
       }
-      // /releases/latest 回傳單一物件（不含 Pre-release）。
-      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+      // /releases/latest 回傳單一物件；/releases 回傳陣列（取第一個非 draft，
+      // beta 模式下包含 prerelease）。
+      final decoded = jsonDecode(resp.body);
+      Map<String, dynamic> data;
+      if (decoded is List) {
+        final release = decoded.cast<Map<String, dynamic>>().firstWhere(
+            (r) => (r['draft'] as bool? ?? false) == false,
+            orElse: () => <String, dynamic>{});
+        if (release.isEmpty) {
+          return VersionInfo(latestVersion: currentVersion, htmlUrl: '', hasUpdate: false);
+        }
+        data = release;
+      } else {
+        data = decoded as Map<String, dynamic>;
+      }
       final latestTag = (data['tag_name'] as String?) ?? '';
       final htmlUrl = (data['html_url'] as String?) ?? '';
       final body = (data['body'] as String?) ?? '';

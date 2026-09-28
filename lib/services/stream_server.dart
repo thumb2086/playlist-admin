@@ -103,6 +103,18 @@ class StreamServer {
       .trim()
       .toLowerCase();
 
+  /// 串流音質（設定頁 streamQuality）→ yt-dlp format selector（Spotube 式選項）。
+  String get _qualityFormat {
+    switch (ConfigService.instance.config.streamQuality) {
+      case 'low': // 省流量：優先 ≤96kbps
+        return 'ba[abr<=96]/b[abr<=96]/ba/b';
+      case 'high': // 高音質：優先 webm/opus ≥160k
+        return 'ba[ext=webm]/ba[abr>=160]/ba/b';
+      default: // standard：現行行為
+        return 'ba/b';
+    }
+  }
+
   Future<void> _handle(HttpRequest request) async {
     final path = request.uri.pathSegments;
     if (path.isNotEmpty && path[0] == 'stream' && path.length >= 2) {
@@ -170,7 +182,8 @@ class StreamServer {
       final cookies = YoutubeService.cookiesPathForDiag;
       final ytdlpArgs = <String>[
         '-x', '--audio-format', 'mp3',
-        '-f', 'ba/b', '--no-playlist', '--no-overwrites',
+        '-f', _qualityFormat,
+        '--no-playlist', '--no-overwrites',
         '--no-check-certificates',
         '--retries', '3', '--fragment-retries', '10', '--socket-timeout', '60',
         // android：實測3.0s下載完成（mweb 10.4s）；android_vr 會403。
@@ -221,7 +234,8 @@ class StreamServer {
       '--no-warnings',
       // 優先 webm/opus：EBML 標頭在檔頭、天生可管線播放；
       // m4a(mp4) 的 moov 在尾端，pipe 場景 mpv 拿不到 moov 無法開啟（Failed to open）。
-      '-f', 'ba[ext=webm]/b[ext=webm]/ba/b',
+      // 優先 webm/opus（可管線播放 + 高音質）；fallback ba/b。
+      '-f', _qualityFormat,
       '-o', '-',
       '--retries', '3',
       // android client：實測完整下載9.7MB僅3.0s（冷啟動遠低於mpv~10s底線)；

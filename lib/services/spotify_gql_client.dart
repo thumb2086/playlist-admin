@@ -93,10 +93,11 @@ class SpotifyGqlClient {
   }
 
   /// Current user's playlists / saved library.
+  /// 注意：不可傳 order — 'AUDIO_ITEM_CREATED_AT_DESC' 已被 Spotify 宣判非法
+  /// （LibraryInvalidSortOrderIdError，2026-09 實測），省略 order 即用預設序。
   Future<Map<String, dynamic>> libraryPlaylists({int offset = 0, int limit = 50}) async {
     return _query(_libraryV3, 'libraryV3', {
       'filters': ['Playlists'],
-      'order': 'AUDIO_ITEM_CREATED_AT_DESC',
       'textFilter': '',
       'features': [],
       'limit': limit,
@@ -110,7 +111,6 @@ class SpotifyGqlClient {
   Future<Map<String, dynamic>> libraryAlbums({int offset = 0, int limit = 50}) async {
     return _query(_libraryV3, 'libraryV3', {
       'filters': ['Albums'],
-      'order': 'AUDIO_ITEM_CREATED_AT_DESC',
       'textFilter': '',
       'features': [],
       'limit': limit,

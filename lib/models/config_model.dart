@@ -28,6 +28,7 @@ class AppConfig {
   double crossfadeSeconds;
   bool streamCacheEnabled;
   int streamCacheMaxMb;
+  String streamQuality; // low / standard / high — yt-dlp format selector
   bool receiveBetaUpdates;
   Map<String, String> podcastSubscriptions;
   Map<String, String> podcastHistory;
@@ -62,6 +63,7 @@ class AppConfig {
     this.crossfadeSeconds = 3.0,
     this.streamCacheEnabled = true,
     this.streamCacheMaxMb = 2048,
+    this.streamQuality = 'standard',
     this.receiveBetaUpdates = false,
     Map<String, String>? podcastSubscriptions,
     Map<String, String>? podcastHistory,
@@ -178,6 +180,7 @@ class AppConfig {
         crossfadeSeconds: (json['crossfade_seconds'] as num?)?.toDouble() ?? 3.0,
         streamCacheEnabled: json['stream_cache_enabled'] as bool? ?? true,
         streamCacheMaxMb: json['stream_cache_max_mb'] as int? ?? 2048,
+        streamQuality: json['stream_quality'] as String? ?? 'standard',
         receiveBetaUpdates: json['receive_beta_updates'] as bool? ?? false,
         podcastSubscriptions: (json['podcast_subscriptions'] as Map<String, dynamic>?)?.map((k, v) => MapEntry(k, v as String)) ?? {},
         podcastHistory: (json['podcast_history'] as Map<String, dynamic>?)?.map((k, v) => MapEntry(k, v as String)) ?? {},
@@ -213,6 +216,7 @@ class AppConfig {
         'crossfade_seconds': crossfadeSeconds,
         'stream_cache_enabled': streamCacheEnabled,
         'stream_cache_max_mb': streamCacheMaxMb,
+        'stream_quality': streamQuality,
         'receive_beta_updates': receiveBetaUpdates,
         'podcast_subscriptions': podcastSubscriptions,
         'podcast_history': podcastHistory,

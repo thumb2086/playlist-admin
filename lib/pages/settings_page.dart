@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import '../services/config_service.dart';
 import '../services/i18n.dart';
+import '../services/version_checker.dart';
 import '../widgets/dark_theme.dart';
+import '../widgets/update_dialog.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -87,6 +89,19 @@ class _SettingsPageState extends State<SettingsPage> {
           _Toggle(t('settings.auto_update_check'), c.autoUpdateCheck, (v) { c.autoUpdateCheck = v; _saveQuiet(); setState(() {}); }),
           _Toggle('自動下載更新', c.autoDownloadUpdate, (v) { c.autoDownloadUpdate = v; _saveQuiet(); setState(() {}); }),
           _Toggle('接收 Beta 更新', c.receiveBetaUpdates, (v) { c.receiveBetaUpdates = v; _saveQuiet(); setState(() {}); }),
+          const SizedBox(height: 4),
+          const _DropdownLabel('串流音質'),
+          _Dropdown(
+            value: c.streamQuality,
+            items: const [
+              DropdownMenuItem(value: 'low', child: Text('省流量（≤96 kbps）')),
+              DropdownMenuItem(value: 'standard', child: Text('標準')),
+              DropdownMenuItem(value: 'high', child: Text('高音質（優先 opus ≥160k）')),
+            ],
+            onChanged: (v) { c.streamQuality = v; _saveQuiet(); setState(() {}); },
+          ),
+          const SizedBox(height: 4),
+          const _UpdateCheckRow(),
         ]),
         const SizedBox(height: 12),
         _Section(t('settings.lyrics_section'), [
@@ -217,6 +232,73 @@ class _Toggle extends StatelessWidget {
       title: Text(label, style: const TextStyle(fontSize: 13)),
       value: value, onChanged: onChanged, dense: true, contentPadding: EdgeInsets.zero,
       activeTrackColor: AppColors.accent,
+    );
+  }
+}
+
+/// 手動檢查更新（自動檢查之外的按鈕）：
+/// 有新版 → UpdateDialog（用戶主動按的，不理会 skippedVersion）；
+/// 已最新 / 連線失敗 → snackbar 回報。
+class _UpdateCheckRow extends StatefulWidget {
+  const _UpdateCheckRow();
+
+  @override
+  State<_UpdateCheckRow> createState() => _UpdateCheckRowState();
+}
+
+class _UpdateCheckRowState extends State<_UpdateCheckRow> {
+  bool _checking = false;
+
+  Future<void> _check() async {
+    if (_checking) return;
+    setState(() => _checking = true);
+    try {
+      final info = await VersionChecker.checkForUpdate();
+      if (!mounted) return;
+      if (info.hasUpdate) {
+        showDialog(context: context, builder: (_) => UpdateDialog(info: info));
+      } else if (info.htmlUrl.isEmpty) {
+        // checkForUpdate 失敗時回 htmlUrl='' 的空 VersionInfo。
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('檢查更新失敗：無法連線 GitHub'),
+            duration: Duration(seconds: 2)));
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('已是最新版本（${VersionChecker.currentVersion}）'),
+            duration: const Duration(seconds: 2)));
+      }
+    } finally {
+      if (mounted) setState(() => _checking = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(children: [
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('檢查更新', style: TextStyle(fontSize: 13)),
+            Text('目前版本 ${VersionChecker.currentVersion}',
+                style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
+          ]),
+        ),
+        OutlinedButton.icon(
+          onPressed: _checking ? null : _check,
+          icon: _checking
+              ? const SizedBox(
+                  width: 14, height: 14,
+                  child: CircularProgressIndicator(strokeWidth: 2))
+              : const Icon(Icons.system_update_rounded, size: 16),
+          label: Text(_checking ? '檢查中…' : '檢查更新'),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: AppColors.text,
+            side: const BorderSide(color: AppColors.border),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          ),
+        ),
+      ]),
     );
   }
 }

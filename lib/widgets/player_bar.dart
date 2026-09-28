@@ -4,6 +4,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import '../services/config_service.dart';
 import '../services/player_controller.dart';
 import 'dark_theme.dart';
+import '../pages/lyrics_page.dart';
 
 /// Spotube-style persistent bottom player bar: cover + title/artist +
 /// seek bar + controls (shuffle/prev/play/next/repeat) + volume + queue.
@@ -371,6 +372,25 @@ class _TrackDetailSheetState extends State<_TrackDetailSheet> {
                           decoration: BoxDecoration(
                               color: AppColors.border,
                               borderRadius: BorderRadius.circular(2))))),
+              // 歌詞入口（Spotube 招牌：同步 LRC）→ 全螢幕歌詞頁。
+              IconButton(
+                onPressed: () {
+                  Navigator.of(context).pop();
+                  Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => LyricsPage(
+                      artist: c.artist,
+                      track: c.title,
+                      album: c.album.isEmpty ? null : c.album,
+                      durationSec: c.duration.inSeconds,
+                    ),
+                  ));
+                },
+                icon: const Icon(Icons.lyrics_rounded, size: 18),
+                color: AppColors.textMuted,
+                tooltip: '歌詞',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 24),
+              ),
               // 明確的關閉鈕：點外部之外的回頭路。
               IconButton(
                 onPressed: () => Navigator.of(context).maybePop(),
