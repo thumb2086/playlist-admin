@@ -75,6 +75,11 @@ class PlayerController {
 
   // 在「一起聽」房間內以成員身份連線時為 true：控制動作改送給房主。
   bool jamFollowMode = false;
+
+  // 房主身份且房間正在播 jam 歌 → 控制列/自動接歌也要走 jam（否則成員收不到）。
+  bool get _jamHostActive =>
+      JamService.instance.mode == 'host' &&
+      JamService.instance.current != null;
   // PlaylistItem data for prefetch (query + isrc per queue slot).
   final List<PlaylistItem> _queueItems = [];
   // Playback history scrobble state.
@@ -154,6 +159,11 @@ class PlayerController {
     _player.setVolume(_volume * 100);
     _playerSubs.add(_player.stream.completed.listen((_) {
       if (jamFollowMode) return;
+      if (_jamHostActive) {
+        // jam 房主播完 → 接房間佇列（relay host_next → 解析 → 成員跟播）。
+        JamService.instance.next();
+        return;
+      }
       if (_loadFailed) {
         // 開檔失敗 ≠ 播完：不自動跳，否則 50 首的失敗佇列會連環空轉。
         _loadFailed = false;
@@ -750,7 +760,7 @@ class PlayerController {
   }
 
   void next() {
-    if (jamFollowMode) {
+    if (jamFollowMode || _jamHostActive) {
       JamService.instance.next();
       return;
     }
@@ -776,7 +786,7 @@ class PlayerController {
   }
 
   void previous() {
-    if (jamFollowMode) {
+    if (jamFollowMode || _jamHostActive) {
       JamService.instance.previous();
       return;
     }
@@ -797,7 +807,8 @@ class PlayerController {
   }
 
   void togglePlay() {
-    if (jamFollowMode) {
+    if (jamFollowMode || _jamHostActive) {
+      // jam 中的本地 play/pause 都要廣播給房間，不能只動本機。
       JamService.instance.togglePlay();
       return;
     }
@@ -902,7 +913,7 @@ class PlayerController {
   }
 
   Future<void> seek(Duration pos) async {
-    if (jamFollowMode) {
+    if (jamFollowMode || _jamHostActive) {
       JamService.instance.seek(pos);
       return;
     }

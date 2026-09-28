@@ -216,6 +216,22 @@ class JamService extends ChangeNotifier {
         notifyListeners();
         break;
 
+      case 'host_next':
+        // relay 把佇列下一首交給房主解析 audioUrl（relay 不會解析網址）。
+        if (isHost && msg['track'] is Map<String, dynamic>) {
+          _playAsHost((msg['track'] as Map).cast<String, dynamic>());
+        }
+        break;
+
+      case 'promoted':
+        // 房主斷線 → 我接任（mode 要翻，控制權才會回到本地路徑）。
+        if (msg['memberId'] == myId) {
+          mode = 'host';
+          _pc?.jamFollowMode = false;
+          notifyListeners();
+        }
+        break;
+
       case 'search_results':
         searching = false;
         final c = _searchCompleters.remove(msg['reqId'] as int?);
@@ -298,7 +314,19 @@ class JamService extends ChangeNotifier {
   void _startDriftSync() {
     _driftTimer?.cancel();
     _driftTimer = Timer.periodic(const Duration(seconds: 4), (_) {
-      if (mode == 'idle' || !playing || current == null) return;
+      if (mode == 'idle') return;
+      // 房主推真實進度給 relay：成員按暫停時 relay 才推算得出正確位置。
+      if (isHost && playing && current != null) {
+        final p = _pc?.position.inMilliseconds ?? 0;
+        if (p > 0) {
+          _send({
+            'type': 'progress',
+            'pos': p,
+            'ts': DateTime.now().millisecondsSinceEpoch,
+          });
+        }
+      }
+      if (!playing || current == null) return;
       _driftCorrect();
     });
   }
@@ -323,9 +351,17 @@ class JamService extends ChangeNotifier {
     try { _ws?.add(jsonEncode(msg)); } catch (_) {}
   }
 
+  /// flutter_test 專用：讓測試把任意訊息送進 fake relay（用於協議回歸注入）。
+  @visibleForTesting
+  void debugSendForTest(Map<String, dynamic> msg) => _send(msg);
+
   void togglePlay() {
     if (mode == 'idle') return;
-    _send({'type': playing ? 'pause' : 'play'});
+    // 只有房主帶 pos（位置真相）；成員的播放器可能沒同步，帶了會把大家拉走。
+    _send({
+      'type': playing ? 'pause' : 'play',
+      if (isHost) 'pos': _pc?.position.inMilliseconds ?? 0,
+    });
     // 本地也立即反應
     final pc = _pc;
     if (pc == null) return;
@@ -397,7 +433,44 @@ class JamService extends ChangeNotifier {
     _send({'type': 'remove', 'trackId': trackId});
   }
 
-  /// 房主端：搜尋歌曲 → 解析 YouTube URL → 廣播帶 audioUrl 的 track_change。
+  /// 房主播放一首歌：audioUrl 空就本機解析 YouTube（30s 上限，失敗不凍結），
+  /// 本地播放 + 廣播 track_change 給成員（relay 會排除送信者，不會重播）。
+  Future<void> _playAsHost(Map<String, dynamic> track) async {
+    var url = (track['audioUrl'] as String?) ?? '';
+    if (url.isEmpty) {
+      final title = (track['title'] ?? '').toString();
+      final artist = (track['artist'] ?? '').toString();
+      if (title.isEmpty) return;
+      try {
+        final r = await YoutubeService.instance
+            .resolveStream('$title $artist')
+            .timeout(const Duration(seconds: 30));
+        url = r?.audioUrl ?? '';
+      } catch (_) {
+        url = '';
+      }
+      if (url.isEmpty) {
+        statusText = '無法解析音訊串流：$title';
+        notifyListeners();
+        return;
+      }
+      track['audioUrl'] = url;
+    }
+    _lastUrl = url;
+    _send({
+      'type': 'track_change',
+      'current': track,
+      'playing': true,
+      'pos': 0,
+      'ts': DateTime.now().millisecondsSinceEpoch,
+    });
+    await _pc?.playJamUrl(url,
+        title: (track['title'] ?? '').toString(),
+        artist: (track['artist'] ?? '').toString(),
+        coverUrl: track['coverUrl'] as String?);
+  }
+
+  /// 房主端：搜尋歌曲 → 解析 YouTube URL → 加入佇列；佇列空就直接播。
   Future<void> hostAddTrack(Map<String, dynamic> raw) async {
     final title = (raw['name'] ?? '').toString().trim();
     final artist = (raw['artists'] as List? ?? []).join(', ');
@@ -425,40 +498,14 @@ class JamService extends ChangeNotifier {
 
     _send({'type': 'add', 'track': track});
 
-    // 如果佇列是空的，直接播放。
+    // 佇列是空的、也沒在播 → 這首直接開播。
     if (queue.isEmpty && current == null) {
-      _send({
-        'type': 'track_change',
-        'current': track,
-        'playing': true,
-        'pos': 0,
-        'ts': DateTime.now().millisecondsSinceEpoch,
-      });
-      // 房主端也播放。
-      if (track['audioUrl'] != null &&
-          (track['audioUrl'] as String).isNotEmpty) {
-        _pc?.playJamUrl(track['audioUrl'] as String,
-            title: title, artist: artist, coverUrl: raw['coverUrl'] as String?);
-      }
+      await _playAsHost(track);
     }
   }
 
-  /// 房主：選取歌曲的 audioUrl。
-  void hostPlayTrack(Map<String, dynamic> track) {
-    final url = track['audioUrl'] as String? ?? '';
-    if (url.isEmpty) return;
-    _send({
-      'type': 'track_change',
-      'current': track,
-      'playing': true,
-      'pos': 0,
-      'ts': DateTime.now().millisecondsSinceEpoch,
-    });
-    _pc?.playJamUrl(url,
-        title: track['title'] as String? ?? '',
-        artist: track['artist'] as String? ?? '',
-        coverUrl: track['coverUrl'] as String?);
-  }
+  /// 房主：點佇列播放（audioUrl 空的成員加歌會在此解析）。
+  Future<void> hostPlayTrack(Map<String, dynamic> track) => _playAsHost(track);
 
   // ===================================================================
   //  搜尋

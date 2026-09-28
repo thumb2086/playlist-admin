@@ -418,7 +418,12 @@ class _JamPageState extends State<JamPage> {
         tooltip: '加入佇列',
         icon: const Icon(Icons.add_circle_outline_rounded, color: AppColors.accent, size: 20),
         onPressed: () {
-          JamService.instance.addTrackFromSearch(r);
+          // 房主加歌會解析 audioUrl（可直接播）；成員只排進佇列等房主播。
+          if (jam.isHost) {
+            JamService.instance.hostAddTrack(r);
+          } else {
+            JamService.instance.addTrackFromSearch(r);
+          }
           ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text('已加入：$name'), duration: const Duration(seconds: 1)));
         },
@@ -473,7 +478,10 @@ class _JamPageState extends State<JamPage> {
             final votes = t['votes'] as int? ?? 0;
             final myVote = jam.myVote(t['id'] as String? ?? '');
             final kind = t['kind'] == 'local' ? '本機' : '串流';
-            return Container(
+            return GestureDetector(
+              // 房主點佇列 → 播放這首（audioUrl 空的在此解析）。
+              onTap: jam.isHost ? () => JamService.instance.hostPlayTrack(t) : null,
+              child: Container(
               margin: const EdgeInsets.symmetric(vertical: 3),
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               decoration: BoxDecoration(
@@ -524,6 +532,7 @@ class _JamPageState extends State<JamPage> {
                     onPressed: () => JamService.instance.removeTrack(t['id'] as String? ?? ''),
                   ),
               ]),
+              ),
             );
           }),
       ]),

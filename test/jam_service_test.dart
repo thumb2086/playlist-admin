@@ -76,6 +76,23 @@ void main() {
               'type': 'chat_item',
               'item': {'text': m['text'], 'ts': 0},
             }));
+          // 與真實 relay v2 對齊的規格化回應。
+          case 'play':
+          case 'pause':
+            ws.add(jsonEncode({
+              'type': 'playback',
+              'playing': m['type'] == 'play',
+              'pos': m['pos'] is int ? m['pos'] : 0,
+              'ts': 1,
+            }));
+          case 'add':
+            ws.add(jsonEncode({
+              'type': 'queue_update',
+              'queue': [m['track']],
+            }));
+          // 測試用：把任意訊息注入當成 relay 廣播（協議回歸用）。
+          case 'x_push':
+            ws.add(jsonEncode(m['msg']));
         }
       });
     });
@@ -137,6 +154,44 @@ void main() {
     await jam.leaveRoom();
     await jam.connect(code: 'ZZZZZZ', name: '壞人');
     await waitTrue(() => jam.lastError.contains('房間代碼錯誤'), '錯誤代碼被拒');
+    await jam.leaveRoom();
+    expect(jam.mode, 'idle');
+  }, timeout: const Timeout(Duration(seconds: 20)));
+
+  test('normalized: playback/queue_update/skip_count 更新狀態、host_next 非房主忽略', () async {
+    final jam = JamService.instance;
+    await jam.startHost(name: '房主');
+    await waitMode('host');
+
+    // 直接注入 relay 廣播（等同真實 relay v2 送出來的訊息）。
+    void push(String type, Map<String, dynamic> extra) {
+      JamService.instance.debugSendForTest(
+          {'type': 'x_push', 'msg': {'type': type, ...extra}});
+    }
+
+    push('queue_update', {
+      'queue': [
+        {'id': 'q1', 'title': 'A', 'artist': 'B', 'votes': 3}
+      ]
+    });
+    await waitTrue(() => jam.queue.length == 1, 'queue_update 進佇列');
+    expect(jam.queue.first['votes'], 3);
+
+    push('playback', {'playing': true, 'pos': 1200, 'ts': 99});
+    await waitTrue(() => jam.playing, 'playback 開始播放');
+    expect(jam.positionMs, 1200);
+
+    push('skip_count', {'count': 2, 'needed': 3});
+    await waitTrue(() => jam.skipVotes == 2, 'skip_count 計票');
+    expect(jam.skipNeeded, 3);
+
+    // 房主身份收到 host_next 也無法播（testMode 無播放器）——但不可拋錯、狀態不亂動。
+    push('host_next', {
+      'track': {'id': 'q1', 'title': 'A', 'artist': 'B'}
+    });
+    await Future.delayed(const Duration(milliseconds: 300));
+    expect(jam.mode, 'host');
+
     await jam.leaveRoom();
     expect(jam.mode, 'idle');
   }, timeout: const Timeout(Duration(seconds: 20)));
