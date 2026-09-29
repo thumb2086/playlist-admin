@@ -139,6 +139,7 @@ class _JamPageState extends State<JamPage> {
                     textAlign: TextAlign.center,
                     style: const TextStyle(color: AppColors.error, fontSize: 12)),
               ],
+              _howToCard(),
               const SizedBox(height: 20),
               const Text('🔒 免費・免註冊・免 IP — 只要同個代碼就能一起聽',
                   textAlign: TextAlign.center,
@@ -149,6 +150,54 @@ class _JamPageState extends State<JamPage> {
       ),
     );
   }
+
+  /// 一起聽操作步驟卡（新手導引的一部分）。
+  Widget _howToCard() {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceLight,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Row(children: [
+          Icon(Icons.help_outline_rounded, size: 16, color: AppColors.accent),
+          SizedBox(width: 6),
+          Text('怎麼玩',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
+        ]),
+        const SizedBox(height: 8),
+        _step('1', '你開房間 → 拿到 6 位代碼或掃 QR'),
+        _step('2', '朋友輸入代碼加入（不用同一個網路也行）'),
+        _step('3', '大家一起加歌、投票、聊天 → 播放自動同步'),
+        const SizedBox(height: 6),
+        const Text('註：房主（建議用電腦）負責解析音訊；手機當成員完全免設定',
+            style: TextStyle(fontSize: 10, color: AppColors.textMuted)),
+      ]),
+    );
+  }
+
+  Widget _step(String n, String text) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Container(
+            width: 16,
+            height: 16,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+                color: AppColors.accentDim, shape: BoxShape.circle),
+            child: Text(n,
+                style: const TextStyle(
+                    fontSize: 9,
+                    color: AppColors.accent,
+                    fontWeight: FontWeight.w700)),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+              child:
+                  Text(text, style: const TextStyle(fontSize: 11.5, height: 1.4))),
+        ]),
+      );
 
   Widget _field(String label, TextEditingController ctrl,
       {String? hint, int? maxLength}) {

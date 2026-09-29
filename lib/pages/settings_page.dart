@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../services/config_service.dart';
 import '../services/i18n.dart';
 import '../services/version_checker.dart';
+import '../widgets/onboarding_dialog.dart';
 import '../widgets/dark_theme.dart';
 import '../widgets/update_dialog.dart';
 
@@ -102,6 +103,27 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
           const SizedBox(height: 4),
           const _UpdateCheckRow(),
+          const SizedBox(height: 4),
+          Row(children: [
+            const Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('新手導引', style: TextStyle(fontSize: 13)),
+                Text('重看首次啟動的介紹與環境檢查',
+                    style: TextStyle(fontSize: 11, color: AppColors.textMuted)),
+              ]),
+            ),
+            OutlinedButton.icon(
+              onPressed: () => showDialog(
+                  context: context, builder: (_) => const OnboardingDialog()),
+              icon: const Icon(Icons.school_outlined, size: 16),
+              label: const Text('開啟導引'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppColors.text,
+                side: const BorderSide(color: AppColors.border),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              ),
+            ),
+          ]),
         ]),
         const SizedBox(height: 12),
         _Section(t('settings.lyrics_section'), [

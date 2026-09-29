@@ -16,6 +16,7 @@ import 'services/config_service.dart';
 import 'services/update_service.dart';
 import 'services/version_checker.dart';
 import 'widgets/update_dialog.dart';
+import 'widgets/onboarding_dialog.dart';
 import 'widgets/player_bar.dart';
 import 'services/player_controller.dart';
 
@@ -109,6 +110,15 @@ class _MainShellState extends State<MainShell> {
     I18N.instance.addListener(_rebuildNav);
     _updateSvc.addListener(_onUpdate);
     _checkForUpdates();
+    // 首次啟動（setupCompleted=false）→ 新手導引。複用既有死旗標，不加新欄位。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && !ConfigService.instance.config.setupCompleted) {
+        showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (_) => const OnboardingDialog());
+      }
+    });
     // Periodic check every 10 minutes while app is running
     //（註解曾寫 10 分鐘但程式是 1 分鐘：每分鐘打 GitHub API 太頻繁，改回 10 分鐘）
     _updateTimer = Timer.periodic(const Duration(minutes: 10), (_) => _checkForUpdates());
