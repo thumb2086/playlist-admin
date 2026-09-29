@@ -5,6 +5,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'widgets/dark_theme.dart';
+import 'models/playlist_item.dart';
 import 'pages/home_page.dart';
 import 'pages/search_page.dart';
 import 'pages/jam_page.dart';
@@ -12,12 +13,15 @@ import 'pages/library_page.dart';
 import 'pages/pipeline_page.dart';
 import 'pages/stats_page.dart';
 import 'pages/settings_page.dart';
+import 'pages/playlist_detail_page.dart';
 import 'services/i18n.dart';
 import 'services/config_service.dart';
+import 'services/playlist_parser.dart';
 import 'services/update_service.dart';
 import 'services/version_checker.dart';
 import 'widgets/update_dialog.dart';
 import 'widgets/onboarding_dialog.dart';
+import 'widgets/queue_panel.dart';
 import 'widgets/player_bar.dart';
 import 'services/player_controller.dart';
 
@@ -86,6 +90,10 @@ class MainShell extends StatefulWidget {
   static void dismissDetail() {
     _dismissDetail?.call();
   }
+
+  /// 右側佇列面板開關（Spotify 式三欄的右欄）— 播放列佇列鈕切換。
+  static final ValueNotifier<bool> queueOpen = ValueNotifier<bool>(false);
+  static void toggleQueue() => queueOpen.value = !queueOpen.value;
 
   static void Function(Widget)? _showDetail;
   static VoidCallback? _dismissDetail;
@@ -275,6 +283,13 @@ class _MainShellState extends State<MainShell> {
                         ),
                       ]),
                     ),
+                    // 右欄：常駐佇列面板（Spotify 式三欄）。
+                    ValueListenableBuilder<bool>(
+                      valueListenable: MainShell.queueOpen,
+                      builder: (_, open, __) => open
+                          ? const QueuePanel(onClose: MainShell.toggleQueue)
+                          : const SizedBox.shrink(),
+                    ),
                   ]),
           ),
           const PlayerBar(),
@@ -308,6 +323,56 @@ class _NavItemData {
   final IconData activeIcon;
   final String label;
   const _NavItemData(this.icon, this.activeIcon, this.label);
+}
+
+/// 開本機歌單：m3u8 → items → 詳情頁（歌單卡原本 onTap 是空的死 UI）。
+/// audioQuery = 完整檔名 stem → _findLocalTrack 精準命中本機（含 未分類\）。
+void _openLocalPlaylist(BuildContext context, String name) {
+  final cfg = ConfigService.instance.config;
+  final path = '${cfg.playlistsPath}${Platform.pathSeparator}$name.m3u8';
+  final items = <PlaylistItem>[];
+  if (File(path).existsSync()) {
+    for (final stem in PlaylistParser.parseTrackNames(path)) {
+      final sep = stem.split(' - ');
+      items.add(PlaylistItem(
+        name: sep.length > 1 ? sep.sublist(1).join(' - ') : stem,
+        artist: sep.length > 1 ? sep.first : '',
+        audioQuery: stem,
+      ));
+    }
+  }
+  MainShell.showDetail(PlaylistDetailPage(title: name, items: items));
+}
+
+/// 側欄音樂庫的歌單項目。
+class _PlaylistNavItem extends StatelessWidget {
+  final String name;
+  final VoidCallback onTap;
+  const _PlaylistNavItem({required this.name, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          child: Row(children: [
+            const Icon(Icons.queue_music_rounded, size: 15, color: AppColors.textMuted),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
 }
 
 class _Sidebar extends StatelessWidget {
@@ -402,7 +467,32 @@ class _Sidebar extends StatelessWidget {
               ),
             );
           }),
-          const Spacer(),
+          const SizedBox(height: 8),
+          const Padding(
+            padding: EdgeInsets.fromLTRB(20, 6, 20, 4),
+            child: Text('你的音樂庫',
+                style: TextStyle(
+                    color: AppColors.textMuted,
+                    fontSize: 10,
+                    letterSpacing: 1.2)),
+          ),
+          Expanded(
+            child: Builder(builder: (context) {
+              final entries =
+                  ConfigService.instance.config.urlNames.entries.toList();
+              return ListView.builder(
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                itemCount: entries.length,
+                itemBuilder: (_, i) {
+                  final name = entries[i].value;
+                  return _PlaylistNavItem(
+                    name: name,
+                    onTap: () => _openLocalPlaylist(context, name),
+                  );
+                },
+              );
+            }),
+          ),
           if (_updateSvc.state == UpdateState.downloading)
             GestureDetector(
               onTap: () => onSelected(2),

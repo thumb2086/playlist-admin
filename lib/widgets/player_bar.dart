@@ -1,9 +1,11 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import '../app.dart';
 import '../services/config_service.dart';
 import '../services/player_controller.dart';
 import 'dark_theme.dart';
+import 'queue_panel.dart';
 import '../pages/lyrics_page.dart';
 
 /// Spotube-style persistent bottom player bar: cover + title/artist +
@@ -254,8 +256,21 @@ class _PlayerBarState extends State<PlayerBar> {
         ),
         // --- Queue button ---
         IconButton(
-          icon: const Icon(Icons.queue_music_rounded, size: 18),
-          onPressed: hasTrack ? () => _showQueueDrawer(context) : null,
+          icon: ValueListenableBuilder<bool>(
+            valueListenable: MainShell.queueOpen,
+            builder: (_, open, __) => Icon(Icons.queue_music_rounded,
+                size: 18, color: open ? AppColors.accent : null),
+          ),
+          onPressed: !hasTrack
+              ? null
+              : () {
+                  // 桌機：右側常駐佇列面板；手機：抽屜。
+                  if (MediaQuery.sizeOf(context).width < 760) {
+                    _showQueueDrawer(context);
+                  } else {
+                    MainShell.toggleQueue();
+                  }
+                },
           tooltip: '播放佇列',
           padding: EdgeInsets.zero,
           constraints: const BoxConstraints(minWidth: 28),
@@ -497,7 +512,6 @@ class _QueueDrawerState extends State<_QueueDrawer> {
   @override
   Widget build(BuildContext context) {
     final queue = _ctrl.queueTitles;
-    final cur = _ctrl.index;
     return SizedBox(
       height: (queue.length * 48.0 + 70).clamp(200.0, 560.0),
       child: Column(children: [
@@ -522,41 +536,7 @@ class _QueueDrawerState extends State<_QueueDrawer> {
             ),
           ]),
         ),
-        Expanded(
-          child: ReorderableListView.builder(
-            padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
-            itemCount: queue.length,
-            onReorderItem: (oldIndex, newIndex) {
-              _ctrl.moveInQueue(oldIndex, newIndex);
-            },
-            itemBuilder: (ctx, i) {
-              final isCur = i == cur;
-              return ListTile(
-                key: ValueKey('$i-${queue[i]}'),
-                dense: true,
-                leading: ReorderableDragStartListener(
-                  index: i,
-                  child: const Icon(Icons.drag_handle_rounded, color: AppColors.textMuted, size: 18),
-                ),
-                title: Text(queue[i],
-                    maxLines: 1, overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontSize: 12, color: isCur ? AppColors.accent : AppColors.text,
-                        fontWeight: isCur ? FontWeight.w600 : FontWeight.normal)),
-                trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                  if (!isCur) IconButton(
-                    icon: const Icon(Icons.play_arrow_rounded, color: AppColors.textMuted, size: 18),
-                    onPressed: () => _ctrl.jumpTo(i),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.close_rounded, color: AppColors.textMuted, size: 18),
-                    onPressed: () => _ctrl.removeFromQueue(i),
-                  ),
-                ]),
-                onTap: isCur ? null : () => _ctrl.jumpTo(i),
-              );
-            },
-          ),
-        ),
+        const Expanded(child: QueueList()),
       ]),
     );
   }
