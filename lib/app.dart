@@ -358,15 +358,15 @@ class _PlaylistNavItem extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
         onTap: onTap,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
           child: Row(children: [
-            const Icon(Icons.queue_music_rounded, size: 15, color: AppColors.textMuted),
+            const Icon(Icons.queue_music_rounded, size: 14, color: AppColors.textMuted),
             const SizedBox(width: 10),
             Expanded(
               child: Text(name,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+                  style: const TextStyle(color: AppColors.textSecondary, fontSize: 11.5)),
             ),
           ]),
         ),
@@ -375,12 +375,26 @@ class _PlaylistNavItem extends StatelessWidget {
   }
 }
 
-class _Sidebar extends StatelessWidget {
+class _Sidebar extends StatefulWidget {
   final List<_NavItemData> items;
   final int selectedIndex;
   final ValueChanged<int> onSelected;
-  static final _updateSvc = UpdateService.instance;
   const _Sidebar({required this.items, required this.selectedIndex, required this.onSelected});
+
+  @override
+  State<_Sidebar> createState() => _SidebarState();
+}
+
+class _SidebarState extends State<_Sidebar> {
+  static final _updateSvc = UpdateService.instance;
+  final _filterCtrl = TextEditingController();
+  bool _filterOpen = false;
+
+  @override
+  void dispose() {
+    _filterCtrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -418,10 +432,10 @@ class _Sidebar extends StatelessWidget {
             ),
           ),
           const Divider(indent: 20, endIndent: 20),
-          const SizedBox(height: 8),
-          ...List.generate(items.length, (i) {
-            final item = items[i];
-            final selected = i == selectedIndex;
+          const SizedBox(height: 4),
+          ...List.generate(widget.items.length, (i) {
+            final item = widget.items[i];
+            final selected = i == widget.selectedIndex;
             return Container(
               margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
               decoration: BoxDecoration(
@@ -432,22 +446,22 @@ class _Sidebar extends StatelessWidget {
                 color: Colors.transparent,
                 child: InkWell(
                   borderRadius: BorderRadius.circular(10),
-                  onTap: () => onSelected(i),
+                  onTap: () => widget.onSelected(i),
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
                     child: Row(
                       children: [
                         Icon(
                           selected ? item.activeIcon : item.icon,
                           color: selected ? AppColors.accent : AppColors.textMuted,
-                          size: 20,
+                          size: 18,
                         ),
                         const SizedBox(width: 12),
                         Text(
                           item.label,
                           style: TextStyle(
                             color: selected ? AppColors.text : AppColors.textSecondary,
-                            fontSize: 13,
+                            fontSize: 12,
                             fontWeight: selected ? FontWeight.w600 : FontWeight.normal,
                           ),
                         ),
@@ -467,19 +481,89 @@ class _Sidebar extends StatelessWidget {
               ),
             );
           }),
-          const SizedBox(height: 8),
-          const Padding(
-            padding: EdgeInsets.fromLTRB(20, 6, 20, 4),
-            child: Text('你的音樂庫',
-                style: TextStyle(
-                    color: AppColors.textMuted,
-                    fontSize: 10,
-                    letterSpacing: 1.2)),
+          const SizedBox(height: 6),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 2, 6, 2),
+            child: Row(children: [
+              const Expanded(
+                child: Text('你的音樂庫',
+                    style: TextStyle(
+                        color: AppColors.textMuted,
+                        fontSize: 10,
+                        letterSpacing: 1.2)),
+              ),
+              IconButton(
+                icon: const Icon(Icons.playlist_add_rounded, size: 18),
+                color: AppColors.textMuted,
+                tooltip: '到歌單庫新增/管理',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 24),
+                onPressed: () {
+                  final i = widget.items
+                      .indexWhere((e) => e.label == t('app.sidebar.library'));
+                  widget.onSelected(i >= 0 ? i : 3);
+                },
+              ),
+              IconButton(
+                icon: Icon(_filterOpen ? Icons.close_rounded : Icons.search_rounded,
+                    size: 16),
+                color: AppColors.textMuted,
+                tooltip: '篩選歌單',
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 24),
+                onPressed: () => setState(() {
+                  _filterOpen = !_filterOpen;
+                  if (!_filterOpen) _filterCtrl.clear();
+                }),
+              ),
+            ]),
           ),
+          if (_filterOpen)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 6),
+              child: TextField(
+                controller: _filterCtrl,
+                autofocus: true,
+                onChanged: (_) => setState(() {}),
+                style: const TextStyle(fontSize: 12),
+                decoration: InputDecoration(
+                  isDense: true,
+                  hintText: '輸入關鍵字過濾…',
+                  hintStyle:
+                      const TextStyle(fontSize: 11, color: AppColors.textMuted),
+                  prefixIcon: const Icon(Icons.search_rounded,
+                      size: 14, color: AppColors.textMuted),
+                  prefixIconConstraints: const BoxConstraints(minWidth: 28),
+                  filled: true,
+                  fillColor: AppColors.surfaceLight,
+                  contentPadding:
+                      const EdgeInsets.symmetric(vertical: 6, horizontal: 6),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(8),
+                    borderSide: BorderSide.none,
+                  ),
+                ),
+              ),
+            ),
           Expanded(
             child: Builder(builder: (context) {
-              final entries =
+              final all =
                   ConfigService.instance.config.urlNames.entries.toList();
+              final q = _filterCtrl.text.trim().toLowerCase();
+              final entries = q.isEmpty
+                  ? all
+                  : all
+                      .where((e) => e.value.toLowerCase().contains(q))
+                      .toList();
+              if (entries.isEmpty) {
+                return Center(
+                    child: Text(
+                        q.isEmpty
+                            ? '還沒有歌單（＋ 到歌單庫新增）'
+                            : '找不到「${_filterCtrl.text.trim()}」',
+                        style: const TextStyle(
+                            color: AppColors.textMuted, fontSize: 10)));
+              }
               return ListView.builder(
                 padding: const EdgeInsets.symmetric(horizontal: 10),
                 itemCount: entries.length,
@@ -495,7 +579,7 @@ class _Sidebar extends StatelessWidget {
           ),
           if (_updateSvc.state == UpdateState.downloading)
             GestureDetector(
-              onTap: () => onSelected(2),
+              onTap: () => widget.onSelected(2),
               child: Container(
                 margin: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                 child: Column(children: [
