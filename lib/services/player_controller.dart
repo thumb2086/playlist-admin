@@ -175,15 +175,8 @@ class PlayerController {
       }
       if (_loop || _shuffle) {
         if (_queue.isEmpty) {
-          // 單曲直撥（queue 空）：next() 只會空轉 return，_isPlaying 永不清除 →
-          // UI 永遠卡「播放中」、也不會重播。→ 回到 0 秒重播 = 無限自動播放。
-          // ponytail: 未快取 pipe 串流回捲依賴 mpv 緩衝（串流快取預設開、可 seek）。
-          _player.seek(Duration.zero);
-          _player.play();
-          _position = Duration.zero;
-          _isPlaying = true;
-          _notify();
-          _pushSmtc();
+          // 單曲直撥（queue 空）→ 重播 = 無限自動播放（舊版在這裡空轉卡死）。
+          _replayCurrent();
         } else {
           next(); // 有隊列 → 接下一首（% 取餘 = 播到尾回頭，無限循環）
         }
@@ -772,14 +765,29 @@ class PlayerController {
     }
   }
 
+  /// 單曲（無隊列）重播：completed/next/previous 共用，避免各處散落。
+  /// ponytail: 未快取 pipe 串流回捲依賴 mpv 緩衝（串流快取預設開、可 seek）。
+  void _replayCurrent() {
+    _player.seek(Duration.zero);
+    _player.play();
+    _position = Duration.zero;
+    _isPlaying = true;
+    _notify();
+    _pushSmtc();
+  }
+
   void next() {
     if (jamFollowMode || _jamHostActive) {
       JamService.instance.next();
       return;
     }
     if (_queue.isEmpty) {
-      // 空佇列也要同步 SMTC：否則卡片停在 Playing，看起來像壞了。
-      _pushSmtc();
+      // 空佇列（單曲直撥）→ 重播這首；沒標題才只同步 SMTC。
+      if (_title.isNotEmpty) {
+        _replayCurrent();
+      } else {
+        _pushSmtc();
+      }
       return;
     }
     if (_shuffle) {
@@ -803,7 +811,10 @@ class PlayerController {
       JamService.instance.previous();
       return;
     }
-    if (_queue.isEmpty) return;
+    if (_queue.isEmpty) {
+      if (_title.isNotEmpty) _replayCurrent(); // 單曲 → 回到開頭
+      return;
+    }
     if (_shuffle) {
       if (_shuffleOrder.isEmpty) _buildShuffleOrder();
       final pos = _shuffleOrder.indexOf(_index);

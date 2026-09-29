@@ -145,7 +145,7 @@ class _PlayerBarState extends State<PlayerBar> {
         // --- Previous ---
         IconButton(
           icon: const Icon(Icons.skip_previous_rounded, size: 22),
-          onPressed: hasTrack ? _ctrl.previous : null,
+          onPressed: canPlay ? _ctrl.previous : null,
           padding: EdgeInsets.zero,
           constraints: const BoxConstraints(minWidth: 28),
         ),
@@ -168,7 +168,7 @@ class _PlayerBarState extends State<PlayerBar> {
         // --- Next ---
         IconButton(
           icon: const Icon(Icons.skip_next_rounded, size: 22),
-          onPressed: hasTrack ? _ctrl.next : null,
+          onPressed: canPlay ? _ctrl.next : null,
           padding: EdgeInsets.zero,
           constraints: const BoxConstraints(minWidth: 28),
         ),
@@ -241,7 +241,7 @@ class _PlayerBarState extends State<PlayerBar> {
         // --- Lyrics（Spotify 式：播放列直接開，不用鑽進詳情面板） ---
         IconButton(
           icon: const Icon(Icons.lyrics_rounded, size: 18),
-          onPressed: !hasTrack
+          onPressed: _ctrl.title.isEmpty
               ? null
               : () => Navigator.of(context).push(MaterialPageRoute(
                   builder: (_) => LyricsPage(
@@ -261,16 +261,14 @@ class _PlayerBarState extends State<PlayerBar> {
             builder: (_, open, __) => Icon(Icons.queue_music_rounded,
                 size: 18, color: open ? AppColors.accent : null),
           ),
-          onPressed: !hasTrack
-              ? null
-              : () {
-                  // 桌機：右側常駐佇列面板；手機：抽屜。
-                  if (MediaQuery.sizeOf(context).width < 760) {
-                    _showQueueDrawer(context);
-                  } else {
-                    MainShell.toggleQueue();
-                  }
-                },
+          onPressed: () {
+            // 桌機：右側常駐佇列面板；手機：抽屜。空佇列也開（顯示空提示）。
+            if (MediaQuery.sizeOf(context).width < 760) {
+              _showQueueDrawer(context);
+            } else {
+              MainShell.toggleQueue();
+            }
+          },
           tooltip: '播放佇列',
           padding: EdgeInsets.zero,
           constraints: const BoxConstraints(minWidth: 28),
