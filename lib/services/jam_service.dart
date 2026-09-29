@@ -520,10 +520,21 @@ class JamService extends ChangeNotifier {
     notifyListeners();
     try {
       if (!SpotifySession.instance.isLoggedIn) {
-        searchError = '尚未登入 Spotify';
+        // Spotify 登入僅桌面版 → 手機成員（或未登入的電腦）走 YouTube 搜尋。
+        // youtube_explode 是純 Dart HTTP、不需 yt-dlp → 手機可用；此處只取
+        // 排隊資料（標題/歌手/封面），解析一律在房主電腦播的當下做。
+        final ytResults = await YoutubeService.instance.search(query, limit: 20);
+        searchResults = ytResults
+            .map((r) => <String, dynamic>{
+                  'name': r.title,
+                  'artists': <String>[r.author], // 無歌手資料，用頻道名顯示
+                  'coverUrl': r.thumbnailUrl,
+                })
+            .toList();
         searching = false;
+        searchError = ytResults.isEmpty ? '搜尋失敗' : '';
         notifyListeners();
-        return [];
+        return searchResults;
       }
       final data = await SpotifyGqlClient().searchTracks(q, limit: 20);
       searchResults = _parseSearchItems(data);

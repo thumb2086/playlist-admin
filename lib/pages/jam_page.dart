@@ -373,7 +373,7 @@ class _JamPageState extends State<JamPage> {
           onChanged: (_) => _onSearchChanged(),
           style: const TextStyle(fontSize: 13),
           decoration: InputDecoration(
-            hintText: '搜尋歌曲、歌手…（房主需先登入 Spotify）',
+            hintText: '搜尋歌曲、歌手…（未登入 Spotify 時自動改用 YouTube 搜尋）',
             isDense: true,
             filled: true,
             fillColor: AppColors.bg,
