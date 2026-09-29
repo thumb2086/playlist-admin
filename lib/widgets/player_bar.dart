@@ -236,6 +236,22 @@ class _PlayerBarState extends State<PlayerBar> {
           ),
         ),
 
+        // --- Lyrics（Spotify 式：播放列直接開，不用鑽進詳情面板） ---
+        IconButton(
+          icon: const Icon(Icons.lyrics_rounded, size: 18),
+          onPressed: !hasTrack
+              ? null
+              : () => Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => LyricsPage(
+                    artist: _ctrl.artist,
+                    track: _ctrl.title,
+                    album: _ctrl.album.isEmpty ? null : _ctrl.album,
+                    durationSec: _ctrl.duration.inSeconds,
+                  ))),
+          tooltip: '歌詞',
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 28),
+        ),
         // --- Queue button ---
         IconButton(
           icon: const Icon(Icons.queue_music_rounded, size: 18),

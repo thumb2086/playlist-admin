@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'widgets/dark_theme.dart';
@@ -53,8 +54,24 @@ class _PlaylistAdminAppState extends State<PlaylistAdminApp> {
       themeMode: isDark ? ThemeMode.dark : ThemeMode.light,
       home: const MainShell(),
       debugShowCheckedModeBanner: false,
+      // 桌面版滑鼠拖拽預設不滾動（widget test 實證：touch 滾、mouse 不滾）
+      // → 明示把 mouse/trackpad 加回 dragDevices，橫向歌單列才滑得動。
+      builder: (context, child) => ScrollConfiguration(
+        behavior: DesktopScrollBehavior(),
+        child: child ?? const SizedBox.shrink(),
+      ),
     );
   }
+}
+
+/// 全域捲動行為：比 Material 預設多開 mouse/trackpad 拖拽。
+class DesktopScrollBehavior extends MaterialScrollBehavior {
+  @override
+  Set<PointerDeviceKind> get dragDevices => {
+        PointerDeviceKind.touch,
+        PointerDeviceKind.mouse,
+        PointerDeviceKind.trackpad,
+      };
 }
 
 class MainShell extends StatefulWidget {

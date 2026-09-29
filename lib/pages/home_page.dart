@@ -28,6 +28,8 @@ class _HomePageState extends State<HomePage> {
   bool _loading = false;
   String _error = '';
   List<_HomeSection> _sections = [];
+  // 分類篩選：all | music（歌單）| podcast — 對應「歌單跟 podcast 分開的選項」。
+  String _homeFilter = 'all';
   List<_NewRelease> _newReleases = [];
   List<_BrowseCard> _browse = [];
   final Map<String, List<SpotifyTrackItem>> _trackCache = {};
@@ -223,6 +225,15 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     final loggedIn = SpotifySession.instance.isLoggedIn;
+    // 分類篩選後的區段（卡片層級過濾，空區段隱藏）。
+    final homeSections = <_HomeSection>[];
+    for (final s in _sections) {
+      final cards = s.cards.where(_cardPasses).toList();
+      if (cards.isNotEmpty) {
+        homeSections.add(_HomeSection(title: s.title, cards: cards));
+      }
+    }
+    final showNew = _homeFilter != 'podcast' && _newReleases.isNotEmpty;
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -241,16 +252,18 @@ class _HomePageState extends State<HomePage> {
               child: ListView(
                 controller: _scroll,
                 children: [
-                  for (final s in _sections) _sectionRow(s.title, s.cards),
-                  if (_newReleases.isNotEmpty) ...[
+                  _filterChips(),
+                  for (final s in homeSections) _sectionRow(s.title, s.cards),
+                  if (showNew) ...[
                     const SizedBox(height: 8),
                     _sectionRow('新發行',
                         _newReleases.map((r) => _HomeCard(uri: r.uri, name: r.name, subtitle: r.artists, coverUrl: r.coverUrl)).toList()),
                   ],
-                  for (final b in _browse) ...[
-                    const SizedBox(height: 8),
-                    _sectionRow(b.title, b.cards),
-                  ],
+                  if (_homeFilter == 'all')
+                    for (final b in _browse) ...[
+                      const SizedBox(height: 8),
+                      _sectionRow(b.title, b.cards),
+                    ],
                   const SizedBox(height: 20),
                 ],
               ),
@@ -340,22 +353,49 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _sectionRow(String title, List<_HomeCard> cards) {
-    if (cards.isEmpty) return const SizedBox.shrink();
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Padding(
-        padding: const EdgeInsets.symmetric(vertical: 10),
-        child: Text(title, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-      ),
-      SizedBox(
-        height: 170,
-        child: ListView.builder(
-          scrollDirection: Axis.horizontal,
-          itemCount: cards.length,
-          itemBuilder: (ctx, i) => _card(cards[i]),
+  Widget _sectionRow(String title, List<_HomeCard> cards) =>
+      _SectionRow(title: title, cards: cards, cardBuilder: _card);
+
+  /// 分類篩選是否放行這張卡（show/episode = podcast，其餘 = 歌單/音樂）。
+  static bool _isPodcastCard(_HomeCard c) =>
+      _uriHas(c.uri, 'show') || _uriHas(c.uri, 'episode');
+
+  bool _cardPasses(_HomeCard c) {
+    final pod = _isPodcastCard(c);
+    if (_homeFilter == 'podcast') return pod;
+    if (_homeFilter == 'music') return !pod;
+    return true;
+  }
+
+  Widget _filterChips() {
+    Widget chip(String label, String v) {
+      final active = _homeFilter == v;
+      return GestureDetector(
+        onTap: () => setState(() => _homeFilter = v),
+        child: Container(
+          margin: const EdgeInsets.only(right: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+          decoration: BoxDecoration(
+            color: active ? AppColors.accentDim : AppColors.surfaceLight,
+            borderRadius: BorderRadius.circular(999),
+          ),
+          child: Text(label,
+              style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: active ? AppColors.accent : AppColors.textMuted)),
         ),
-      ),
-    ]);
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 4, bottom: 2),
+      child: Row(children: [
+        chip('全部', 'all'),
+        chip('歌單', 'music'),
+        chip('Podcast', 'podcast'),
+      ]),
+    );
   }
 
   /// Spotify 給的 uri 形式不定：`spotify:episode:xxx` / `https://…/episode/xxx`
@@ -719,4 +759,51 @@ class _HomeCard {
   final String subtitle;
   final String? coverUrl;
   _HomeCard({required this.uri, required this.name, this.subtitle = '', this.coverUrl});
+}
+
+/// 單一橫向卡片列：自帶**可見捲動桿**（看得到、可直接拖 = 「無法滑動到右側」的解法）。
+class _SectionRow extends StatefulWidget {
+  final String title;
+  final List<_HomeCard> cards;
+  final Widget Function(_HomeCard) cardBuilder;
+  const _SectionRow(
+      {required this.title, required this.cards, required this.cardBuilder});
+
+  @override
+  State<_SectionRow> createState() => _SectionRowState();
+}
+
+class _SectionRowState extends State<_SectionRow> {
+  final _ctrl = ScrollController();
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.cards.isEmpty) return const SizedBox.shrink();
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: Text(widget.title,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
+      ),
+      SizedBox(
+        height: 170,
+        child: Scrollbar(
+          controller: _ctrl,
+          thumbVisibility: true,
+          child: ListView.builder(
+            controller: _ctrl,
+            scrollDirection: Axis.horizontal,
+            itemCount: widget.cards.length,
+            itemBuilder: (ctx, i) => widget.cardBuilder(widget.cards[i]),
+          ),
+        ),
+      ),
+    ]);
+  }
 }

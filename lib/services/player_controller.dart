@@ -174,7 +174,19 @@ class PlayerController {
         return;
       }
       if (_loop || _shuffle) {
-        next();
+        if (_queue.isEmpty) {
+          // 單曲直撥（queue 空）：next() 只會空轉 return，_isPlaying 永不清除 →
+          // UI 永遠卡「播放中」、也不會重播。→ 回到 0 秒重播 = 無限自動播放。
+          // ponytail: 未快取 pipe 串流回捲依賴 mpv 緩衝（串流快取預設開、可 seek）。
+          _player.seek(Duration.zero);
+          _player.play();
+          _position = Duration.zero;
+          _isPlaying = true;
+          _notify();
+          _pushSmtc();
+        } else {
+          next(); // 有隊列 → 接下一首（% 取餘 = 播到尾回頭，無限循環）
+        }
       } else {
         _isPlaying = false;
         _notify();
