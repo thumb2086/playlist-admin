@@ -220,10 +220,12 @@ class _PlayerBarState extends State<PlayerBar> {
         const SizedBox(width: 4),
         const Icon(Icons.volume_up_rounded, size: 16, color: AppColors.textMuted),
         SizedBox(
-          width: 80,
+          width: 110,
           child: SliderTheme(
             data: SliderTheme.of(context).copyWith(
-              trackHeight: 2, thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 4),
+              // 2px 軌+4px 拇指太難抓：加粗加寬到 4/6，overlay 14 擴大拖拽命中區。
+              trackHeight: 4, thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+              overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
               activeTrackColor: AppColors.textSecondary, inactiveTrackColor: AppColors.surfaceLight,
               thumbColor: Colors.white,
             ),

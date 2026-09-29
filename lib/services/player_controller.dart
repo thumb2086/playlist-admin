@@ -39,6 +39,7 @@ class PlayerController {
   String _statusText = '';
   Timer? _smtcTimer;
   Timer? _sleepTimer;
+  Timer? _volumeSaveTimer;
   DateTime? _sleepEndsAt;
   bool _prefetching = false;
   // ── 詳細面板（點縮圖彈出）的資料：來源 + 即時音訊參數 + 專輯 ──
@@ -908,7 +909,10 @@ class PlayerController {
     _volume = v.clamp(0.0, 1.0);
     await _player.setVolume(_volume * 100); // media_kit 0~100，見 init()
     ConfigService.instance.config.volume = _volume;
-    ConfigService.instance.save();
+    // 拖拽中每個 tick 都寫 config.json 會把滑桿拖到卡：debounce 500ms。
+    _volumeSaveTimer?.cancel();
+    _volumeSaveTimer =
+        Timer(const Duration(milliseconds: 500), () => ConfigService.instance.save());
     _notify();
   }
 
@@ -1004,6 +1008,8 @@ class PlayerController {
     _playerSubs.clear();
     _smtcTimer?.cancel();
     _sleepTimer?.cancel();
+    _volumeSaveTimer?.cancel();
+    if (_volumeSaveTimer != null) ConfigService.instance.save();
     _player.dispose();
   }
 }
