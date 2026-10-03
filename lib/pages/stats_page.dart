@@ -16,7 +16,7 @@ class StatsPage extends StatefulWidget {
 }
 
 class _StatsPageState extends State<StatsPage> {
-  int _mp3 = 0, _flac = 0, _txt = 0, _podcast = 0, _playlists = 0, _entries = 0, _dual = 0, _duplicates = 0;
+  int _mp3 = 0, _flac = 0, _txt = 0, _podcast = 0, _playlists = 0, _entries = 0, _duplicates = 0;
   double _sizeGb = 0, _savedGb = 0;
   bool _loading = false;
   List<Snapshot> _history = [];
@@ -62,7 +62,6 @@ class _StatsPageState extends State<StatsPage> {
         }
       }
       double size = 0, savedGb = 0;
-      final nameExts = <String, Set<String>>{};
       final nameCount = <String, int>{};  // stem -> total occurrences
       final firstSize = <String, double>{};  // stem -> size of first occurrence
 
@@ -73,7 +72,6 @@ class _StatsPageState extends State<StatsPage> {
             final lenGb = await e.length() / (1024 * 1024 * 1024);
             size += lenGb;
             final stem = e.uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '');
-            nameExts.putIfAbsent(stem, () => {});
             final cnt = nameCount[stem] ?? 0;
             nameCount[stem] = cnt + 1;
             // First occurrence: record size; subsequent: add to saved
@@ -82,15 +80,14 @@ class _StatsPageState extends State<StatsPage> {
             } else {
               savedGb += lenGb;
             }
-            if (low.endsWith('.mp3')) { mp3++; nameExts[stem]!.add('mp3'); }
-            else if (low.endsWith('.flac')) { flac++; nameExts[stem]!.add('flac'); }
-            else if (low.endsWith('.txt')) { txt++; nameExts[stem]!.add('txt'); }
+            if (low.endsWith('.mp3')) { mp3++; }
+            else if (low.endsWith('.flac')) { flac++; }
+            else if (low.endsWith('.txt')) { txt++; }
           }
         }
       }
 
-      int dual = 0, duplicates = 0;
-      for (final exts in nameExts.values) { if (exts.length > 1) dual++; }
+      int duplicates = 0;
       for (final cnt in nameCount.values) { if (cnt > 1) duplicates += cnt - 1; }
 
       int plCount = 0, entries = 0;
@@ -103,7 +100,7 @@ class _StatsPageState extends State<StatsPage> {
           }
         }
       }
-      setState(() { _mp3 = mp3; _flac = flac; _txt = txt; _podcast = podcast; _playlists = plCount; _entries = entries; _dual = dual; _sizeGb = size; _savedGb = savedGb; _duplicates = duplicates; _loading = false; });
+      setState(() { _mp3 = mp3; _flac = flac; _txt = txt; _podcast = podcast; _playlists = plCount; _entries = entries; _sizeGb = size; _savedGb = savedGb; _duplicates = duplicates; _loading = false; });
     } catch (_) { if (mounted) setState(() => _loading = false); }
     _loadDownloadRuns();
     _loadLufsCache();
@@ -151,8 +148,10 @@ class _StatsPageState extends State<StatsPage> {
           Expanded(child: _MetricCard(t('stats.total_files'), '$total', Icons.audio_file_rounded, Colors.white, _loading)),
           const SizedBox(width: 10),
           Expanded(child: _MetricCard(t('stats.mp3'), '$_mp3', Icons.music_note_rounded, const Color(0xFF4FC3F7), _loading)),
-          const SizedBox(width: 10),
-          Expanded(child: _MetricCard(t('stats.flac'), '$_flac', Icons.library_music_rounded, const Color(0xFFCE93D8), _loading)),
+          if (_flac > 0) ...[
+            const SizedBox(width: 10),
+            Expanded(child: _MetricCard(t('stats.flac'), '$_flac', Icons.library_music_rounded, const Color(0xFFCE93D8), _loading)),
+          ],
           const SizedBox(width: 10),
           Expanded(child: _MetricCard(t('stats.txt'), '$_txt', Icons.description_outlined, const Color(0xFFA5D6A7), _loading)),
         ]),
@@ -161,8 +160,6 @@ class _StatsPageState extends State<StatsPage> {
           Expanded(child: _MetricCard(t('stats.storage'), '${_sizeGb.toStringAsFixed(1)} GB', Icons.storage_rounded, AppColors.accent, _loading)),
           const SizedBox(width: 10),
           Expanded(child: _MetricCard(t('stats.saved'), '${_savedGb.toStringAsFixed(1)} GB', Icons.save_alt_rounded, const Color(0xFF4FC3F7), _loading)),
-          const SizedBox(width: 10),
-          Expanded(child: _MetricCard(t('stats.dual_format'), '$_dual', Icons.compare_arrows_rounded, const Color(0xFF80CBC4), _loading)),
           const SizedBox(width: 10),
           Expanded(child: _MetricCard(t('stats.duplicates'), '$_duplicates', Icons.copy_rounded, const Color(0xFFF06292), _loading)),
           const SizedBox(width: 10),
@@ -213,8 +210,10 @@ class _StatsPageState extends State<StatsPage> {
                   flex: 2,
                   child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
                     _Legend('MP3', '$_mp3', const Color(0xFF4FC3F7)),
-                    const SizedBox(height: 6),
-                    _Legend('FLAC', '$_flac', const Color(0xFFCE93D8)),
+                    if (_flac > 0) ...[
+                      const SizedBox(height: 6),
+                      _Legend('FLAC', '$_flac', const Color(0xFFCE93D8)),
+                    ],
                     const SizedBox(height: 6),
                     _Legend('TXT', '$_txt', const Color(0xFFA5D6A7)),
                   ]),
@@ -502,7 +501,6 @@ class _StatsPageState extends State<StatsPage> {
   Color _colorForFormat(String fmt) {
     switch (fmt) {
       case 'MP3': return const Color(0xFF4FC3F7);
-      case 'M4A': return const Color(0xFFFFB74D);
       case 'FLAC': return const Color(0xFFCE93D8);
       case 'TXT': return const Color(0xFFA5D6A7);
       default: return AppColors.textMuted;

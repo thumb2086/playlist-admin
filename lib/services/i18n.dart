@@ -80,7 +80,6 @@ class I18N extends ChangeNotifier {
     // Stats
     'stats.total_files': '總檔案',
     'stats.mp3': 'MP3',
-    'stats.m4a': 'M4A',
     'stats.flac': 'FLAC',
     'stats.txt': 'TXT',
     'stats.podcast': 'Podcast',
@@ -88,7 +87,6 @@ class I18N extends ChangeNotifier {
     'stats.storage': '容量',
     'stats.saved': '節省空間',
     'stats.duplicates': '重複歌曲',
-    'stats.dual_format': '雙格式',
     'stats.playlists': '播放清單',
     'stats.entries': '歌曲條目',
     'stats.format_distribution': '格式分布',
@@ -220,7 +218,6 @@ class I18N extends ChangeNotifier {
 
     'stats.total_files': 'Total Files',
     'stats.mp3': 'MP3',
-    'stats.m4a': 'M4A',
     'stats.flac': 'FLAC',
     'stats.txt': 'TXT',
     'stats.podcast': 'Podcast',
@@ -228,7 +225,6 @@ class I18N extends ChangeNotifier {
     'stats.storage': 'Storage',
     'stats.saved': 'Space Saved',
     'stats.duplicates': 'Duplicates',
-    'stats.dual_format': 'Dual Format',
     'stats.playlists': 'Playlists',
     'stats.entries': 'Entries',
     'stats.format_distribution': 'Format Distribution',
