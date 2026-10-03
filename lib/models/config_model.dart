@@ -20,6 +20,9 @@ class AppConfig {
   bool setupCompleted;
   bool podcastRagInMusic;
   String groqApiKey;
+  /// Groq 端點基底：留空 = 官方 api.groq.com；可貼自建 router
+  /// （如 https://xxx.vercel.app，OpenAI 相容 /v1/*）— 轉錄與 RAG 問答都走它。
+  String groqBaseUrl;
   int groqConcurrency;
   bool discordPresenceEnabled;
   String discordApplicationId;
@@ -55,6 +58,7 @@ class AppConfig {
     this.setupCompleted = false,
     this.podcastRagInMusic = false,
     this.groqApiKey = '',
+    this.groqBaseUrl = '',
     this.groqConcurrency = 3,
     this.discordPresenceEnabled = true,
     this.discordApplicationId = defaultDiscordAppId,
@@ -169,6 +173,7 @@ class AppConfig {
         setupCompleted: json['setup_completed'] as bool? ?? false,
         podcastRagInMusic: json['podcast_rag_in_music'] as bool? ?? false,
         groqApiKey: json['groq_api_key'] as String? ?? '',
+        groqBaseUrl: json['groq_base_url'] as String? ?? '',
         groqConcurrency: json['groq_concurrency'] as int? ?? 3,
         discordPresenceEnabled: json['discord_presence_enabled'] as bool? ?? true,
         discordApplicationId: (json['discord_application_id'] as String?)
@@ -208,6 +213,7 @@ class AppConfig {
         'setup_completed': setupCompleted,
         'podcast_rag_in_music': podcastRagInMusic,
         'groq_api_key': groqApiKey,
+        'groq_base_url': groqBaseUrl,
         'groq_concurrency': groqConcurrency,
         'discord_presence_enabled': discordPresenceEnabled,
         'discord_application_id': discordApplicationId,

@@ -180,6 +180,14 @@ class GroqNativeService {
     } catch (_) {}
   }
 
+  /// Groq 端點：groqBaseUrl 有值 → 自建 router（OpenAI 相容 /v1/*，
+  /// 上游 key 由 router 輪替、本端 key 退居驗證）；留空 → 官方。
+  static String apiUrl(String path, String baseUrl) {
+    final b = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    if (b.isNotEmpty) return '$b/v1$path';
+    return 'https://api.groq.com/openai/v1$path';
+  }
+
   // ── 單檔轉錄（含重試 + key 輪替） ───────────────────
   /// Whisper 語音轉文字。遇到 429/5xx 時自動換 key 重試。
   Future<String> transcribe(
@@ -202,7 +210,8 @@ class GroqNativeService {
         final file = await http.MultipartFile.fromPath('file', filePath);
         final request = http.MultipartRequest(
           'POST',
-          Uri.parse('https://api.groq.com/openai/v1/audio/transcriptions'),
+          Uri.parse(apiUrl('/audio/transcriptions',
+              ConfigService.instance.config.groqBaseUrl)),
         )
           ..headers['Authorization'] = 'Bearer $key'
           ..fields['model'] = model
@@ -467,7 +476,8 @@ class GroqNativeService {
       try {
         client = _createClient();
         final resp = await client.post(
-          Uri.parse('https://api.groq.com/openai/v1/chat/completions'),
+          Uri.parse(apiUrl(
+              '/chat/completions', ConfigService.instance.config.groqBaseUrl)),
           headers: {
             'Authorization': 'Bearer $key',
             'Content-Type': 'application/json',

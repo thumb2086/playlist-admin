@@ -14,7 +14,7 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   late TextEditingController _basePathCtrl, _workersCtrl, _ffmpegCtrl,
-      _lyricsFolderCtrl, _discordAppIdCtrl, _groqApiKeyCtrl;
+      _lyricsFolderCtrl, _discordAppIdCtrl, _groqApiKeyCtrl, _groqBaseUrlCtrl;
 
   void _onConfigChanged() { if (mounted) setState(() {}); }
 
@@ -28,6 +28,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _lyricsFolderCtrl = TextEditingController(text: c.lyricsFolderName);
     _discordAppIdCtrl = TextEditingController(text: c.discordApplicationId);
     _groqApiKeyCtrl = TextEditingController(text: c.groqApiKey);
+    _groqBaseUrlCtrl = TextEditingController(text: c.groqBaseUrl);
     I18N.instance.addListener(_onConfigChanged);
     ConfigService.instance.addListener(_onConfigChanged);
   }
@@ -38,6 +39,7 @@ class _SettingsPageState extends State<SettingsPage> {
     ConfigService.instance.removeListener(_onConfigChanged);
     _basePathCtrl.dispose(); _workersCtrl.dispose(); _ffmpegCtrl.dispose();
     _lyricsFolderCtrl.dispose(); _discordAppIdCtrl.dispose(); _groqApiKeyCtrl.dispose();
+    _groqBaseUrlCtrl.dispose();
     super.dispose();
   }
 
@@ -49,6 +51,7 @@ class _SettingsPageState extends State<SettingsPage> {
     c.lyricsFolderName = _lyricsFolderCtrl.text.trim().isEmpty ? 'Lyrics' : _lyricsFolderCtrl.text.trim();
     c.discordApplicationId = _discordAppIdCtrl.text.trim();
     c.groqApiKey = _groqApiKeyCtrl.text.trim();
+    c.groqBaseUrl = _groqBaseUrlCtrl.text.trim();
     ConfigService.instance.save();
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t('settings.saved')), duration: const Duration(seconds: 1)));
   }
@@ -132,6 +135,14 @@ class _SettingsPageState extends State<SettingsPage> {
         const SizedBox(height: 12),
         _Section('Groq API (Podcast 轉錄)', [
           _Field('API Key (多個用逗號分隔)', _groqApiKeyCtrl, 'gsk_xxx,gsk_yyy'),
+          const SizedBox(height: 4),
+          _Field('Groq Base URL（轉錄與 RAG 問答端點）', _groqBaseUrlCtrl,
+              '留空 = 官方 api.groq.com；可貼自建 router，如 https://xxx.vercel.app'),
+          const SizedBox(height: 4),
+          const Text(
+            '填了 Base URL 時，上面的 Key 改填 router 給的 ak_ 開頭金鑰（或 ROUTER_TOKEN）；上游多把 Groq key 的輪替/冷卻由 router 負責。',
+            style: TextStyle(color: AppColors.textSecondary, fontSize: 11),
+          ),
           const SizedBox(height: 4),
           const Text(
             '沒有 key 也能用，Podcast 會改用 YouTube 字幕',
