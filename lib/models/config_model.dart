@@ -20,8 +20,9 @@ class AppConfig {
   bool setupCompleted;
   bool podcastRagInMusic;
   String groqApiKey;
-  /// Groq 端點基底：留空 = 官方 api.groq.com；可貼自建 router
-  /// （如 https://xxx.vercel.app，OpenAI 相容 /v1/*）— 轉錄與 RAG 問答都走它。
+  /// Groq 端點基底：預設 = 推薦的自建 router（OpenAI 相容 /v1/*，轉錄與
+  /// RAG 問答都走它）；手動清空存 '' = 改回官方 api.groq.com。
+  static const String defaultGroqBaseUrl = 'https://vercel-router-khaki.vercel.app';
   String groqBaseUrl;
   int groqConcurrency;
   bool discordPresenceEnabled;
@@ -58,7 +59,7 @@ class AppConfig {
     this.setupCompleted = false,
     this.podcastRagInMusic = false,
     this.groqApiKey = '',
-    this.groqBaseUrl = '',
+    this.groqBaseUrl = defaultGroqBaseUrl,
     this.groqConcurrency = 3,
     this.discordPresenceEnabled = true,
     this.discordApplicationId = defaultDiscordAppId,
@@ -173,7 +174,8 @@ class AppConfig {
         setupCompleted: json['setup_completed'] as bool? ?? false,
         podcastRagInMusic: json['podcast_rag_in_music'] as bool? ?? false,
         groqApiKey: json['groq_api_key'] as String? ?? '',
-        groqBaseUrl: json['groq_base_url'] as String? ?? '',
+        // key 缺席（舊設定檔）→ 吃推薦 router 預設；手動清空存的 '' 會保留。
+        groqBaseUrl: json['groq_base_url'] as String? ?? defaultGroqBaseUrl,
         groqConcurrency: json['groq_concurrency'] as int? ?? 3,
         discordPresenceEnabled: json['discord_presence_enabled'] as bool? ?? true,
         discordApplicationId: (json['discord_application_id'] as String?)

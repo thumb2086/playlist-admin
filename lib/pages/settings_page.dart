@@ -137,10 +137,11 @@ class _SettingsPageState extends State<SettingsPage> {
           _Field('API Key (多個用逗號分隔)', _groqApiKeyCtrl, 'gsk_xxx,gsk_yyy'),
           const SizedBox(height: 4),
           _Field('Groq Base URL（轉錄與 RAG 問答端點）', _groqBaseUrlCtrl,
-              '留空 = 官方 api.groq.com；可貼自建 router，如 https://xxx.vercel.app'),
+              '預設 = 推薦 router（直接用）；清空存檔 = 改回官方 api.groq.com'),
           const SizedBox(height: 4),
           const Text(
-            '填了 Base URL 時，上面的 Key 改填 router 給的 ak_ 開頭金鑰（或 ROUTER_TOKEN）；上游多把 Groq key 的輪替/冷卻由 router 負責。',
+            '用推薦 router 時，上面的 Key 填 router 給的 ak_ 開頭金鑰（或 ROUTER_TOKEN）；'
+            '上游多把 Groq key 的輪替/冷卻由 router 負責，官方模式則用一般 gsk_ key。',
             style: TextStyle(color: AppColors.textSecondary, fontSize: 11),
           ),
           const SizedBox(height: 4),
