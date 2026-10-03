@@ -79,13 +79,15 @@ class MetadataEnricher {
       coverUrl ??= cached['cover_url'] as String?;
     }
 
-    // 2. If still no title/artist, try to extract from filename
+    // 2. If still no title/artist, try to extract from filename.
+    // 檔名慣例是「曲名 - 歌手」（下載時 `${name} - ${artist}`），
+    // 與 _titleFromPath/_artistFromPath 一致：第一段=曲名。
     final fileName = File(filePath).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '');
     if ((title == null || title.isEmpty) && fileName.contains(' - ')) {
       final parts = fileName.split(' - ');
       if (parts.length >= 2) {
-        artist = parts[0].trim();
-        title = parts.sublist(1).join(' - ').trim();
+        title = parts.first.trim();
+        artist = parts.sublist(1).join(' - ').trim();
       }
     }
 

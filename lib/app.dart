@@ -462,21 +462,29 @@ class _NavItemData {
 
 /// 開本機歌單：m3u8 → items → 詳情頁（歌單卡原本 onTap 是空的死 UI）。
 /// audioQuery = 完整檔名 stem → _findLocalTrack 精準命中本機（含 未分類\）。
+/// 封面/時長由詳情頁背景補齊（需 spotifyUrl，這裡從 urlNames 反查帶過去）。
 void _openLocalPlaylist(BuildContext context, String name) {
   final cfg = ConfigService.instance.config;
   final path = '${cfg.playlistsPath}${Platform.pathSeparator}$name.m3u8';
   final items = <PlaylistItem>[];
   if (File(path).existsSync()) {
     for (final stem in PlaylistParser.parseTrackNames(path)) {
+      // 檔名慣例是「曲名 - 歌手」（下載時 `${name} - ${artist}`），
+      // 與 _titleFromPath/_artistFromPath 一致：第一段=曲名。
       final sep = stem.split(' - ');
       items.add(PlaylistItem(
-        name: sep.length > 1 ? sep.sublist(1).join(' - ') : stem,
-        artist: sep.length > 1 ? sep.first : '',
+        name: sep.first,
+        artist: sep.length > 1 ? sep.sublist(1).join(' - ') : '',
         audioQuery: stem,
       ));
     }
   }
-  MainShell.showDetail(PlaylistDetailPage(title: name, items: items));
+  String? url;
+  try {
+    url = cfg.urlNames.entries.firstWhere((e) => e.value == name).key;
+  } catch (_) {}
+  MainShell.showDetail(
+      PlaylistDetailPage(title: name, spotifyUrl: url, items: items));
 }
 
 /// 側欄音樂庫的歌單項目。

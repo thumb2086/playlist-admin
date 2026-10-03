@@ -8,6 +8,8 @@ import '../services/player_controller.dart';
 import '../services/config_service.dart';
 import '../services/favorites_service.dart';
 import '../services/youtube_service.dart';
+import '../services/spotify_gql_client.dart';
+import '../services/spotify_session.dart';
 import '../widgets/dark_theme.dart';
 import '../services/podcast_service.dart';
 
@@ -49,13 +51,291 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   Set<int> _localTracks = {};
   Set<String> _favorites = {};
   bool _subscribed = false;
+  // 封面/時長補齊用的可變副本（widget.items 是 final，enrichment 只加
+  // coverUrl/durationMs/album，name/artist/audioQuery 絕不動 → 播放匹配不受影響）。
+  late List<PlaylistItem> _items;
+  String? _headerCover;
+  int _coverGen = 0;
 
   @override
   void initState() {
     super.initState();
+    _items = List.of(widget.items);
     _loadFavorites();
-    WidgetsBinding.instance.addPostFrameCallback((_) { _scanLocalTracks(); });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scanLocalTracks();
+      _enrichCovers();
+    });
   }
+
+  /// 頁面封面：補齊後的 header 封面 > 呼叫端給的 > null（佔位圖）。
+  String? get _pageCover => _headerCover ?? widget.coverUrl;
+
+  /// 封面快取 key：ISRC 優先，否則正規化「曲名 - 歌手」。
+  static String _coverKey(String? isrc, String name, String artist) {
+    if (isrc != null && isrc.isNotEmpty) return 'isrc:$isrc';
+    final n = '$name - $artist'.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+    return 't:$n';
+  }
+
+  static String _normName(String name, String artist) =>
+      '$name - $artist'.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+
+  static String? _playlistIdFromUrl(String? url) {
+    if (url == null || url.isEmpty) return null;
+    return RegExp(r'playlist[/:]([A-Za-z0-9]+)').firstMatch(url)?.group(1);
+  }
+
+  Future<Map<String, dynamic>> _loadCoverCache() async {
+    try {
+      final f = File('${ConfigService.instance.config.spotifyCachePath}'
+          '${Platform.pathSeparator}cover_cache.json');
+      if (await f.exists()) {
+        return jsonDecode(await f.readAsString()) as Map<String, dynamic>;
+      }
+    } catch (_) {}
+    return {};
+  }
+
+  Future<void> _saveCoverCache(Map<String, dynamic> cache) async {
+    try {
+      final dir = Directory(ConfigService.instance.config.spotifyCachePath);
+      await dir.create(recursive: true);
+      await File('${dir.path}${Platform.pathSeparator}cover_cache.json')
+          .writeAsString(jsonEncode(cache));
+    } catch (_) {}
+  }
+
+  /// 背景補封面+時長：先套磁碟快取（秒開、離線可看），再一次 playlist
+  /// fetch 補缺的（單次呼叫覆蓋整單，非逐曲打 API）。未登入/無 URL/
+  /// 斷網 → 靜默維持佔位圖，不報錯不洗畫面。
+  Future<void> _enrichCovers() async {
+    final gen = ++_coverGen;
+    if (_items.isEmpty || _items.every((e) => (e.coverUrl ?? '').isNotEmpty)) {
+      return;
+    }
+    var url = widget.spotifyUrl;
+    if (url == null || url.isEmpty) {
+      try {
+        url = ConfigService.instance.config.urlNames.entries
+            .firstWhere((e) => e.value == widget.title)
+            .key;
+      } catch (_) {
+        url = null;
+      }
+    }
+    final id = _playlistIdFromUrl(url);
+    if (id == null || id.isEmpty) return;
+    if (!SpotifySession.instance.isLoggedIn) return;
+    final cache = await _loadCoverCache();
+    if (gen != _coverGen || !mounted) return;
+    var changed = _applyCoverCache(cache);
+    if (changed && mounted && gen == _coverGen) setState(() {});
+    final missing =
+        _items.where((e) => (e.coverUrl ?? '').isEmpty).length;
+    if (missing == 0) return;
+    final gql = SpotifyGqlClient();
+    try {
+      final all = <SpotifyTrackItem>[];
+      var offset = 0;
+      const step = 50;
+      while (true) {
+        final data = await gql.fetchPlaylist(id, offset: offset, limit: step);
+        if (gen != _coverGen || !mounted) return;
+        if (offset == 0) {
+          final pc = SpotifyTrackItem.parsePlaylistCover(data);
+          if (pc != null) {
+            setState(() => _headerCover = pc);
+          }
+        }
+        final tracks = SpotifyTrackItem.parsePlaylistTracks(data);
+        if (tracks.isEmpty) break;
+        all.addAll(tracks);
+        if (tracks.length < step || all.length >= _items.length) break;
+        offset += step;
+      }
+      if (gen != _coverGen || !mounted) return;
+      if (_matchAndApply(all, cache)) {
+        if (_headerCover == null) {
+          final first = _items
+              .map((e) => e.coverUrl)
+              .firstWhere((c) => c != null && c.isNotEmpty, orElse: () => null);
+          if (first != null) _headerCover = first;
+        }
+        await _saveCoverCache(cache);
+        if (mounted && gen == _coverGen) setState(() {});
+      }
+      // 輪替掉的曲目（playlist fetch 沒有）→ 逐曲搜尋兜底。
+      // 3 並行、可取消、結果寫透快取（一次成本，之後秒開）。
+      // playlist 整單失敗也不影響：search 照跑（內層各自 try）。
+      try {
+        await _enrichMissingBySearch(gql, cache, gen);
+      } catch (_) {}
+      if (mounted && gen == _coverGen) setState(() {});
+    } catch (_) {}
+  }
+
+  /// 逐曲搜尋補封面（playlist 輪替後不在名單內的曲目用）。
+  Future<void> _enrichMissingBySearch(
+      SpotifyGqlClient gql, Map<String, dynamic> cache, int gen) async {
+    final missing = <int>[];
+    for (int i = 0; i < _items.length; i++) {
+      if ((_items[i].coverUrl ?? '').isEmpty) missing.add(i);
+    }
+    var saved = false;
+    for (int k = 0; k < missing.length; k += 3) {
+      if (gen != _coverGen || !mounted) return;
+      final chunk = missing.sublist(k, (k + 3).clamp(0, missing.length));
+      final results = await Future.wait(chunk.map((i) async {
+        final it = _items[i];
+        final q = '${it.name} ${it.artist}'.trim();
+        if (q.isEmpty) return <SpotifyTrackItem>[];
+        try {
+          final data = await gql.searchTracks(q, limit: 5);
+          return SpotifyTrackItem.parseSearchTracks(data);
+        } catch (_) {
+          return <SpotifyTrackItem>[];
+        }
+      }));
+      if (gen != _coverGen || !mounted) return;
+      var changed = false;
+      for (int j = 0; j < chunk.length; j++) {
+        if (results[j].isEmpty) continue;
+        // 驗收：首個「曲名相符」的結果才收（防搜尋第一名是別的歌）。
+        SpotifyTrackItem? pick;
+        final want = _norm(_items[chunk[j]].name);
+        for (final t in results[j]) {
+          final nt = _norm(t.name);
+          if (want.length >= 2 &&
+              nt.length >= 2 &&
+              (nt.contains(want) || want.contains(nt))) {
+            pick = t;
+            break;
+          }
+        }
+        pick ??= results[j].first;
+        if (_matchOne(chunk[j], [pick], {}, {}, cache)) changed = true;
+      }
+      if (changed) {
+        await _saveCoverCache(cache);
+        saved = true;
+        if (mounted && gen == _coverGen) setState(() {});
+      }
+    }
+    if (!saved) await _saveCoverCache(cache);
+  }
+
+  /// 套用磁碟快取。回傳是否有變動。
+  bool _applyCoverCache(Map<String, dynamic> cache) {
+    var changed = false;
+    for (int i = 0; i < _items.length; i++) {
+      final it = _items[i];
+      if ((it.coverUrl ?? '').isNotEmpty && it.durationMs > 0) continue;
+      final e = cache[_coverKey(it.isrc, it.name, it.artist)];
+      if (e is Map) {
+        _items[i] = PlaylistItem(
+          name: it.name,
+          artist: it.artist,
+          durationMs:
+              (e['d'] as num?)?.toInt() ?? it.durationMs,
+          coverUrl: (e['c'] as String?) ?? it.coverUrl,
+          audioQuery: it.audioQuery,
+          audioUrl: it.audioUrl,
+          isrc: it.isrc,
+          album: (e['a'] as String?) ?? it.album,
+        );
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /// Spotify 曲目配對到本機條目（只補 cover/duration/album）。
+  /// 檔名「曲名 - 歌手」順序與 Spotify displayName 一致時走精確比對；
+  /// Daily Mix 每日輪替、m3u8 快照是舊的，另有不分順序的 both-parts 兜底。
+  /// 回傳是否有變動（同時寫透磁碟快取 map，呼叫端負責存檔）。
+  bool _matchAndApply(
+      List<SpotifyTrackItem> tracks, Map<String, dynamic> cache,
+      {Set<int>? only}) {
+    final byIsrc = <String, SpotifyTrackItem>{};
+    final full = <String, SpotifyTrackItem>{};
+    for (final t in tracks) {
+      if ((t.isrc ?? '').isNotEmpty) {
+        byIsrc[t.isrc!.toLowerCase()] = t;
+      }
+      final disp = _normName(t.name, t.artists.join(', '));
+      full.putIfAbsent(disp, () => t);
+      full.putIfAbsent(_normName(t.artists.join(', '), t.name), () => t);
+    }
+    var changed = false;
+    for (int i = 0; i < _items.length; i++) {
+      if (only != null && !only.contains(i)) continue;
+      if (_matchOne(i, tracks, byIsrc, full, cache)) changed = true;
+    }
+    return changed;
+  }
+
+  /// 單條目配對（供 playlist 整批與逐曲搜尋共用）。
+  bool _matchOne(int i, List<SpotifyTrackItem> tracks,
+      Map<String, SpotifyTrackItem> byIsrc, Map<String, SpotifyTrackItem> full,
+      Map<String, dynamic> cache) {
+    final it = _items[i];
+    final needCover = (it.coverUrl ?? '').isEmpty;
+    final needDur = it.durationMs <= 0;
+    if (!needCover && !needDur) return false;
+    SpotifyTrackItem? hit;
+    if ((it.isrc ?? '').isNotEmpty) {
+      hit = byIsrc[it.isrc!.toLowerCase()];
+    }
+    final stem = _normName(it.name, it.artist);
+    hit ??= full[stem];
+    // both-parts（不分順序）：曲名與首位歌手同時出現在 stem 裡。
+    if (hit == null) {
+      for (final t in tracks) {
+        final nt = _norm(t.name);
+        final na = _norm(t.artists.isNotEmpty ? t.artists.first : '');
+        if (nt.length >= 2 &&
+            na.length >= 2 &&
+            stem.contains(nt) &&
+            stem.contains(na)) {
+          hit = t;
+          break;
+        }
+      }
+    }
+    // 曲名單獨出現（len>=3，避開單字誤配）。
+    if (hit == null) {
+      for (final t in tracks) {
+        final nt = _norm(t.name);
+        if (nt.length >= 3 && stem.contains(nt)) {
+          hit = t;
+          break;
+        }
+      }
+    }
+    if (hit == null) return false;
+    _items[i] = PlaylistItem(
+      name: it.name,
+      artist: it.artist,
+      durationMs:
+          needDur && hit.durationMs > 0 ? hit.durationMs : it.durationMs,
+      coverUrl: needCover ? hit.coverUrl : it.coverUrl,
+      audioQuery: it.audioQuery,
+      audioUrl: it.audioUrl,
+      isrc: it.isrc,
+      album: (it.album ?? '').isEmpty ? hit.album : it.album,
+    );
+    cache[_coverKey(it.isrc, it.name, it.artist)] = {
+      'c': hit.coverUrl,
+      'd': hit.durationMs,
+      'a': hit.album,
+    };
+    return true;
+  }
+
+  static String _norm(String s) => s
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^a-z0-9\u4e00-\u9fff\u3400-\u4dbf㐀-䶿豈-﫿]'), '');
 
   Future<void> _scanLocalTracks() async {
     final found = await _findLocalTracksAsync();
@@ -95,7 +375,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   /// 現在兩個目錄各只列一次，之後全是記憶體比對。
   Future<Set<int>> _findLocalTracksAsync() async {
     final result = <int>{};
-    if (widget.items.isEmpty) return result;
+    if (_items.isEmpty) return result;
     final cfg = ConfigService.instance.config;
     final musicDir = Directory(cfg.musicPath);
     final localFiles = <String>{};
@@ -120,8 +400,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
         }
       }
     }
-    for (int i = 0; i < widget.items.length; i++) {
-      final query = widget.items[i].audioQuery.toLowerCase();
+    for (int i = 0; i < _items.length; i++) {
+      final query = _items[i].audioQuery.toLowerCase();
       var hit = false;
       for (final local in localFiles) {
         if (local == query || local.contains(query) || query.contains(local)) {
@@ -140,7 +420,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       }
       // 單集候選（有 audioUrl 或無 ISRC）→ podcasts\ 資料夾也算已下載。
       if (!hit) {
-        final it = widget.items[i];
+        final it = _items[i];
         final isEp = (it.audioUrl != null && it.audioUrl!.isNotEmpty) ||
             (it.isrc ?? '').isEmpty;
         if (isEp) {
@@ -175,7 +455,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
 
   Future<void> _downloadTrack(int index) async {
     if (_isLocal(index) || _isDownloading(index)) return;
-    final item = widget.items[index];
+    final item = _items[index];
     if (mounted) setState(() { _downloading.add(index); _progress[index] = 0; });
     try {
       // ── 單集判別：有 audioUrl，或無 ISRC（Spotify episode 沒有 isrc）→
@@ -306,7 +586,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     if (_downloadingAll) { _downloadingAll = false; return; }
     _registerSpotifyUrl();
     final toDownload = <int>[];
-    for (int i = 0; i < widget.items.length; i++) {
+    for (int i = 0; i < _items.length; i++) {
       if (!_isLocal(i) && !_isDownloading(i)) {
         toDownload.add(i);
       }
@@ -328,7 +608,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   @override
   Widget build(BuildContext context) {
     final localCount = _localTracks.length + _downloaded.length;
-    final totalCount = widget.items.length;
+    final totalCount = _items.length;
 
     return Scaffold(
       backgroundColor: AppColors.bg,
@@ -339,7 +619,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
           SliverList(
             delegate: SliverChildBuilderDelegate(
               (ctx, i) => _buildTrackRow(ctx, i),
-              childCount: widget.items.length,
+              childCount: _items.length,
             ),
           ),
           const SliverToBoxAdapter(child: SizedBox(height: 80)),
@@ -359,8 +639,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
             child: Container(
               width: 140, height: 140,
               color: AppColors.surfaceLight,
-              child: widget.coverUrl != null
-                  ? CachedNetworkImage(imageUrl: widget.coverUrl!, fit: BoxFit.cover,
+              child: _pageCover != null
+                  ? CachedNetworkImage(imageUrl: _pageCover!, fit: BoxFit.cover,
                       placeholder: (_, __) => Container(color: AppColors.surfaceLight),
                       errorWidget: (_, __, ___) => Icon(
                           widget.isPodcast ? Icons.podcasts_rounded : Icons.music_note_rounded,
@@ -473,7 +753,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   }
 
   Widget _buildTrackRow(BuildContext context, int index) {
-    final item = widget.items[index];
+    final item = _items[index];
     final isLocal = _isLocal(index);
     final isDownloading = _isDownloading(index);
 
@@ -496,8 +776,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
             child: Container(
               width: 40, height: 40,
               color: AppColors.surfaceLight,
-              child: (item.coverUrl ?? widget.coverUrl) != null
-                  ? CachedNetworkImage(imageUrl: item.coverUrl ?? widget.coverUrl!, fit: BoxFit.cover,
+              child: (item.coverUrl ?? _pageCover) != null
+                  ? CachedNetworkImage(imageUrl: item.coverUrl ?? _pageCover!, fit: BoxFit.cover,
                       placeholder: (_, __) => Container(color: AppColors.surfaceLight),
                       errorWidget: (_, __, ___) => const Icon(Icons.music_note_rounded, size: 16, color: AppColors.textMuted))
                   : const Icon(Icons.music_note_rounded, size: 16, color: AppColors.textMuted),
@@ -571,18 +851,18 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
 
   void _playAll(BuildContext context, int startIndex) {
     final ctrl = PlayerController.instance;
-    final queries = widget.items.map((i) => i.audioQuery).toList();
-    final titles = widget.items.map((i) => i.name).toList();
-    ctrl.setQueue(queries, titles: titles, startIndex: startIndex < 0 ? 0 : startIndex, items: widget.items);
-    final first = widget.items[startIndex < 0 ? 0 : startIndex];
+    final queries = _items.map((i) => i.audioQuery).toList();
+    final titles = _items.map((i) => i.name).toList();
+    ctrl.setQueue(queries, titles: titles, startIndex: startIndex < 0 ? 0 : startIndex, items: _items);
+    final first = _items[startIndex < 0 ? 0 : startIndex];
     ctrl.playItem(first);
   }
 
   void _playTrack(BuildContext context, int index) {
     final ctrl = PlayerController.instance;
-    final queries = widget.items.map((i) => i.audioQuery).toList();
-    final titles = widget.items.map((i) => i.name).toList();
-    ctrl.setQueue(queries, titles: titles, startIndex: index, items: widget.items);
-    ctrl.playItem(widget.items[index]);
+    final queries = _items.map((i) => i.audioQuery).toList();
+    final titles = _items.map((i) => i.name).toList();
+    ctrl.setQueue(queries, titles: titles, startIndex: index, items: _items);
+    ctrl.playItem(_items[index]);
   }
 }

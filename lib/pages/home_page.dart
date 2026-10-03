@@ -683,51 +683,8 @@ class _HomePageState extends State<HomePage> {
   }
 
   List<SpotifyTrackItem> _extractPlaylistTracks(Map<String, dynamic> data) {
-    final out = <SpotifyTrackItem>[];
-    try {
-      final playlist =
-          (data['data'] as Map?)?['playlistV2'] as Map<String, dynamic>?;
-      final content = playlist?['content'] as Map<String, dynamic>?;
-      final items = content?['items'] as List<dynamic>? ?? [];
-      for (final it in items) {
-        final wrapper = (it as Map<String, dynamic>)['itemV2'] as Map<String, dynamic>?;
-        if (wrapper == null) continue;
-        // Track data is nested inside itemV2.data (not itemV2 directly).
-        final item = wrapper['data'] as Map<String, dynamic>? ?? wrapper;
-        final name = (item['name'] ?? '') as String? ?? '';
-        final uri = (item['uri'] ?? '') as String? ?? '';
-        if (name.isEmpty && uri.isEmpty) continue;
-        // Track has albumOfTrack; episode has coverArt directly.
-        final album = item['albumOfTrack'] as Map<String, dynamic>?;
-        final coverArt = item['coverArt'] as Map<String, dynamic>?;
-        String? cover;
-        if (album != null) {
-          cover = SpotifyTrackItem.coverFromSources(album['coverArt']?['sources']);
-        } else if (coverArt != null) {
-          cover = SpotifyTrackItem.coverFromSources(coverArt['sources']);
-        }
-        // Artists may be a list or a map (depending on response).
-        final artistsRaw = item['artists'];
-        String artists = '';
-        if (artistsRaw is List) {
-          artists = artistsRaw
-              .map((a) => (a is Map ? ((a['profile'] as Map?)?['name'] ?? '') : '').toString())
-              .where((s) => s.isNotEmpty)
-              .join(', ');
-        } else if (artistsRaw is Map) {
-          artists = (artistsRaw['profile'] as Map?)?['name'] ?? '';
-        }
-        final duration = ((item['trackDuration'] as Map<String, dynamic>?)?['totalMilliseconds'] as num?)?.toInt() ?? 0;
-        final albumName = (album?['name'] as String?) ?? '';
-        if (name.isNotEmpty) {
-          out.add(SpotifyTrackItem(
-            uri: uri, name: name, artists: artists.isEmpty ? [] : [artists],
-            album: albumName, durationMs: duration, coverUrl: cover,
-          ));
-        }
-      }
-    } catch (_) {}
-    return out;
+    // 實作已收攏至 SpotifyTrackItem.parsePlaylistTracks（單一真相源）。
+    return SpotifyTrackItem.parsePlaylistTracks(data);
   }
 }
 

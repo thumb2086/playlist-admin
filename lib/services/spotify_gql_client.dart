@@ -236,4 +236,117 @@ class SpotifyTrackItem {
     final s = sources.cast<Map<String, dynamic>>().last;
     return s['url'] as String?;
   }
+
+  /// 從 fetchPlaylist 回應解析曲目（含封面/時長/ISRC）。
+  /// 原本散在 home_page._extractPlaylistTracks，收攏至此避免分叉。
+  static List<SpotifyTrackItem> parsePlaylistTracks(Map<String, dynamic> data) {
+    final out = <SpotifyTrackItem>[];
+    try {
+      final playlist =
+          (data['data'] as Map?)?['playlistV2'] as Map<String, dynamic>?;
+      final content = playlist?['content'] as Map<String, dynamic>?;
+      final items = content?['items'] as List<dynamic>? ?? [];
+      for (final it in items) {
+        final wrapper = (it as Map<String, dynamic>)['itemV2'] as Map<String, dynamic>?;
+        if (wrapper == null) continue;
+        // Track data is nested inside itemV2.data (not itemV2 directly).
+        final item = wrapper['data'] as Map<String, dynamic>? ?? wrapper;
+        final name = (item['name'] ?? '') as String? ?? '';
+        final uri = (item['uri'] ?? '') as String? ?? '';
+        if (name.isEmpty && uri.isEmpty) continue;
+        // Track has albumOfTrack; episode has coverArt directly.
+        final album = item['albumOfTrack'] as Map<String, dynamic>?;
+        final coverArt = item['coverArt'] as Map<String, dynamic>?;
+        String? cover;
+        if (album != null) {
+          cover = SpotifyTrackItem.coverFromSources(album['coverArt']?['sources']);
+        } else if (coverArt != null) {
+          cover = SpotifyTrackItem.coverFromSources(coverArt['sources']);
+        }
+        // Artists may be a list, a map, or a map with items (fetchPlaylist).
+        final artistsRaw = item['artists'];
+        String artists = '';
+        if (artistsRaw is List) {
+          artists = artistsRaw
+              .map((a) => (a is Map ? ((a['profile'] as Map?)?['name'] ?? '') : '').toString())
+              .where((s) => s.isNotEmpty)
+              .join(', ');
+        } else if (artistsRaw is Map) {
+          final nested = artistsRaw['items'];
+          if (nested is List) {
+            artists = nested
+                .map((a) => (a is Map ? ((a['profile'] as Map?)?['name'] ?? '') : '').toString())
+                .where((s) => s.isNotEmpty)
+                .join(', ');
+          } else {
+            artists = (artistsRaw['profile'] as Map?)?['name'] ?? '';
+          }
+        }
+        final duration = ((item['trackDuration'] as Map<String, dynamic>?)?['totalMilliseconds'] as num?)?.toInt() ?? 0;
+        final albumName = (album?['name'] as String?) ?? '';
+        if (name.isNotEmpty) {
+          out.add(SpotifyTrackItem(
+            uri: uri, name: name, artists: artists.isEmpty ? [] : [artists],
+            album: albumName, durationMs: duration, coverUrl: cover,
+          ));
+        }
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  /// 從 searchTracks 回應解析曲目（欄位形狀與 fetchPlaylist 不同：
+  /// artists 是裸 List，item 包在 item key 下）。與 search_page._parseTracks 同規則。
+  static List<SpotifyTrackItem> parseSearchTracks(Map<String, dynamic> data) {
+    final out = <SpotifyTrackItem>[];
+    try {
+      final search =
+          (data['data'] as Map?)?['searchV2'] as Map<String, dynamic>?;
+      final tracks = search?['tracksV2'] as Map<String, dynamic>?;
+      final items = tracks?['items'] as List<dynamic>? ?? [];
+      for (final it in items) {
+        final track =
+            (it as Map<String, dynamic>)['item'] as Map<String, dynamic>?;
+        if (track == null) continue;
+        final album = track['albumOfTrack'] as Map<String, dynamic>?;
+        final name = (track['name'] ?? '') as String? ?? '';
+        if (name.isEmpty) continue;
+        final uri = (track['uri'] ?? '') as String? ?? '';
+        final artists = (track['artists'] as List<dynamic>? ?? [])
+            .map((a) => ((a as Map<String, dynamic>)['profile'] as Map?)?['name'] as String? ?? '')
+            .where((s) => s.isNotEmpty)
+            .toList();
+        final duration = ((track['trackDuration'] as Map<String, dynamic>?)?['totalMilliseconds'] as num?)?.toInt() ?? 0;
+        final cover = album != null
+            ? SpotifyTrackItem.coverFromSources(album['coverArt']?['sources'])
+            : null;
+        out.add(SpotifyTrackItem(
+          uri: uri,
+          name: name,
+          artists: artists,
+          album: (album?['name'] as String?) ?? '',
+          durationMs: duration,
+          coverUrl: cover,
+        ));
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  /// 歌單封面（playlistV2.images.items[0]，與 home _extractCover 同規則）。
+  /// 抓不到回 null（呼叫端用首曲封面兜底）。
+  static String? parsePlaylistCover(Map<String, dynamic> data) {
+    try {
+      final playlist =
+          (data['data'] as Map?)?['playlistV2'] as Map<String, dynamic>?;
+      final imgs = playlist?['images'] as Map<String, dynamic>?;
+      final items = imgs?['items'] as List<dynamic>?;
+      if (items != null && items.isNotEmpty) {
+        final src =
+            (items[0] as Map<String, dynamic>)['sources'] as List<dynamic>?;
+        return SpotifyTrackItem.coverFromSources(src);
+      }
+    } catch (_) {}
+    return null;
+  }
 }
