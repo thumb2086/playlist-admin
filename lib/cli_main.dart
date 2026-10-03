@@ -6,6 +6,7 @@ import 'services/config_service.dart';
 import 'services/favorites_service.dart';
 import 'services/library_organizer.dart';
 import 'services/artwork_embedder.dart';
+import 'services/spotify_session.dart';
 import 'services/stream_server.dart';
 import 'pipeline/pipeline_orchestrator.dart';
 import 'pipeline/podcast_pipeline.dart';
@@ -83,6 +84,12 @@ Downloaded: ${cfg.lastUpdated.length}''');
         return;
       }
       print('全庫內嵌封面（有圖跳過，Ctrl+C 中止，可重跑）...');
+      try {
+        await SpotifySession.instance.load();
+      } catch (_) {}
+      print(SpotifySession.instance.isLoggedIn
+          ? 'Spotify 已登入：可搜尋缺漏封面'
+          : '⚠️ Spotify 未登入：只嵌快取已有封面（先在 app 登入再重跑）');
       final stats = await ArtworkEmbedder.instance.backfill(
         onProgress: (done, total, file) {
           if (done % 50 == 0 || done == total) print('  [$done/$total] $file');

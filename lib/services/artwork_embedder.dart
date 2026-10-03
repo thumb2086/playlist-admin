@@ -302,6 +302,12 @@ class ArtworkEmbedder {
     bool Function()? isCancelled,
   }) async {
     var embedded = 0, skipped = 0, noCover = 0, failed = 0;
+    // CLI 進程不會經過 main.dart 的 session 載入：這裡自己載，
+    // 否則 isLoggedIn 永遠 false，暖快取+搜尋全被跳過（1701 首 noCover 的教訓）。
+    try {
+      await SpotifySession.instance.load();
+    } catch (_) {}
+    final loggedIn = SpotifySession.instance.isLoggedIn;
     final files = <String>[];
     try {
       final dir = Directory(ConfigService.instance.config.musicPath);
@@ -315,6 +321,9 @@ class ArtworkEmbedder {
     } catch (_) {}
     files.sort();
     final total = files.length;
+    if (!loggedIn) {
+      onProgress(0, total, '⚠️ 未登入 Spotify：只嵌快取已有封面，其餘跳過（先在 app 登入再重跑）');
+    }
 
     // 預檢有圖與否（8 並行，ffprobe 很快）。
     final needsArt = <String>[];
