@@ -7,6 +7,7 @@ import '../services/groq_service.dart';
 import '../services/i18n.dart';
 import '../services/history_recorder.dart';
 import '../services/playback_history.dart';
+import '../services/playlist_parser.dart';
 import '../widgets/dark_theme.dart';
 
 class StatsPage extends StatefulWidget {
@@ -16,7 +17,7 @@ class StatsPage extends StatefulWidget {
 }
 
 class _StatsPageState extends State<StatsPage> {
-  int _mp3 = 0, _flac = 0, _txt = 0, _podcast = 0, _playlists = 0, _entries = 0, _duplicates = 0;
+  int _mp3 = 0, _flac = 0, _txt = 0, _podcast = 0, _playlists = 0, _entries = 0, _duplicates = 0, _crossDup = 0;
   double _sizeGb = 0, _savedGb = 0;
   bool _loading = false;
   List<Snapshot> _history = [];
@@ -90,17 +91,32 @@ class _StatsPageState extends State<StatsPage> {
       int duplicates = 0;
       for (final cnt in nameCount.values) { if (cnt > 1) duplicates += cnt - 1; }
 
-      int plCount = 0, entries = 0;
+      int plCount = 0, entries = 0, crossDup = 0;
+      final stemRefs = <String, int>{}; // stem -> 出現在幾份「非內部」歌單
       if (await Directory(pl).exists()) {
         await for (final e in Directory(pl).list()) {
           if (e is File && e.path.toLowerCase().endsWith('.m3u8')) {
             plCount++;
-            entries += await e.readAsLines()
-                .then((l) => l.where((line) => !line.startsWith('#') && line.trim().isNotEmpty).length);
+            final isInternal =
+                PlaylistParser.isInternalPlaylist(e.uri.pathSegments.last);
+            final stemsHere = <String>{};
+            for (final line in await e.readAsLines()) {
+              if (line.startsWith('#') || line.trim().isEmpty) continue;
+              entries++;
+              if (isInternal) continue; // _Unsorted 等不算「歌單內」
+              var raw = line;
+              try { raw = Uri.decodeComponent(raw); } catch (_) {}
+              final base = raw.split(RegExp(r'[\\/]')).last;
+              final stem = base.replaceAll(RegExp(r'\.\w+$'), '').toLowerCase();
+              if (stem.isNotEmpty) stemsHere.add(stem);
+            }
+            for (final s in stemsHere) stemRefs[s] = (stemRefs[s] ?? 0) + 1;
           }
         }
+        // 同一首歌同時出現在 ≥2 份歌單 = 跨歌單重複（引用層，非實體檔）。
+        for (final c in stemRefs.values) { if (c > 1) crossDup++; }
       }
-      setState(() { _mp3 = mp3; _flac = flac; _txt = txt; _podcast = podcast; _playlists = plCount; _entries = entries; _sizeGb = size; _savedGb = savedGb; _duplicates = duplicates; _loading = false; });
+      setState(() { _mp3 = mp3; _flac = flac; _txt = txt; _podcast = podcast; _playlists = plCount; _entries = entries; _sizeGb = size; _savedGb = savedGb; _duplicates = duplicates; _crossDup = crossDup; _loading = false; });
     } catch (_) { if (mounted) setState(() => _loading = false); }
     _loadDownloadRuns();
     _loadLufsCache();
@@ -162,6 +178,8 @@ class _StatsPageState extends State<StatsPage> {
           Expanded(child: _MetricCard(t('stats.saved'), '${_savedGb.toStringAsFixed(1)} GB', Icons.save_alt_rounded, const Color(0xFF4FC3F7), _loading)),
           const SizedBox(width: 10),
           Expanded(child: _MetricCard(t('stats.duplicates'), '$_duplicates', Icons.copy_rounded, const Color(0xFFF06292), _loading)),
+          const SizedBox(width: 10),
+          Expanded(child: _MetricCard(t('stats.cross_dup'), '$_crossDup', Icons.filter_none_rounded, const Color(0xFFFFB74D), _loading)),
           const SizedBox(width: 10),
           Expanded(child: _MetricCard(t('stats.playlists'), '$_playlists', Icons.playlist_play_rounded, const Color(0xFF81D4FA), _loading)),
           const SizedBox(width: 10),
