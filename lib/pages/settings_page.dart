@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../models/config_model.dart';
 import '../services/config_service.dart';
 import '../services/i18n.dart';
 import '../services/version_checker.dart';
@@ -136,8 +137,39 @@ class _SettingsPageState extends State<SettingsPage> {
         _Section('Groq API (Podcast 轉錄)', [
           _Field('API Key (多個用逗號分隔)', _groqApiKeyCtrl, 'gsk_xxx,gsk_yyy'),
           const SizedBox(height: 4),
-          _Field('Groq Base URL（轉錄與 RAG 問答端點）', _groqBaseUrlCtrl,
-              '預設 = 推薦 router（直接用）；清空存檔 = 改回官方 api.groq.com'),
+          const _DropdownLabel('Groq Base URL（轉錄與 RAG 問答端點）'),
+          // 下拉兩個預設 + 自訂；自訂值在下方欄位輸入（按「儲存」生效）。
+          _Dropdown(
+            value: c.groqBaseUrl == AppConfig.defaultGroqBaseUrl
+                ? 'router'
+                : c.groqBaseUrl.isEmpty
+                    ? 'official'
+                    : 'custom',
+            items: const [
+              DropdownMenuItem(
+                  value: 'router',
+                  child: Text('推薦 router — vercel-router-khaki.vercel.app')),
+              DropdownMenuItem(
+                  value: 'official', child: Text('官方 api.groq.com')),
+              DropdownMenuItem(
+                  value: 'custom', child: Text('自訂…（用下方欄位輸入）')),
+            ],
+            onChanged: (v) {
+              final cfg = ConfigService.instance.config;
+              if (v == 'router') {
+                cfg.groqBaseUrl = AppConfig.defaultGroqBaseUrl;
+                _groqBaseUrlCtrl.text = AppConfig.defaultGroqBaseUrl;
+              } else if (v == 'official') {
+                cfg.groqBaseUrl = '';
+                _groqBaseUrlCtrl.text = '';
+              }
+              // custom：維持現值，等下方欄位輸入後按儲存。
+              _saveQuiet();
+              if (mounted) setState(() {});
+            },
+          ),
+          _Field('自訂 Base URL', _groqBaseUrlCtrl,
+              '貼你的 router 網址，如 https://my-router.example.com（留空 = 官方）'),
           const SizedBox(height: 4),
           const Text(
             '用推薦 router 時，上面的 Key 填 router 給的 ak_ 開頭金鑰（或 ROUTER_TOKEN）；'
