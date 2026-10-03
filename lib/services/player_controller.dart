@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../models/playlist_item.dart';
 import '../services/config_service.dart';
+import '../services/cover_cache.dart';
 import '../services/stream_server.dart';
 import '../services/smtc_service.dart';
 import '../services/playback_history.dart';
@@ -468,6 +469,20 @@ class PlayerController {
     _title = item.name;
     _artist = item.artist;
     _coverPath = item.coverUrl;
+    if (_coverPath == null || _coverPath!.isEmpty) {
+      // 呼叫端沒帶圖 → 查封面快取（詳情頁 enrichment 寫入的）。
+      // 播放列/SMTC 跟著有圖，不用每條播放路徑各自處理。
+      try {
+        final cache = await CoverCache.load();
+        final e = cache[CoverCache.key(item.isrc, item.name, item.artist)];
+        if (e is Map) {
+          final c = e['c'] as String?;
+          if (c != null && c.isNotEmpty) _coverPath = c;
+          final a = e['a'] as String?;
+          if (_album.isEmpty && a != null && a.isNotEmpty) _album = a;
+        }
+      } catch (_) {}
+    }
     _recordedSongKey = '';
     _notify();
 
