@@ -110,7 +110,9 @@ class _StatsPageState extends State<StatsPage> {
               final stem = base.replaceAll(RegExp(r'\.\w+$'), '').toLowerCase();
               if (stem.isNotEmpty) stemsHere.add(stem);
             }
-            for (final s in stemsHere) stemRefs[s] = (stemRefs[s] ?? 0) + 1;
+            for (final s in stemsHere) {
+              stemRefs[s] = (stemRefs[s] ?? 0) + 1;
+            }
           }
         }
         // 同一首歌同時出現在 ≥2 份歌單 = 跨歌單重複（引用層，非實體檔）。
