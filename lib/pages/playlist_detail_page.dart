@@ -10,6 +10,7 @@ import '../services/favorites_service.dart';
 import '../services/youtube_service.dart';
 import '../services/spotify_gql_client.dart';
 import '../services/spotify_session.dart';
+import '../services/cover_cache.dart';
 import '../widgets/dark_theme.dart';
 import '../services/podcast_service.dart';
 
@@ -71,40 +72,22 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   /// 頁面封面：補齊後的 header 封面 > 呼叫端給的 > null（佔位圖）。
   String? get _pageCover => _headerCover ?? widget.coverUrl;
 
-  /// 封面快取 key：ISRC 優先，否則正規化「曲名 - 歌手」。
-  static String _coverKey(String? isrc, String name, String artist) {
-    if (isrc != null && isrc.isNotEmpty) return 'isrc:$isrc';
-    final n = '$name - $artist'.toLowerCase().replaceAll(RegExp(r'\s+'), '');
-    return 't:$n';
-  }
+  /// 封面快取 key：ISRC 優先，否則正規化「曲名 - 歌手」（共用 CoverCache）。
+  static String _coverKey(String? isrc, String name, String artist) =>
+      CoverCache.key(isrc, name, artist);
 
   static String _normName(String name, String artist) =>
-      '$name - $artist'.toLowerCase().replaceAll(RegExp(r'\s+'), '');
+      CoverCache.norm('$name - $artist');
 
   static String? _playlistIdFromUrl(String? url) {
     if (url == null || url.isEmpty) return null;
     return RegExp(r'playlist[/:]([A-Za-z0-9]+)').firstMatch(url)?.group(1);
   }
 
-  Future<Map<String, dynamic>> _loadCoverCache() async {
-    try {
-      final f = File('${ConfigService.instance.config.spotifyCachePath}'
-          '${Platform.pathSeparator}cover_cache.json');
-      if (await f.exists()) {
-        return jsonDecode(await f.readAsString()) as Map<String, dynamic>;
-      }
-    } catch (_) {}
-    return {};
-  }
+  Future<Map<String, dynamic>> _loadCoverCache() => CoverCache.load();
 
-  Future<void> _saveCoverCache(Map<String, dynamic> cache) async {
-    try {
-      final dir = Directory(ConfigService.instance.config.spotifyCachePath);
-      await dir.create(recursive: true);
-      await File('${dir.path}${Platform.pathSeparator}cover_cache.json')
-          .writeAsString(jsonEncode(cache));
-    } catch (_) {}
-  }
+  Future<void> _saveCoverCache(Map<String, dynamic> cache) =>
+      CoverCache.save(cache);
 
   /// 背景補封面+時長：先套磁碟快取（秒開、離線可看），再一次 playlist
   /// fetch 補缺的（單次呼叫覆蓋整單，非逐曲打 API）。未登入/無 URL/
@@ -333,9 +316,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     return true;
   }
 
-  static String _norm(String s) => s
-      .toLowerCase()
-      .replaceAll(RegExp(r'[^a-z0-9\u4e00-\u9fff\u3400-\u4dbf㐀-䶿豈-﫿]'), '');
+  static String _norm(String s) => CoverCache.norm(s);
 
   Future<void> _scanLocalTracks() async {
     final found = await _findLocalTracksAsync();
@@ -756,6 +737,11 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     final item = _items[index];
     final isLocal = _isLocal(index);
     final isDownloading = _isDownloading(index);
+    // Cover thumbnail：音樂列沒配對到就放佔位圖，不可拿歌單封面充數
+    //（之前全列共用第一首的圖，看起來像一堆錯誤縮圖）。
+    // Podcast 單集沒圖才退回節目封面。
+    final rowCover =
+        item.coverUrl ?? (widget.isPodcast ? _pageCover : null);
 
     return InkWell(
       onTap: isDownloading ? null : () => _playTrack(context, index),
@@ -770,14 +756,14 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                 : Text('${index + 1}',
                     style: const TextStyle(fontSize: 12, color: AppColors.textMuted)),
           ),
-          // Cover thumbnail
+          // Cover thumbnail (rowCover computed above).
           ClipRRect(
             borderRadius: BorderRadius.circular(4),
             child: Container(
               width: 40, height: 40,
               color: AppColors.surfaceLight,
-              child: (item.coverUrl ?? _pageCover) != null
-                  ? CachedNetworkImage(imageUrl: item.coverUrl ?? _pageCover!, fit: BoxFit.cover,
+              child: rowCover != null
+                  ? CachedNetworkImage(imageUrl: rowCover, fit: BoxFit.cover,
                       placeholder: (_, __) => Container(color: AppColors.surfaceLight),
                       errorWidget: (_, __, ___) => const Icon(Icons.music_note_rounded, size: 16, color: AppColors.textMuted))
                   : const Icon(Icons.music_note_rounded, size: 16, color: AppColors.textMuted),

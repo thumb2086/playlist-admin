@@ -42,8 +42,10 @@ class SpotifyGqlClient {
   }
 
   /// Search tracks only (more results).
+  /// 注意：persisted doc 裡的操作名只有 searchDesktop（曾用錯名 searchTracks，
+  /// 伺服器回 GRAPHQL_UNKNOWN_OPERATION_NAME 400，整個站內搜尋是死的）。
   Future<Map<String, dynamic>> searchTracks(String query, {int limit = 20}) async {
-    return _query(_searchDesktop, 'searchTracks', {
+    return _query(_searchDesktop, 'searchDesktop', {
       'searchTerm': query,
       'offset': 0,
       'limit': limit,
@@ -237,6 +239,43 @@ class SpotifyTrackItem {
     return s['url'] as String?;
   }
 
+  /// 三種 artists 形狀都要吃：裸 List（舊搜尋）、{items:[...]}（新搜尋/
+  /// 歌單）、{profile:{name}} 單體。回傳歌手名清單。
+  static List<String> parseArtists(dynamic artistsRaw) {
+    if (artistsRaw is List) {
+      return artistsRaw
+          .map((a) => (a is Map ? ((a['profile'] as Map?)?['name'] ?? '') : '').toString())
+          .where((s) => s.isNotEmpty)
+          .toList();
+    }
+    if (artistsRaw is Map) {
+      final nested = artistsRaw['items'];
+      if (nested is List) return parseArtists(nested);
+      final single = (artistsRaw['profile'] as Map?)?['name'];
+      if (single is String && single.isNotEmpty) return [single];
+    }
+    return [];
+  }
+
+  /// 曲目本體：新回應包在 item.data 下，舊（若有）直接是 item。
+  static Map<String, dynamic> trackData(Map<String, dynamic> item) {
+    final inner = item['data'];
+    if (inner is Map<String, dynamic>) return inner;
+    return item;
+  }
+
+  /// 時長毫秒：新 key 是 duration，舊是 trackDuration，兩邊都讀。
+  static int trackDurationMs(Map<String, dynamic> track) {
+    for (final key in const ['trackDuration', 'duration']) {
+      final m = track[key];
+      if (m is Map) {
+        final v = (m['totalMilliseconds'] as num?)?.toInt();
+        if (v != null && v > 0) return v;
+      }
+    }
+    return 0;
+  }
+
   /// 從 fetchPlaylist 回應解析曲目（含封面/時長/ISRC）。
   /// 原本散在 home_page._extractPlaylistTracks，收攏至此避免分叉。
   static List<SpotifyTrackItem> parsePlaylistTracks(Map<String, dynamic> data) {
@@ -263,30 +302,12 @@ class SpotifyTrackItem {
         } else if (coverArt != null) {
           cover = SpotifyTrackItem.coverFromSources(coverArt['sources']);
         }
-        // Artists may be a list, a map, or a map with items (fetchPlaylist).
-        final artistsRaw = item['artists'];
-        String artists = '';
-        if (artistsRaw is List) {
-          artists = artistsRaw
-              .map((a) => (a is Map ? ((a['profile'] as Map?)?['name'] ?? '') : '').toString())
-              .where((s) => s.isNotEmpty)
-              .join(', ');
-        } else if (artistsRaw is Map) {
-          final nested = artistsRaw['items'];
-          if (nested is List) {
-            artists = nested
-                .map((a) => (a is Map ? ((a['profile'] as Map?)?['name'] ?? '') : '').toString())
-                .where((s) => s.isNotEmpty)
-                .join(', ');
-          } else {
-            artists = (artistsRaw['profile'] as Map?)?['name'] ?? '';
-          }
-        }
-        final duration = ((item['trackDuration'] as Map<String, dynamic>?)?['totalMilliseconds'] as num?)?.toInt() ?? 0;
+        final artists = SpotifyTrackItem.parseArtists(item['artists']);
+        final duration = SpotifyTrackItem.trackDurationMs(item);
         final albumName = (album?['name'] as String?) ?? '';
         if (name.isNotEmpty) {
           out.add(SpotifyTrackItem(
-            uri: uri, name: name, artists: artists.isEmpty ? [] : [artists],
+            uri: uri, name: name, artists: artists,
             album: albumName, durationMs: duration, coverUrl: cover,
           ));
         }
@@ -305,18 +326,16 @@ class SpotifyTrackItem {
       final tracks = search?['tracksV2'] as Map<String, dynamic>?;
       final items = tracks?['items'] as List<dynamic>? ?? [];
       for (final it in items) {
-        final track =
+        final raw =
             (it as Map<String, dynamic>)['item'] as Map<String, dynamic>?;
-        if (track == null) continue;
+        if (raw == null) continue;
+        final track = SpotifyTrackItem.trackData(raw);
         final album = track['albumOfTrack'] as Map<String, dynamic>?;
         final name = (track['name'] ?? '') as String? ?? '';
         if (name.isEmpty) continue;
         final uri = (track['uri'] ?? '') as String? ?? '';
-        final artists = (track['artists'] as List<dynamic>? ?? [])
-            .map((a) => ((a as Map<String, dynamic>)['profile'] as Map?)?['name'] as String? ?? '')
-            .where((s) => s.isNotEmpty)
-            .toList();
-        final duration = ((track['trackDuration'] as Map<String, dynamic>?)?['totalMilliseconds'] as num?)?.toInt() ?? 0;
+        final artists = SpotifyTrackItem.parseArtists(track['artists']);
+        final duration = SpotifyTrackItem.trackDurationMs(track);
         final cover = album != null
             ? SpotifyTrackItem.coverFromSources(album['coverArt']?['sources'])
             : null;

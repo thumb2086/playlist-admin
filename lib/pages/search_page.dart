@@ -81,33 +81,8 @@ class _SearchPageState extends State<SearchPage> {
   }
 
   List<SpotifyTrackItem> _parseTracks(Map<String, dynamic> data) {
-    final out = <SpotifyTrackItem>[];
-    try {
-      final search =
-          (data['data'] as Map?)?['searchV2'] as Map<String, dynamic>?;
-      final tracks = search?['tracksV2'] as Map<String, dynamic>?;
-      final items = tracks?['items'] as List<dynamic>? ?? [];
-      for (final it in items) {
-        final track = (it as Map<String, dynamic>)['item'] as Map<String, dynamic>?;
-        if (track == null) continue;
-        final album = track['albumOfTrack'] as Map<String, dynamic>?;
-        final name = (track['name'] ?? '') as String? ?? '';
-        if (name.isEmpty) continue;
-        final uri = (track['uri'] ?? '') as String? ?? '';
-        final artists = (track['artists'] as List<dynamic>? ?? [])
-            .map((a) => ((a as Map<String, dynamic>)['profile'] as Map?)?['name'] as String? ?? '')
-            .where((s) => s.isNotEmpty)
-            .toList();
-        final duration = ((track['trackDuration'] as Map<String, dynamic>?)?['totalMilliseconds'] as num?)?.toInt() ?? 0;
-        final cover = album != null ? SpotifyTrackItem.coverFromSources(album['coverArt']?['sources']) : null;
-        out.add(SpotifyTrackItem(
-          uri: uri, name: name, artists: artists,
-          album: (album?['name'] as String?) ?? '',
-          durationMs: duration, coverUrl: cover,
-        ));
-      }
-    } catch (_) {}
-    return out;
+    // 實作已收攏至 SpotifyTrackItem.parseSearchTracks（單一真相源）。
+    return SpotifyTrackItem.parseSearchTracks(data);
   }
 
   /// Rebuild the local stem→path index (async, once per search/page open).
