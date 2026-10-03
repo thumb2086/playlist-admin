@@ -28,6 +28,10 @@ class VersionChecker {
 
   static String get currentVersion => appVersion.startsWith('v') ? appVersion : 'v$appVersion';
 
+  /// 開發版（本地 dart-define 帶 -dev，或沒帶版本號的預設 0.0.0-dev）：
+  /// 永不自動提示更新，避免本地編譯版被線上 release 版蓋掉提示。
+  static bool get isDevBuild => appVersion.toLowerCase().contains('dev');
+
   static List<int> _parseVersion(String v) {
     final cleaned = v.replaceAll(RegExp(r'[^\d.]'), '');
     final parts = cleaned.split('.');
@@ -47,6 +51,7 @@ class VersionChecker {
   }
 
   static bool shouldCheck() {
+    if (isDevBuild) return false;
     final cfg = ConfigService.instance.config;
     if (!cfg.autoUpdateCheck) return false;
     return true;

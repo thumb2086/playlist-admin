@@ -6,7 +6,9 @@
 
 ### 步驟
 1. 改好程式碼，commit 到 main
-2. 本地編譯 + 測試：`flutter build windows --release --dart-define=APP_VERSION=<ver>` → 跑 CLI smoke test
+2. 本地編譯 + 測試：`flutter build windows --release --dart-define=APP_VERSION=<ver>-dev` → 跑 CLI smoke test
+   （本地一律掛 `-dev` 後綴：`VersionChecker.isDevBuild` 會跳過自動更新檢查，
+   否則本地舊版號會被線上 release 版觸發更新提示）
 3. 跑 `dart analyze` 確認 0 errors
 4. 決定版號（看 `git tag -l "v2.*" --sort=-v:refname` 最新是多少）
 5. `git tag v2.x.x`
@@ -42,8 +44,8 @@ dart analyze lib/services/groq_native_service.dart lib/services/download_service
 
 ### 步驟
 ```powershell
-# 1. 編譯
-flutter build windows --release --dart-define=APP_VERSION=<ver>
+# 1. 編譯（本地一律 -dev，見 Release 流程說明）
+flutter build windows --release --dart-define=APP_VERSION=<ver>-dev
 
 # 2. CLI smoke test
 $exe = "build\windows\x64\runner\Release\playlist-admin.exe"

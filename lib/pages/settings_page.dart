@@ -366,6 +366,16 @@ class _UpdateCheckRowState extends State<_UpdateCheckRow> {
 
   Future<void> _check() async {
     if (_checking) return;
+    if (VersionChecker.isDevBuild) {
+      // 開發版不打 GitHub（版本號是本地隨便填的，比新舊沒意義）。
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(
+                '開發版不檢查更新（目前版本 ${VersionChecker.currentVersion}）'),
+            duration: const Duration(seconds: 2)));
+      }
+      return;
+    }
     setState(() => _checking = true);
     try {
       final info = await VersionChecker.checkForUpdate();
