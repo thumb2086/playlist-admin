@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import '../app.dart';
 import '../services/config_service.dart';
 import '../services/spotify_session.dart';
 import '../services/youtube_service.dart';
@@ -83,6 +84,15 @@ class _OnboardingDialogState extends State<OnboardingDialog> {
               Text('${_page + 1} / 4',
                   style: const TextStyle(fontSize: 11, color: AppColors.textMuted)),
               const SizedBox(width: 8),
+              if (_page == 3)
+                TextButton(
+                  onPressed: () {
+                    _finish();
+                    MainShell.startTour(); // 逐頁導覽：每頁浮卡講該頁功能
+                  },
+                  child: const Text('逐頁導覽',
+                      style: TextStyle(fontSize: 11, color: AppColors.accent)),
+                ),
               ElevatedButton(
                 onPressed: () {
                   if (_page == 3) {
@@ -172,7 +182,7 @@ class _OnboardingDialogState extends State<OnboardingDialog> {
       SizedBox(height: 8),
       Text('就這樣，可以開始了！', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
       SizedBox(height: 8),
-      Text('之後隨時可到「設定 → 新手導引」重看這份介紹與環境檢查。',
+      Text('按下方「逐頁導覽」會逐頁切換、帶你看每個頁面的功能重點；之後在設定或首頁隨時重看。',
           style: TextStyle(fontSize: 12, color: AppColors.textSecondary, height: 1.5)),
     ]);
   }

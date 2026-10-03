@@ -10,7 +10,6 @@ import '../services/spotify_gql_client.dart';
 import '../services/podcast_service.dart';
 import '../services/player_controller.dart';
 import '../widgets/dark_theme.dart';
-import '../widgets/onboarding_dialog.dart';
 import '../widgets/spotify_login_dialog.dart';
 import 'playlist_detail_page.dart';
 
@@ -323,8 +322,7 @@ class _HomePageState extends State<HomePage> {
             }),
             const SizedBox(width: 12),
             _quickAction(Icons.school_outlined, '新手導引', () {
-              showDialog(
-                  context: context, builder: (_) => const OnboardingDialog());
+              MainShell.startTour(); // 逐頁導覽
             }),
           ]),
         ],

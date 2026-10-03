@@ -95,6 +95,10 @@ class MainShell extends StatefulWidget {
   static final ValueNotifier<bool> queueOpen = ValueNotifier<bool>(false);
   static void toggleQueue() => queueOpen.value = !queueOpen.value;
 
+  /// 逐頁新手導覽：從第 1 頁開始（引導卡片浮在頁面上、自動切頁）。
+  static void Function()? _startTourFn;
+  static void startTour() => _startTourFn?.call();
+
   static void Function(Widget)? _showDetail;
   static VoidCallback? _dismissDetail;
 
@@ -104,6 +108,8 @@ class MainShell extends StatefulWidget {
 
 class _MainShellState extends State<MainShell> {
   int _selectedIndex = 0;
+  /// 逐頁導覽步驟：-1 = 關閉；0..n-1 = 目前導覽頁（同步切 nav）。
+  int _tourStep = -1;
   final _updateSvc = UpdateService.instance;
   BuildContext? _context;
   Timer? _updateTimer;
@@ -130,6 +136,10 @@ class _MainShellState extends State<MainShell> {
     };
     MainShell._dismissDetail = () {
       if (mounted) setState(() { _detailWidget = null; });
+    };
+    MainShell._startTourFn = () {
+      if (!mounted) return;
+      setState(() => _applyTourStep(0));
     };
     _rebuildNav();
     I18N.instance.addListener(_rebuildNav);
@@ -191,8 +201,97 @@ class _MainShellState extends State<MainShell> {
     super.dispose();
   }
 
-  void _rebuildNav() {
-    if (!mounted) return;
+  // ── 逐頁新手導覽 ──────────────────────────────────────
+  void _applyTourStep(int step) {
+    _tourStep = step;
+    _selectedIndex = step.clamp(0, _navItems.length - 1);
+    _detailWidget = null;
+  }
+
+  void _tourNext() {
+    if (_tourStep >= _navItems.length - 1) {
+      setState(() => _tourStep = -1); // 最後一頁 → 完成
+      return;
+    }
+    setState(() => _applyTourStep(_tourStep + 1));
+  }
+
+  void _tourPrev() {
+    if (_tourStep <= 0) return;
+    setState(() => _applyTourStep(_tourStep - 1));
+  }
+
+  Widget _tourCard() {
+    final idx = _tourStep.clamp(0, _navItems.length - 1);
+    final item = _navItems[idx];
+    final last = idx >= _navItems.length - 1;
+    return Positioned(
+      right: 16,
+      bottom: 16,
+      child: Container(
+        width: 330,
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: AppColors.card,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: AppColors.accent),
+          boxShadow: const [BoxShadow(color: Colors.black54, blurRadius: 12)],
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+          Row(children: [
+            Icon(item.icon, size: 16, color: AppColors.accent),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text('${idx + 1}/${_navItems.length}　${item.label}',
+                  style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+                  overflow: TextOverflow.ellipsis),
+            ),
+            InkWell(
+              onTap: () => setState(() => _tourStep = -1),
+              child: const Icon(Icons.close_rounded, size: 16, color: AppColors.textMuted),
+            ),
+          ]),
+          const SizedBox(height: 8),
+          for (final tip in item.tips)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Padding(
+                  padding: EdgeInsets.only(top: 6),
+                  child: Icon(Icons.circle, size: 4, color: AppColors.accent),
+                ),
+                const SizedBox(width: 8),
+                Expanded(child: Text(tip, style: const TextStyle(fontSize: 11.5, height: 1.4))),
+              ]),
+            ),
+          const SizedBox(height: 6),
+          Row(children: [
+            TextButton(
+              onPressed: () => setState(() => _tourStep = -1),
+              child: const Text('跳過', style: TextStyle(fontSize: 11, color: AppColors.textMuted)),
+            ),
+            const Spacer(),
+            if (idx > 0)
+              TextButton(
+                onPressed: _tourPrev,
+                child: const Text('上一頁', style: TextStyle(fontSize: 11)),
+              ),
+            ElevatedButton(
+              onPressed: _tourNext,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.accent,
+                foregroundColor: Colors.black,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+              ),
+              child: Text(last ? '完成' : '下一頁', style: const TextStyle(fontSize: 11)),
+            ),
+          ]),
+        ]),
+      ),
+    );
+  }
+
+  void _rebuildNav() {    if (!mounted) return;
     setState(() {
       // 手機版只顯示：首頁、搜尋、一起聽、音樂庫、設定
       final isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
@@ -200,15 +299,47 @@ class _MainShellState extends State<MainShell> {
       final showStats = !isMobile;
 
       _navItems = [
-        const _NavItemData(Icons.home_outlined, Icons.home, '首頁'),
-        const _NavItemData(Icons.search_outlined, Icons.search, '搜尋'),
-        const _NavItemData(Icons.groups_outlined, Icons.groups_rounded, '一起聽'),
-        _NavItemData(Icons.library_music_outlined, Icons.library_music, t('app.sidebar.library')),
+        const _NavItemData(Icons.home_outlined, Icons.home, '首頁', tips: [
+          '為你推薦：橫向歌單列可用滑鼠拖或捲軸往右滑',
+          '全部 / 歌單 / Podcast 三顆分類快速過濾',
+          '左側「你的音樂庫」點歌單直開詳情',
+          '播放列佇列鈕：開關右側常駐佇列面板',
+        ]),
+        const _NavItemData(Icons.search_outlined, Icons.search, '搜尋', tips: [
+          '搜尋 Spotify 歌曲、歌手、專輯',
+          '結果直接播放，或下載進本機音樂庫',
+          '本機找不到會自動改走線上串流',
+        ]),
+        const _NavItemData(Icons.groups_outlined, Icons.groups_rounded, '一起聽', tips: [
+          '開房拿 6 位代碼或 QR 給朋友',
+          '任何網路都能加入，不用同一個 Wi-Fi',
+          '大家一起加歌、投票、聊天、播放同步',
+          '房主建議用電腦：由房主解析音訊',
+        ]),
+        _NavItemData(Icons.library_music_outlined, Icons.library_music, t('app.sidebar.library'), tips: [
+          '歌單同步覆蓋率卡片（matched / total）',
+          '新增 / 移除歌單',
+          '「整理」：歌單外歌曲移入未分類資料夾',
+          'USB 匯出：按歌單分資料夾匯出',
+        ]),
         if (showPipeline)
-          _NavItemData(Icons.play_circle_outline, Icons.play_circle_filled, t('app.sidebar.pipeline')),
+          _NavItemData(Icons.play_circle_outline, Icons.play_circle_filled, t('app.sidebar.pipeline'), tips: [
+            '同步歌單 + 批次下載缺歌',
+            'Podcast：訂閱 RSS 自動抓新集與逐字稿',
+            'YT 頻道：貼網址抓字幕進 RAG',
+            '跑完自動更新 RAG 向量索引',
+          ]),
         if (showStats)
-          _NavItemData(Icons.bar_chart_rounded, Icons.bar_chart_rounded, t('app.sidebar.stats')),
-        _NavItemData(Icons.settings_outlined, Icons.settings, t('app.sidebar.settings')),
+          _NavItemData(Icons.bar_chart_rounded, Icons.bar_chart_rounded, t('app.sidebar.stats'), tips: [
+            '曲庫統計：歌手、專輯、時長分佈',
+            '最近播放與收藏成長',
+          ]),
+        _NavItemData(Icons.settings_outlined, Icons.settings, t('app.sidebar.settings'), tips: [
+          '路徑、主題、串流音質、睡眠定時',
+          'Groq：下拉選 推薦 router / 官方 / 自訂',
+          'Spotify 登入（僅桌面版）',
+          '更新檢查；「新手導引」隨時重看本導覽',
+        ]),
       ];
 
       _pages = [
@@ -254,6 +385,7 @@ class _MainShellState extends State<MainShell> {
                       child: Stack(children: [
                         IndexedStack(index: _selectedIndex, children: _pages),
                         if (_detailWidget != null) _detailWidget!,
+                        if (_tourStep >= 0) _tourCard(),
                       ]),
                     ),
                   ])
@@ -279,6 +411,7 @@ class _MainShellState extends State<MainShell> {
                           child: Stack(children: [
                             IndexedStack(index: _selectedIndex, children: _pages),
                             if (_detailWidget != null) _detailWidget!,
+                            if (_tourStep >= 0) _tourCard(),
                           ]),
                         ),
                       ]),
@@ -322,7 +455,9 @@ class _NavItemData {
   final IconData icon;
   final IconData activeIcon;
   final String label;
-  const _NavItemData(this.icon, this.activeIcon, this.label);
+  /// 逐頁新手導覽：本頁功能重點（空 = 不參與導覽）。
+  final List<String> tips;
+  const _NavItemData(this.icon, this.activeIcon, this.label, {this.tips = const []});
 }
 
 /// 開本機歌單：m3u8 → items → 詳情頁（歌單卡原本 onTap 是空的死 UI）。

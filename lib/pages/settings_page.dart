@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
+import '../app.dart';
 import '../models/config_model.dart';
 import '../services/config_service.dart';
 import '../services/i18n.dart';
 import '../services/version_checker.dart';
-import '../widgets/onboarding_dialog.dart';
 import '../widgets/dark_theme.dart';
 import '../widgets/update_dialog.dart';
 
@@ -117,8 +117,7 @@ class _SettingsPageState extends State<SettingsPage> {
               ]),
             ),
             OutlinedButton.icon(
-              onPressed: () => showDialog(
-                  context: context, builder: (_) => const OnboardingDialog()),
+              onPressed: MainShell.startTour, // 逐頁導覽（每頁浮卡講功能）
               icon: const Icon(Icons.school_outlined, size: 16),
               label: const Text('開啟導引'),
               style: OutlinedButton.styleFrom(
