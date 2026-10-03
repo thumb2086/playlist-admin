@@ -87,6 +87,17 @@ npm 包名：`playlist-admin`（帳號 `thumb2087`，已搶注）
 CI（flutter-release.yml）在每次 build 前自動同步，本地改完不用手動複製。
 `tools/flutter_download_bridge.py` → `assets/tools/` 同理自動同步。
 
+## opencode Skill 同步
+
+`.opencode/skills/<name>/SKILL.md` 是唯一真相來源（三個地方吃它）：
+1. **npm 包**：`package.json` files 已列 dot 路徑（已驗證 `npm pack --dry-run` 會收）
+2. **GUI assets**：CI 同步到 `assets/skills/`（設定頁「安裝 Skill」按鈕讀這份）
+3. **GUI 安裝包**：CI 在 ISCC 前複製到 `Release/skills/`（Inno recursesubdirs 自動收，給 `playlist-admin skill install` 用）
+本地改完 skill 後，`Copy-Item .opencode/skills/* assets/skills/ -Recurse -Force`（CI 只在 GitHub 跑）。
+**注意**：Flutter 目錄 asset 只收**直接檔案**（實測：子目錄不會遞迴），
+所以每新增一個 skill 都要在 `pubspec.yaml` 加一行顯式路徑（如 `assets/skills/xxx/SKILL.md`），
+否則打包會靜默漏掉（`flutter build bundle` + 查 `AssetManifest.bin` 有無字串可驗）。
+
 ### ⚠️ Data 目錄也要同步
 App 實際執行的 RAG 腳本在 **data 目錄**（`C:\Users\CPXru\Music\playlist-admin\rag\`），不是 project 目錄。
 改完 `rag/*.py` 後**必須**同步到 data 目錄，否則 app 用的是舊版：

@@ -15,7 +15,8 @@
   "files": [
     "cli/index.js",
     "rag/*.py",
-    "rag/README.md"
+    "rag/README.md",
+    ".opencode/skills/podcast-knowledge/SKILL.md"
   ],
   "keywords": [
     "playlist",

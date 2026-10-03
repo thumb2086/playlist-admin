@@ -1,4 +1,6 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import '../app.dart';
 import '../models/config_model.dart';
 import '../services/config_service.dart';
@@ -63,6 +65,34 @@ class _SettingsPageState extends State<SettingsPage> {
     ConfigService.instance.save();
   }
 
+  /// 內附 opencode skill → 全域目錄（~/.config/opencode/skills/<name>/）。
+  /// 來源是打包進 app 的 assets（CI 從 .opencode/skills 同步，見 flutter-release.yml）。
+  Future<void> _installSkill() async {
+    const name = 'podcast-knowledge';
+    try {
+      final data = await rootBundle
+          .loadString('assets/skills/$name/SKILL.md');
+      final home = Platform.environment['USERPROFILE'] ??
+          Platform.environment['HOME'] ??
+          '';
+      if (home.isEmpty) throw Exception('找不到家目錄');
+      final sep = Platform.pathSeparator;
+      final dest = Directory('$home$sep.config${sep}opencode${sep}skills$sep$name');
+      await dest.create(recursive: true);
+      await File('${dest.path}${sep}SKILL.md')
+          .writeAsString(data, flush: true);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('已安裝 $name（opencode 重啟後生效）'),
+          duration: Duration(seconds: 3)));
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('安裝 Skill 失敗：$e'),
+          duration: const Duration(seconds: 3)));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = ConfigService.instance.config;
@@ -120,6 +150,26 @@ class _SettingsPageState extends State<SettingsPage> {
               onPressed: MainShell.startTour, // 逐頁導覽（每頁浮卡講功能）
               icon: const Icon(Icons.school_outlined, size: 16),
               label: const Text('開啟導引'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: AppColors.text,
+                side: const BorderSide(color: AppColors.border),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              ),
+            ),
+          ]),
+          const SizedBox(height: 4),
+          Row(children: [
+            const Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('opencode Skill（RAG 知識檢索）', style: TextStyle(fontSize: 13)),
+                Text('安裝 podcast-knowledge 到全域 ~/.config/opencode/skills',
+                    style: TextStyle(fontSize: 11, color: AppColors.textMuted)),
+              ]),
+            ),
+            OutlinedButton.icon(
+              onPressed: _installSkill, // 內附 skill → opencode v2 全域目錄
+              icon: const Icon(Icons.terminal_rounded, size: 16),
+              label: const Text('安裝 Skill'),
               style: OutlinedButton.styleFrom(
                 foregroundColor: AppColors.text,
                 side: const BorderSide(color: AppColors.border),

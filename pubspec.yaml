@@ -1,4 +1,4 @@
-name: playlist_admin
+﻿name: playlist_admin
 description: playlist-admin - Music library management & Spotube automation
 publish_to: 'none'
 version: 3.0.0-beta.1
@@ -42,3 +42,4 @@ flutter:
     - assets/zhcdict.json
     - assets/tools/
     - assets/tools/rag/
+    - assets/skills/podcast-knowledge/SKILL.md

@@ -31,6 +31,8 @@ jobs:
           mkdir -p assets/tools/rag
           cp rag/build_db.py rag/_resolve.py rag/query.py rag/srt_to_text.py assets/tools/rag/
           cp tools/flutter_download_bridge.py assets/tools/flutter_download_bridge.py
+          mkdir -p assets/skills
+          cp -r .opencode/skills/* assets/skills/
 
       - uses: subosito/flutter-action@v2
         with:
@@ -102,6 +104,8 @@ jobs:
           New-Item -ItemType Directory -Force -Path assets/tools/rag | Out-Null
           Copy-Item rag/build_db.py,rag/_resolve.py,rag/query.py,rag/srt_to_text.py assets/tools/rag/ -Force
           Copy-Item tools/flutter_download_bridge.py assets/tools/flutter_download_bridge.py -Force
+          New-Item -ItemType Directory -Force -Path assets/skills | Out-Null
+          Copy-Item .opencode/skills/* assets/skills/ -Recurse -Force
 
       - uses: subosito/flutter-action@v2
         with:
@@ -149,6 +153,9 @@ jobs:
       - name: Build installer
         if: github.ref_type == 'tag'
         run: |
+          # GUI 安裝包內附 opencode skill（鬆散檔，給 playlist-admin skill install 用）
+          New-Item -ItemType Directory -Force -Path build\windows\x64\runner\Release\skills | Out-Null
+          Copy-Item .opencode/skills/* build\windows\x64\runner\Release\skills\ -Recurse -Force
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DMyAppVersion=$env:APP_VERSION" "installer\PlaylistAdministrator.iss"
 
       - name: Upload artifact

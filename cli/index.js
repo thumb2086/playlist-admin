@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -23,6 +24,9 @@ Usage:
   playlist-admin rag query "問題" [--topk N] [--show 節目] [--json]
   playlist-admin study build [--reset]   Build study RAG (PDF + 課程)
   playlist-admin study query "問題" [--topk N] [--category X] [--json]
+  playlist-admin skill list              List bundled opencode skills
+  playlist-admin skill install [--dir X] Install skill(s) to opencode (~/.config/opencode/skills)
+  playlist-admin skill path [name]       Print installed path of a skill
 `;
 
 function projectRoot() {
@@ -139,6 +143,101 @@ function runStudy(args) {
   forwardPy([script, ...args.slice(1)]);
 }
 
+// --- opencode skill ------------------------------------------------------
+// 單一真相來源：.opencode/skills/<name>/SKILL.md（專案內）
+// 發佈物內位置：npm 包同路徑；GUI 安裝目錄下 skills/<name>/SKILL.md。
+// 安裝目標（opencode v2 官方）：~/.config/opencode/skills/<name>/SKILL.md
+
+function skillBaseDirs() {
+  const dirs = [];
+  for (const r of [projectRoot(), packageRoot()].filter(Boolean)) {
+    for (const sub of ['.opencode/skills', 'skills']) {
+      const d = path.join(r, sub);
+      if (fs.existsSync(d)) dirs.push(d);
+    }
+  }
+  // GUI 安裝目錄（Inno DefaultDirName {autopf}\playlist-admin）
+  const pf = [process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter(Boolean);
+  for (const p of pf) {
+    const d = path.join(p, 'playlist-admin', 'skills');
+    if (fs.existsSync(d)) dirs.push(d);
+  }
+  return [...new Set(dirs)];
+}
+
+function findSkills() {
+  // [{name, dir}]，同名以前面的來源優先
+  const out = [];
+  const seen = new Set();
+  for (const base of skillBaseDirs()) {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(base, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) {
+      if (!e.isDirectory() || seen.has(e.name)) continue;
+      if (!fs.existsSync(path.join(base, e.name, 'SKILL.md'))) continue;
+      seen.add(e.name);
+      out.push({ name: e.name, dir: path.join(base, e.name) });
+    }
+  }
+  return out;
+}
+
+function globalSkillsDir() {
+  return path.join(os.homedir(), '.config', 'opencode', 'skills');
+}
+
+function runSkill(args) {
+  const sub = args[0] || 'list';
+  if (sub === 'list') {
+    const skills = findSkills();
+    if (skills.length === 0) {
+      console.error('找不到內附的 skill（缺 .opencode/skills/ 或 skills/）');
+      process.exit(1);
+    }
+    for (const s of skills) console.log(`${s.name}\t${s.dir}`);
+    return;
+  }
+  if (sub === 'path') {
+    const name = args[1] || 'podcast-knowledge';
+    console.log(path.join(globalSkillsDir(), name, 'SKILL.md'));
+    return;
+  }
+  if (sub === 'install') {
+    // playlist-admin skill install [name] [--dir X]（無 name = 全部）
+    const dirFlag = args.find((a) => a.startsWith('--dir='));
+    const dirIdx = args.indexOf('--dir');
+    const dirVal =
+      dirFlag?.slice('--dir='.length) ||
+      (dirIdx >= 0 && args[dirIdx + 1] ? args[dirIdx + 1] : null);
+    const rest = args.slice(1).filter((a, i, arr) => {
+      if (a.startsWith('--')) return false;
+      const prev = arr[i - 1];
+      if (prev === '--dir') return false; // --dir 的值不是 skill 名
+      return true;
+    });
+    const targetBase = dirVal || globalSkillsDir();
+    const skills = findSkills().filter((s) => rest.length === 0 || rest.includes(s.name));
+    if (skills.length === 0) {
+      console.error(`找不到 skill: ${rest.join(' ') || '(空)'}。先跑 playlist-admin skill list`);
+      process.exit(1);
+    }
+    for (const s of skills) {
+      const dest = path.join(targetBase, s.name);
+      fs.mkdirSync(dest, { recursive: true });
+      fs.cpSync(s.dir, dest, { recursive: true });
+      console.log(`已安裝 ${s.name} -> ${path.join(dest, 'SKILL.md')}`);
+    }
+    console.log('opencode 重啟後生效（全域: ~/.config/opencode/skills/<name>/SKILL.md）');
+    return;
+  }
+  console.error(`未知 skill 子命令: ${sub}\n用法: playlist-admin skill list | install | path`);
+  process.exit(1);
+}
+
 async function main() {
   const args = process.argv.slice(2);
   if (args.length === 0) {
@@ -151,6 +250,10 @@ async function main() {
   }
   if (args[0] === 'study') {
     runStudy(args.slice(1));
+    return;
+  }
+  if (args[0] === 'skill') {
+    runSkill(args.slice(1));
     return;
   }
 
