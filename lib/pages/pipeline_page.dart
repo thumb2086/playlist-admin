@@ -14,6 +14,7 @@ import '../pipeline/podcast_pipeline.dart';
 import '../models/pipeline_step.dart';
 import '../widgets/dark_theme.dart';
 import 'audio_extractor_page.dart';
+import 'download_page.dart';
 
 class PipelinePage extends StatefulWidget {
   const PipelinePage({super.key});
@@ -187,6 +188,17 @@ class _PipelinePageState extends State<PipelinePage> {
     ));
   }
 
+  /// 訂閱管理入口：貼 RSS / YouTube 頻道網址（YT 頻道 → 逐字稿進 RAG）。
+  /// 頁面本身無 Scaffold → 包一層給返回鍵。
+  void _openDownload() {
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => Scaffold(
+        appBar: AppBar(title: const Text('下載與訂閱', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700))),
+        body: const DownloadPage(),
+      ),
+    ));
+  }
+
   Future<void> _runRagOnly() async {
     if (_ragRunning || _musicRunning) return;
     setState(() { _ragRunning = true; _ragProgress = 0; });
@@ -316,6 +328,7 @@ _PButton(t('pipeline.run_prune'), Icons.cleaning_services, () => _run(fromStep: 
         _PButton(t('pipeline.run_rag'), Icons.auto_awesome, _runRagOnly, _ragRunning || _musicRunning, color: const Color(0xFF4DB6AC)),
         _PButton(t('pipeline.run_opencode'), Icons.forum_outlined, _openOpencode, false, color: const Color(0xFF9575CD)),
         _PButton('音軌抽取', Icons.audio_file_outlined, _openExtractor, false, color: const Color(0xFFFFB74D)),
+        _PButton('下載與訂閱', Icons.download_outlined, _openDownload, false, color: const Color(0xFF26C6DA)),
             if (_musicRunning) ...[
               _PButton(t('pipeline.pause'), Icons.pause_rounded, () {
                 _musicState.pause();

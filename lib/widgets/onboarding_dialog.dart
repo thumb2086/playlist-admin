@@ -170,7 +170,7 @@ class _OnboardingDialogState extends State<OnboardingDialog> {
       _bullet('搜尋 — 找歌 → 直接播或下載'),
       _bullet('一起聽 — 6 位代碼/QR 開房，加歌、投票、聊天、同步'),
       _bullet('音樂庫 — 統計、USB 匯出、「整理」把歌單外歌曲移入未分類\\'),
-      _bullet('Pipeline — 同步歌單 + 批次下載（桌面版）'),
+      _bullet('Pipeline — 同步歌單＋批次下載；「下載與訂閱」貼 RSS / YT 頻道網址（桌面版）'),
       _bullet('設定 — 路徑、串流音質、更新、本頁導引'),
     ]);
   }

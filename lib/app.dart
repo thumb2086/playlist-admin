@@ -324,9 +324,9 @@ class _MainShellState extends State<MainShell> {
         ]),
         if (showPipeline)
           _NavItemData(Icons.play_circle_outline, Icons.play_circle_filled, t('app.sidebar.pipeline'), tips: [
+            '「下載與訂閱」→ 貼 RSS 或 YouTube 頻道網址',
             '同步歌單 + 批次下載缺歌',
-            'Podcast：訂閱 RSS 自動抓新集與逐字稿',
-            'YT 頻道：貼網址抓字幕進 RAG',
+            'Podcast 自動抓新集與逐字稿；YT 頻道抓字幕進 RAG',
             '跑完自動更新 RAG 向量索引',
           ]),
         if (showStats)
