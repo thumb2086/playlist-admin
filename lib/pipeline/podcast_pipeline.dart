@@ -117,6 +117,12 @@ class PodcastPipeline {
     final podDir = PodcastService.instance.podcastDir(podcastName);
     const ext = 'mp3';
 
+    // ── YouTube 頻道模式：抓逐字稿進 RAG（無 RSS，全頻道增量）──
+    if (PodcastService.isYtChannelUrl(rssUrl)) {
+      await _processYtChannel(podcastName, rssUrl, stepIndex);
+      return;
+    }
+
     // ── Local directory mode: scan .txt files, no RSS/YouTube ──
     final isLocalDir = _isLocalPath(rssUrl);
     if (isLocalDir) {
@@ -311,6 +317,110 @@ class PodcastPipeline {
     final txtDone = podEntries.where((v) => v['txt'] == true).length;
     final errCount = podEntries.where((v) => v['status'] == 'error').length;
     onLog('  $podcastName 完成: 總處理 ${podEntries.length} 集 (SRT $srtCount, 逐字稿 $txtDone, 錯誤 $errCount)');
+  }
+
+  /// YouTube 頻道 → 逐支抓字幕 → txt（同 podcast 的 cache/格式）。
+  /// build_db 掃 podcasts\**\*.txt 自動進 RAG（show=資料夾名=頻道名）。
+  /// v1 不下載音檔、不跑 Groq：無字幕的影片標 not_found 永久跳過。
+  Future<void> _processYtChannel(String name, String url, int stepIndex) async {
+    final cache = await _loadCacheAsync();
+    final podDir = PodcastService.instance.podcastDir(name);
+    final prefix = '$name|';
+
+    onLog('  📺 YT 頻道模式（只抓逐字稿，不下載音檔）');
+    final videos = await PodcastService.instance.listChannelVideos(url,
+        isCancelled: () => state.isCancelled);
+    if (state.isCancelled) return;
+    if (videos == null || videos.isEmpty) {
+      onLog('  ❌ 頻道影片清單取得失敗（yt-dlp / 網路 / 網址）');
+      return;
+    }
+    onLog('  頻道共 ${videos.length} 支影片');
+
+    // 過濾：txt 還在 = 完成；yt_status=not_found = 永久無字幕。
+    final tasks = <({String id, String title})>[];
+    int have = 0, noSub = 0;
+    for (final v in videos) {
+      final key = '$prefix${v.title}';
+      final safe = PodcastService.normalizeFileName(v.title);
+      if (File('$podDir\\$safe.txt').existsSync()) {
+        cache[key] = {
+          'srt': cache[key]?['srt'] ?? false,
+          'txt': true,
+          'yt_status': 'found',
+          'status': 'ok',
+        };
+        have++;
+        continue;
+      }
+      if (cache[key]?['yt_status'] == 'not_found') {
+        noSub++;
+        continue;
+      }
+      tasks.add(v);
+    }
+    await _saveCacheAsync(cache);
+    onLog('  已完成 $have 支、無字幕跳過 $noSub 支、待處理 ${tasks.length} 支');
+    if (tasks.isEmpty) return;
+
+    final total = tasks.length;
+    int got = 0, miss = 0, err = 0;
+    for (int i = 0; i < total; i++) {
+      if (state.isCancelled) break;
+      await state.waitIfPaused();
+      if (state.isCancelled) break;
+      final v = tasks[i];
+      final key = '$prefix${v.title}';
+      final safe = PodcastService.normalizeFileName(v.title);
+      final videoUrl = 'https://www.youtube.com/watch?v=${v.id}';
+
+      // 逐支節流：連續打 YT 易 429（0.6~1.6s 隨機）。
+      await Future.delayed(
+          Duration(milliseconds: 600 + (v.id.hashCode % 1000).abs()));
+
+      onLog('  [${i + 1}/$total] 🔍 ${v.title}');
+      final result = await PodcastService.instance.fetchYtSubtitlesByUrl(
+        videoUrl,
+        podDir,
+        safe,
+        isCancelled: () => state.isCancelled,
+        onLog: (m) => onLog('      $m'),
+      );
+      if (state.isCancelled) break;
+
+      if (result == PodcastSubtitleResult.found) {
+        final srt = await _findSrtAsync(podDir, safe);
+        if (srt != null) await _srtToTxt(srt, '$podDir\\$safe.txt');
+        final txtOk = File('$podDir\\$safe.txt').existsSync();
+        final srtOk = await _findSrtAsync(podDir, safe) != null;
+        if (txtOk) {
+          cache[key] = {'srt': srtOk, 'txt': true, 'yt_status': 'found', 'status': 'ok'};
+          got++;
+          onLog('    ✅ 逐字稿完成');
+        } else {
+          // _srtToTxt 垃圾守衛刪掉(<50字) → 列可重試，下次再試。
+          cache[key] = {'srt': srtOk, 'txt': false, 'yt_status': 'found', 'status': ''};
+          onLog('    ⚠️ 字幕過短已丟棄，列入下次重試');
+        }
+      } else if (result == PodcastSubtitleResult.notFound) {
+        cache[key] = {
+          'srt': false, 'txt': false,
+          'yt_status': 'not_found', 'status': 'no_sub',
+        };
+        miss++;
+        onLog('    ⏭️ 無字幕');
+      } else {
+        cache[key] = {'srt': false, 'txt': false, 'yt_status': '', 'status': 'error'};
+        err++;
+        onLog('    ❌ 失敗（下次重試）');
+      }
+
+      if (i % 10 == 9) await _saveCacheAsync(cache);
+      onProgress((i + 1) * 100 ~/ total, 100, stepIndex);
+    }
+    await _saveCacheAsync(cache);
+
+    onLog('  $name 頻道完成: 新逐字稿 $got、無字幕 $miss、錯誤 $err（共 $total 支）');
   }
 
   /// Resolve the actual SRT file for an episode. yt-dlp may save

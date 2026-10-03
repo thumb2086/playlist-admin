@@ -218,6 +218,11 @@ class _PodcastTabState extends State<_PodcastTab> {
   Future<void> _fetchByUrl() async {
     final url = _urlCtrl.text.trim();
     if (url.isEmpty) return;
+    // YouTube 網址（頻道/影片/清單）→ 走 RAG 頻道訂閱，不當 RSS 解析。
+    if (PodcastService.isYtChannelUrl(url)) {
+      await _subscribeYtChannel(url);
+      return;
+    }
     setState(() { _loading = true; _episodes = []; _podcastTitle = ''; _currentRssUrl = url; _selected.clear(); });
     try {
       final result = await PodcastService.instance.fetchEpisodes(url);
@@ -226,6 +231,31 @@ class _PodcastTabState extends State<_PodcastTab> {
       _saveHistory(result.title, url);
       _log('✅ 找到 ${result.episodes.length} 集');
     } catch (e) { _log('❌ 讀取 RSS 失敗: $e'); setState(() => _loading = false); }
+  }
+
+  /// 貼 YouTube 頻道網址 → 解析頻道名 → 直接訂閱（冪等；無集數列表，
+  /// 逐字稿由 Podcast 流程抓、自動進 RAG）。
+  Future<void> _subscribeYtChannel(String url) async {
+    setState(() => _loading = true);
+    try {
+      final title = await PodcastService.instance.resolveChannelTitle(url);
+      if (title == null || title.isEmpty) {
+        _log('❌ 無法解析 YouTube 頻道（檢查網址 / yt-dlp 是否安裝）');
+        return;
+      }
+      final cfg = ConfigService.instance.config;
+      if (cfg.podcastSubscriptions[title] == url) {
+        _log('📺 已訂閱過「$title」— 跑 Podcast 流程就會抓逐字稿進 RAG');
+      } else {
+        cfg.podcastSubscriptions[title] = url;
+        ConfigService.instance.save();
+        _saveHistory(title, url);
+        _log('📺 已訂閱 YouTube 頻道「$title」— 到 Pipeline 跑 Podcast 流程，逐字稿會自動進 RAG');
+        if (mounted) setState(() {});
+      }
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   List<PodcastEpisode> get _displayEpisodes => _episodes.take(_maxEpisodes).toList();
@@ -466,7 +496,13 @@ class _PodcastTabState extends State<_PodcastTab> {
               ..._subscriptions.entries.map((e) => Padding(
                 padding: const EdgeInsets.symmetric(vertical: 2),
                 child: Row(children: [
-                  const Icon(Icons.podcasts, size: 14, color: AppColors.textMuted),
+                  Icon(PodcastService.isYtChannelUrl(e.value)
+                      ? Icons.smart_display
+                      : Icons.podcasts,
+                      size: 14,
+                      color: PodcastService.isYtChannelUrl(e.value)
+                          ? const Color(0xFFFF6B6B)
+                          : AppColors.textMuted),
                   const SizedBox(width: 6),
                   Expanded(child: Text(e.key, style: const TextStyle(fontSize: 11), maxLines: 1, overflow: TextOverflow.ellipsis)),
                   SizedBox(

@@ -6,6 +6,7 @@ import 'package:xml/xml.dart';
 import '../models/podcast_episode.dart';
 import '../models/podcast_search_result.dart';
 import 'config_service.dart';
+import 'youtube_service.dart';
 
 enum PodcastSubtitleResult { found, notFound, failed }
 
@@ -46,6 +47,10 @@ class PodcastService {
   /// 讓暫停/取消按鈕看起來像沒反應。
   Future<({String title, List<PodcastEpisode> episodes})> fetchEpisodes(
       String rssUrl) async {
+    if (isYtChannelUrl(rssUrl)) {
+      throw Exception(
+          '這是 YouTube 頻道訂閱（RAG 逐字稿用），沒有 RSS 集數；到 Pipeline 跑 Podcast 流程');
+    }
     final resp = await http.get(Uri.parse(rssUrl), headers: {
       'User-Agent': 'playlist-admin/2.0',
     }).timeout(const Duration(seconds: 30));
@@ -325,6 +330,155 @@ class PodcastService {
   String get downloadPath => _downloadPath;
   String podcastDir(String? podcastName) => _podcastDir(podcastName);
   static String relativePodcastPath = 'podcasts';
+
+  // ═══════════════════════════════════════════════════════════
+  //  YouTube 頻道（RAG 逐字稿）：貼頻道網址 → 抓字幕 → 進 RAG
+  // ═══════════════════════════════════════════════════════════
+
+  /// 任何 YouTube 網址（@頻道 / channel / c / 單支影片 / 播放清單）。
+  /// RSS feed 不會是 youtube.com → 無誤判。
+  static bool isYtChannelUrl(String url) =>
+      RegExp(r'(youtube\.com|youtu\.be)/', caseSensitive: false).hasMatch(url);
+
+  List<String> _ytCookieArgs() {
+    final env = Platform.environment['YT_COOKIES'];
+    if (env != null && env.isNotEmpty && File(env).existsSync()) {
+      return ['--cookies', env];
+    }
+    final ck = YoutubeService.cookiesPathForDiag;
+    return ck != null ? ['--cookies', ck] : const [];
+  }
+
+  /// yt-dlp 執行器：收集 stdout/stderr，逾時或取消時殺整棵程序樹。
+  /// 不可 runInShell（參數含 & 等字元）。null = 逾時/取消/啟動失敗。
+  Future<({int code, String out, String err})?> _runYtDlp(
+    List<String> args, {
+    required Duration timeout,
+    bool Function()? isCancelled,
+  }) async {
+    Process proc;
+    try {
+      proc = await Process.start('yt-dlp', args, runInShell: false,
+          environment: {'PYTHONIOENCODING': 'utf-8'});
+    } catch (_) {
+      return null;
+    }
+    final out = StringBuffer();
+    final err = StringBuffer();
+    proc.stdout.transform(utf8.decoder).listen(out.write);
+    proc.stderr.transform(utf8.decoder).listen(err.write);
+    final completer = Completer<int>();
+    void kill() {
+      if (Platform.isWindows) {
+        Process.run('taskkill', ['/pid', '${proc.pid}', '/T', '/F']);
+      } else {
+        proc.kill(ProcessSignal.sigterm);
+      }
+    }
+
+    final cancelTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (isCancelled?.call() == true && !completer.isCompleted) {
+        kill();
+        completer.complete(-1);
+      }
+    });
+    final timeoutTimer = Timer(timeout, () {
+      if (!completer.isCompleted) {
+        kill();
+        completer.complete(-1);
+      }
+    });
+    proc.exitCode.then((c) {
+      if (!completer.isCompleted) completer.complete(c);
+    });
+    final code = await completer.future;
+    cancelTimer.cancel();
+    timeoutTimer.cancel();
+    // 殺程序後讓 stdout/stderr 尾巴 flush 完再回。
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    return (code: code, out: out.toString(), err: err.toString());
+  }
+
+  /// 解析頻道標題（當訂閱名稱）。失敗退回 @handle / URL 尾段。
+  Future<String?> resolveChannelTitle(String url) async {
+    final r = await _runYtDlp(
+        ['--playlist-items', '1', '--skip-download', '--print', '%(channel)s',
+         ..._ytCookieArgs(), url],
+        timeout: const Duration(seconds: 60));
+    for (final l in (r?.out ?? '').split('\n').map((l) => l.trim())) {
+      if (l.isNotEmpty && l != 'NA' && !l.startsWith('ERROR')) return l;
+    }
+    final m = RegExp(r'@([\w.\-]+)').firstMatch(url);
+    if (m != null) return m.group(1);
+    final seg = url.split('?').first.split('/').last;
+    return seg.isEmpty ? null : seg;
+  }
+
+  /// 解析 `%(id)s\t%(title)s` 輸出（純函式，可測）。
+  static List<({String id, String title})> parseFlatListOutput(String out) {
+    final rows = <({String id, String title})>[];
+    for (final line in out.split('\n')) {
+      final i = line.indexOf('\t');
+      if (i <= 0) continue;
+      final id = line.substring(0, i);
+      if (!RegExp(r'^[A-Za-z0-9_-]{11}$').hasMatch(id)) continue;
+      rows.add((id: id, title: line.substring(i + 1).trim()));
+    }
+    return rows;
+  }
+
+  /// 列頻道影片（flat 模式，快）。null = 失敗/取消。
+  Future<List<({String id, String title})>?> listChannelVideos(
+      String url, {bool Function()? isCancelled}) async {
+    final r = await _runYtDlp(
+        ['--flat-playlist', '--print', '%(id)s\t%(title)s',
+         ..._ytCookieArgs(), url],
+        timeout: const Duration(minutes: 3),
+        isCancelled: isCancelled);
+    if (r == null || r.code != 0) return null;
+    return parseFlatListOutput(r.out);
+  }
+
+  /// 以影片 URL 直抓字幕（人工+自動，中/英/日）→ outDir\<safeName>[.lang].srt。
+  Future<PodcastSubtitleResult> fetchYtSubtitlesByUrl(
+      String videoUrl, String outDir, String safeName,
+      {bool Function()? isCancelled, void Function(String)? onLog}) async {
+    await Directory(outDir).create(recursive: true);
+    final r = await _runYtDlp([
+      '--skip-download',
+      '--write-subs', '--write-auto-subs',
+      '--sub-langs', 'zh-Hant,zh-Hans,zh-TW,zh,en,ja',
+      '--sub-format', 'best', '--convert-subs', 'srt',
+      '-o', '$outDir\\$safeName',
+      ..._ytCookieArgs(),
+      videoUrl,
+    ], timeout: const Duration(minutes: 3), isCancelled: isCancelled);
+    if (r == null) return PodcastSubtitleResult.failed; // 逾時/取消 → 可重試
+    if (r.code == 0) {
+      // exit 0 但沒檔案 = 真的沒字幕（yt-dlp 只給 warning）。
+      final prefix = '$safeName.';
+      try {
+        for (final x in Directory(outDir).listSync()) {
+          if (x is File) {
+            final fn = x.uri.pathSegments.last;
+            if (fn.startsWith(prefix) && fn.toLowerCase().endsWith('.srt')) {
+              return PodcastSubtitleResult.found;
+            }
+          }
+        }
+      } catch (_) {}
+      return PodcastSubtitleResult.notFound;
+    }
+    // 失敗原因回報給管線 log（429/網路/影片問題一眼可辨）。
+    final errTail = r.err.split('\n').where((l) => l.trim().isNotEmpty).take(3).join(' | ');
+    if (errTail.isNotEmpty) onLog?.call('yt-dlp: $errTail');
+    final e = r.err.toLowerCase();
+    if (e.contains('no subtitles') || e.contains('could not be found') ||
+        e.contains('unavailable') || e.contains('private video')) {
+      return PodcastSubtitleResult.notFound;
+    }
+    return PodcastSubtitleResult.failed;
+  }
 
   Future<List<PodcastSearchResult>> searchPodcasts(String query) async {
     final url = Uri.parse(
