@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'package:media_kit/media_kit.dart';
@@ -29,6 +30,14 @@ class PlayerController {
   bool _isPlaying = false;
   bool _shuffle = false;
   bool _loop = true;
+
+  /// 自動接歌（Spotube 式電台）：播到隊尾/單曲播完時，自動排相似歌曲繼續。
+  /// 預設開（關掉 = 回到播完即停）。Podcast 單集播完不接歌。
+  bool _autoplay = true;
+
+  /// 目前播的是 Podcast 單集（playItem 單集分支設 true，音樂分支設 false）。
+  bool _currentIsPodcast = false;
+  bool _radioBusy = false;
   List<int> _shuffleOrder = [];
   double _volume = 0.7;
   Duration _position = Duration.zero;
@@ -158,7 +167,7 @@ class PlayerController {
     // media_kit 音量刻度是 0~100（mpv），app 內部是 0~1（audioplayers 遷移遺跡）。
     // 不 ×100 的話 UI 顯示100%實際只有1%，再乘系統主音量 = 人耳聽不見的無聲播放。
     _player.setVolume(_volume * 100);
-    _playerSubs.add(_player.stream.completed.listen((_) {
+    _playerSubs.add(_player.stream.completed.listen((_) async {
       if (jamFollowMode) return;
       if (_jamHostActive) {
         // jam 房主播完 → 接房間佇列（relay host_next → 解析 → 成員跟播）。
@@ -173,18 +182,42 @@ class PlayerController {
         _pushSmtc();
         return;
       }
-      if (_loop || _shuffle) {
+      // 隊列還有下一首 → 直接接（不管 loop 開關；播完停只發生在隊尾）。
+      if (_queue.isEmpty && _autoplay && _title.isNotEmpty &&
+          !_currentIsPodcast && !jamFollowMode) {
+        // 單曲直撥：自動接歌優先於重播（關掉 autoplay 才回到單曲重播）。
+        await _playRadio();
+        return;
+      }
+      if (_queue.isNotEmpty && _hasMore()) {
+        next();
+        return;
+      }
+      // 隊尾 / 單曲：loop 開 → 循環（舊行為）；shuffle 開 → 重洗繼續。
+      if (_loop) {
         if (_queue.isEmpty) {
           // 單曲直撥（queue 空）→ 重播 = 無限自動播放（舊版在這裡空轉卡死）。
           _replayCurrent();
         } else {
           next(); // 有隊列 → 接下一首（% 取餘 = 播到尾回頭，無限循環）
         }
-      } else {
-        _isPlaying = false;
-        _notify();
-        _pushSmtc(); // 播完停住：卡片若不更新會停在 Playing，按了像沒反應
+        return;
       }
+      if (_shuffle && _queue.isNotEmpty) {
+        next();
+        return;
+      }
+      // 都沒開 → 自動接歌（電台）：播完播相似歌曲；Podcast 單集不接。
+      if (_autoplay &&
+          _title.isNotEmpty &&
+          !_currentIsPodcast &&
+          !jamFollowMode) {
+        await _playRadio();
+        return;
+      }
+      _isPlaying = false;
+      _notify();
+      _pushSmtc(); // 播完停住：卡片若不更新會停在 Playing，按了像沒反應
     }));
     _playerSubs.add(_player.stream.position.listen((p) {
       _position = p;
@@ -277,6 +310,7 @@ class PlayerController {
   /// 下一首仍由 _prefetchNext 後台完整下載入快取，換歌不卡。
   Future<void> playStream(String query,
       {String? title, String? artist, String? isrc, String? coverUrl, String? album}) async {
+    _currentIsPodcast = false;
     await _player.stop();
     _position = Duration.zero; // 開新檔歸零（見 error listener）
     _resetAudioInfo();
@@ -312,6 +346,7 @@ class PlayerController {
   /// Smart play: local file if path exists, otherwise search music library, then stream.
   Future<void> play(String pathOrQuery,
       {String? title, String? artist, String? isrc, String? coverUrl, String? album}) async {
+    _currentIsPodcast = false;
     if (File(pathOrQuery).existsSync()) {
       await playFile(pathOrQuery,
           title: title, artist: artist, coverUrl: coverUrl, album: album);
@@ -336,6 +371,7 @@ class PlayerController {
   Future<void> playPodcastShow(String showName, {String? coverUrl}) async {
     StreamServer.instance.stopActive();
     await _player.stop();
+    _currentIsPodcast = true; // 整個節目都是單集：播完不接音樂電台
     _position = Duration.zero; // 開新檔歸零（見 error listener）
     _title = showName;
     _artist = showName; // 舊版從不設 artist → 殘留上一首的歌手名
@@ -443,6 +479,7 @@ class PlayerController {
       // 本機優先：podcasts\<節目>\ 已下載過 → 播檔案，不燒網路。
       final localEp = _findLocalEpisode(item.name, item.artist);
       if (localEp != null) {
+        _currentIsPodcast = true; // 單集播完不接音樂電台
         await playFile(localEp, title: item.name, artist: item.artist, coverUrl: item.coverUrl);
         return;
       }
@@ -450,6 +487,7 @@ class PlayerController {
       _notify();
       // Cache RSS audio: play URL, cache in background.
       _cacheRssAudio(item);
+      _currentIsPodcast = true;
       await _player.open(Media(item.audioUrl!));
       _pushSmtc();
       _notify();
@@ -459,6 +497,7 @@ class PlayerController {
     // 2. Check cache\stream\ first.
     final cached = StreamServer.instance.findCached(item.audioQuery);
     if (cached != null && File(cached).existsSync()) {
+      _currentIsPodcast = false;
       await playFile(cached, title: item.name, artist: item.artist, coverUrl: item.coverUrl);
       return;
     }
@@ -466,6 +505,7 @@ class PlayerController {
     // 3. Check local music library.
     final local = await _findLocalTrack(item.audioQuery);
     if (local != null) {
+      _currentIsPodcast = false;
       await playFile(local, title: item.name, artist: item.artist, coverUrl: item.coverUrl);
       return;
     }
@@ -474,6 +514,7 @@ class PlayerController {
     //      沒有本機檔才做 RSS 二段解析（已訂閱 → iTunes showHint）。
     final localEpDirect = _findLocalEpisode(item.name, item.artist);
     if (localEpDirect != null) {
+      _currentIsPodcast = true;
       await playFile(localEpDirect, title: item.name, artist: item.artist, coverUrl: item.coverUrl);
       return;
     }
@@ -602,23 +643,30 @@ class PlayerController {
   Map<String, String> _localStemIndex = {};
   DateTime _localStemAt = DateTime.fromMillisecondsSinceEpoch(0);
 
-  Future<String?> _findLocalTrack(String query) async {
+  /// 確保 stem 索引新鮮（_findLocalTrack 與電台共用）。
+  Future<void> _ensureStemIndex() async {
     final now = DateTime.now();
-    if (now.difference(_localStemAt).inSeconds > 30 || _localStemIndex.isEmpty) {
-      final idx = <String, String>{};
-      try {
-        final musicDir = Directory(ConfigService.instance.config.musicPath);
-        if (await musicDir.exists()) {
-          await for (final f in musicDir.list(recursive: true, followLinks: false)) {
-            if (f is File && f.path.endsWith('.mp3')) {
-              idx[File(f.path).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '').toLowerCase()] = f.path;
-            }
+    if (now.difference(_localStemAt).inSeconds <= 30 &&
+        _localStemIndex.isNotEmpty) {
+      return;
+    }
+    final idx = <String, String>{};
+    try {
+      final musicDir = Directory(ConfigService.instance.config.musicPath);
+      if (await musicDir.exists()) {
+        await for (final f in musicDir.list(recursive: true, followLinks: false)) {
+          if (f is File && f.path.endsWith('.mp3')) {
+            idx[File(f.path).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '').toLowerCase()] = f.path;
           }
         }
-      } catch (_) {}
-      _localStemIndex = idx;
-      _localStemAt = now;
-    }
+      }
+    } catch (_) {}
+    _localStemIndex = idx;
+    _localStemAt = now;
+  }
+
+  Future<String?> _findLocalTrack(String query) async {
+    await _ensureStemIndex();
     final lower = query.toLowerCase();
     final hit = _localStemIndex[lower];
     if (hit != null) return hit;
@@ -765,6 +813,136 @@ class PlayerController {
     }
   }
 
+  /// 隊列是否還有下一首（shuffle 視為永遠有：播完重洗）。
+  bool _hasMore() {
+    if (_queue.isEmpty) return false;
+    if (_shuffle) return true;
+    return _index < _queue.length - 1;
+  }
+
+  /// 電台：以目前歌曲為種子排相似歌曲（同歌單 → 同歌手 → 隨機），
+  /// 接進新隊列繼續播。失敗（無曲庫）→ 保持停止，不洗狀態。
+  Future<void> _playRadio() async {
+    if (_radioBusy) return;
+    _radioBusy = true;
+    try {
+      final seedTitle = _title;
+      final seedArtist = _artist;
+      if (seedTitle.isEmpty) {
+        _isPlaying = false;
+        _notify();
+        _pushSmtc();
+        return;
+      }
+      final queries = <String>[];
+      final titles = <String>[];
+      final seen = <String>{_radioNorm('$_title - $_artist')};
+      // 1. 同歌單其他歌（snapshot 快照，順序保留）。
+      try {
+        final snapFile = File(
+            '${ConfigService.instance.config.basePath}\\snapshot_cache.json');
+        if (await snapFile.exists()) {
+          final snap =
+              jsonDecode(await snapFile.readAsString()) as Map<String, dynamic>;
+          final pls = (snap['playlists'] as Map?) ?? {};
+          String? hitList;
+          for (final e in pls.entries) {
+            final tracks = ((e.value as Map?)?? {})['tracks'];
+            if (tracks is! List) continue;
+            var found = false;
+            for (final t in tracks) {
+              if (t is! String) continue;
+              if (_radioSeedIn(t, seedTitle, seedArtist)) {
+                found = true;
+                break;
+              }
+            }
+            if (found) {
+              hitList = e.key as String?;
+              for (final t in tracks) {
+                if (t is! String) continue;
+                final k = _radioNorm(t);
+                if (seen.contains(k)) continue;
+                if (_radioSeedIn(t, seedTitle, seedArtist)) continue;
+                seen.add(k);
+                queries.add(t);
+                titles.add(t);
+                if (queries.length >= 25) break;
+              }
+              break;
+            }
+          }
+          if (hitList != null) {
+            LogManager.instance
+                .info('[radio] 同歌單接歌：$hitList（${queries.length} 首）');
+          }
+        }
+      } catch (_) {}
+      // 2. 同歌手本機檔案。
+      if (queries.length < 25) {
+        final artistNorm = _radioNorm(seedArtist);
+        if (artistNorm.length >= 2) {
+          await _ensureStemIndex();
+          final same = <String>[];
+          for (final e in _localStemIndex.entries) {
+            if (seen.contains(e.key)) continue;
+            if (e.key.contains(artistNorm)) {
+              seen.add(e.key);
+              same.add(e.value);
+            }
+          }
+          same.shuffle(Random());
+          for (final p in same) {
+            if (queries.length >= 25) break;
+            queries.add(p);
+            titles.add(_titleFromPath(p));
+          }
+        }
+      }
+      // 3. 隨機本機補滿。
+      if (queries.length < 25) {
+        await _ensureStemIndex();
+        final rest = _localStemIndex.entries
+            .where((e) => !seen.contains(e.key))
+            .map((e) => e.value)
+            .toList();
+        rest.shuffle(Random());
+        for (final p in rest) {
+          if (queries.length >= 25) break;
+          queries.add(p);
+          titles.add(_titleFromPath(p));
+        }
+      }
+      if (queries.isEmpty) {
+        _isPlaying = false;
+        _notify();
+        _pushSmtc();
+        return;
+      }
+      if (!_isPlaying) return; // 組裝期間使用者已手動暫停/切歌 → 不劫持
+      LogManager.instance.info(
+          '[radio] 電台啟動：$seedTitle（${queries.length} 首）');
+      setQueue(queries, titles: titles, startIndex: 0);
+      jumpTo(0);
+    } finally {
+      _radioBusy = false;
+    }
+  }
+
+  /// 電台種子比對：曲名與（有歌手時）首都出現在候選裡，不分順序。
+  static bool _radioSeedIn(String candidate, String title, String artist) {
+    final c = _radioNorm(candidate);
+    final nt = _radioNorm(title);
+    if (nt.length < 2 || !c.contains(nt)) return false;
+    final na = _radioNorm(artist);
+    if (na.isEmpty) return true;
+    if (na.length < 2) return true;
+    return c.contains(na);
+  }
+
+  static String _radioNorm(String s) => s.toLowerCase().replaceAll(
+      RegExp(r'[^a-z0-9\u4e00-\u9fff\u3400-\u4dbf㐀-䶿豈-﫿]'), '');
+
   /// 單曲（無隊列）重播：completed/next/previous 共用，避免各處散落。
   /// ponytail: 未快取 pipe 串流回捲依賴 mpv 緩衝（串流快取預設開、可 seek）。
   void _replayCurrent() {
@@ -884,6 +1062,7 @@ class PlayerController {
       {String? title, String? artist, String? coverUrl}) async {
     StreamServer.instance.stopActive();
     await _player.stop();
+    _currentIsPodcast = false;
     _title = title ?? '';
     _artist = artist ?? '';
     _coverPath = coverUrl;
@@ -927,6 +1106,9 @@ class PlayerController {
     }
   }
   void toggleLoop() { _loop = !_loop; _notify(); }
+
+  bool get autoplay => _autoplay;
+  void toggleAutoplay() { _autoplay = !_autoplay; _notify(); }
 
   Future<void> setVolume(double v) async {
     _volume = v.clamp(0.0, 1.0);

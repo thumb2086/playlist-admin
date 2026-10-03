@@ -190,6 +190,14 @@ class _PlayerBarState extends State<PlayerBar> {
           padding: EdgeInsets.zero,
           constraints: const BoxConstraints(minWidth: 24),
         ),
+        IconButton(
+          icon: Icon(Icons.radio_rounded, size: 16,
+              color: _ctrl.autoplay ? AppColors.accent : AppColors.textMuted),
+          onPressed: _ctrl.toggleAutoplay,
+          tooltip: _ctrl.autoplay ? '自動接歌 (開)：播完播相似歌曲' : '自動接歌 (關)',
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints(minWidth: 24),
+        ),
 
         // --- Seek bar ---
         Expanded(
