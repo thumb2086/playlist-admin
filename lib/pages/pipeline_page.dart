@@ -6,6 +6,7 @@ import '../services/config_service.dart';
 import '../services/i18n.dart';
 import '../services/chinese_converter.dart';
 import '../services/rag_service.dart';
+import '../services/artwork_embedder.dart';
 import '../services/history_recorder.dart';
 import '../services/log_manager.dart';
 import '../version.dart';
@@ -29,12 +30,15 @@ class _PipelinePageState extends State<PipelinePage> {
   final _podcastScrollCtrl = ScrollController();
   PipelineState _musicState = PipelineState();
   PipelineState _podcastState = PipelineState();
+  PipelineState _artworkState = PipelineState();
   bool _musicRunning = false;
   bool _podcastRunning = false;
   bool _ragRunning = false;
+  bool _artworkRunning = false;
   double _musicProgress = 0;
   double _podcastProgress = 0;
   double _ragProgress = 0;
+  double _artworkProgress = 0;
   int _musicStep = 0;
 
   // ── Log 節流：pipeline 每秒幾十行 log，若每行都 setState + animateTo，
@@ -229,6 +233,47 @@ class _PipelinePageState extends State<PipelinePage> {
     }
   }
 
+  /// 全庫內嵌封面：有圖跳過，其餘從 Spotify 抓圖嵌入（冪等可重跑、可取消）。
+  Future<void> _runArtwork() async {
+    if (_artworkRunning || _musicRunning) return;
+    setState(() => _artworkRunning = true);
+    _artworkState = PipelineState();
+    _musicLog('🖼️ 全庫內嵌封面啟動（有圖跳過，可取消，可重跑）…');
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    try {
+      int lastLogged = 0;
+      final stats = await ArtworkEmbedder.instance.backfill(
+        onProgress: (done, total, file) {
+          if (mounted) {
+            setState(() {
+              _artworkProgress = total > 0 ? done / total : 0.0;
+            });
+          }
+          // log 節流：每 100 首一行，否則 4600 行塞爆 1500 行 buffer。
+          if (done - lastLogged >= 100 || done >= total) {
+            lastLogged = done;
+            _musicLog('  🖼️ [$done/$total] $file');
+          }
+        },
+        isCancelled: () => _artworkState.isCancelled,
+      );
+      _musicLog('  🖼️ 完成：共 ${stats['total']} 首，'
+          '已嵌 ${stats['embedded']}，已有圖跳過 ${stats['skipped']}，'
+          '無封面 ${stats['noCover']}，失敗 ${stats['failed']}');
+    } catch (e) {
+      _musicLog('  ❌ 內嵌封面錯誤: $e');
+    } finally {
+      _logFlushTimer?.cancel();
+      _flushLogs();
+      if (mounted) {
+        setState(() {
+          _artworkRunning = false;
+          _artworkProgress = 0;
+        });
+      }
+    }
+  }
+
   Future<void> _runPodcast() async {
     if (_podcastRunning) return;
     setState(() { _podcastRunning = true; _podcastProgress = 0; });
@@ -329,6 +374,13 @@ _PButton(t('pipeline.run_prune'), Icons.cleaning_services, () => _run(fromStep: 
         _PButton(t('pipeline.run_opencode'), Icons.forum_outlined, _openOpencode, false, color: const Color(0xFF9575CD)),
         _PButton('音軌抽取', Icons.audio_file_outlined, _openExtractor, false, color: const Color(0xFFFFB74D)),
         _PButton('下載與訂閱', Icons.download_outlined, _openDownload, false, color: const Color(0xFF26C6DA)),
+        _PButton('補嵌封面', Icons.image_rounded, _runArtwork, _artworkRunning || _musicRunning, color: const Color(0xFF80CBC4)),
+            if (_artworkRunning)
+              _PButton(t('pipeline.cancel'), Icons.stop_rounded, () {
+                _artworkState.cancel();
+                _musicLog('正在取消補嵌封面…');
+                setState(() {});
+              }, false, color: AppColors.error),
             if (_musicRunning) ...[
               _PButton(t('pipeline.pause'), Icons.pause_rounded, () {
                 _musicState.pause();
@@ -383,8 +435,26 @@ _PButton(t('pipeline.run_prune'), Icons.cleaning_services, () => _run(fromStep: 
           ]),
           const SizedBox(height: 20),
           AnimatedSize(duration: const Duration(milliseconds: 300), curve: Curves.easeOut,
-            child: (_musicRunning || _musicProgress > 0 || _podcastRunning || _podcastProgress > 0 || _ragRunning || _ragProgress > 0)
+            child: (_musicRunning || _musicProgress > 0 || _podcastRunning || _podcastProgress > 0 || _ragRunning || _ragProgress > 0 || _artworkRunning || _artworkProgress > 0)
                 ? Column(children: [
+                    if (_artworkRunning || _artworkProgress > 0) ...[
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: LinearProgressIndicator(
+                          value: _artworkProgress, backgroundColor: AppColors.surfaceLight,
+                          valueColor: const AlwaysStoppedAnimation(Color(0xFF80CBC4)), minHeight: 7,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(children: [
+                        Text('補嵌封面  (${(_artworkProgress * 100).toStringAsFixed(0)}%)',
+                            style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+                        const Spacer(),
+                        if (_artworkRunning)
+                          const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2)),
+                      ]),
+                      const SizedBox(height: 16),
+                    ],
                     if (_musicRunning || _musicProgress > 0) ...[
                       ClipRRect(
                         borderRadius: BorderRadius.circular(4),

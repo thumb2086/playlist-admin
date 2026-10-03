@@ -5,6 +5,7 @@ import 'models/config_model.dart';
 import 'services/config_service.dart';
 import 'services/favorites_service.dart';
 import 'services/library_organizer.dart';
+import 'services/artwork_embedder.dart';
 import 'services/stream_server.dart';
 import 'pipeline/pipeline_orchestrator.dart';
 import 'pipeline/podcast_pipeline.dart';
@@ -25,6 +26,7 @@ Usage:
   dart cli_main.dart status                     Show status
   dart cli_main.dart play <歌曲名>               播放（本機庫優先，找不到走串流）
   dart cli_main.dart organize                    歌單外歌曲移入「未分類」資料夾（歌單原位）
+  dart cli_main.dart artwork backfill           全庫 mp3 內嵌封面（有圖跳過，可重跑）
   dart cli_main.dart favorite list              List favorite songs
   dart cli_main.dart favorite toggle <song>     Toggle favorite (我的最愛) by filename or path
 ''');
@@ -75,13 +77,29 @@ Downloaded: ${cfg.lastUpdated.length}''');
       await LibraryOrganizer.organize(log: print);
       break;
 
+    case 'artwork':
+      if (args.length < 2 || args[1] != 'backfill') {
+        print('Usage: dart cli_main.dart artwork backfill');
+        return;
+      }
+      print('全庫內嵌封面（有圖跳過，Ctrl+C 中止，可重跑）...');
+      final stats = await ArtworkEmbedder.instance.backfill(
+        onProgress: (done, total, file) {
+          if (done % 50 == 0 || done == total) print('  [$done/$total] $file');
+        },
+      );
+      print('完成：共 ${stats['total']} 首，'
+          '已嵌 ${stats['embedded']}，已有圖跳過 ${stats['skipped']}，'
+          '無封面 ${stats['noCover']}，失敗 ${stats['failed']}');
+      break;
+
     case 'favorite':
       await _favoriteCmd(args.sublist(1), cfg);
       break;
 
     default:
       stderr.writeln('未知命令: $cmd');
-      print('可用命令: pipeline, podcast, status, favorite, play, organize');
+      print('可用命令: pipeline, podcast, status, favorite, play, organize, artwork');
       exit(1);
   }
 }

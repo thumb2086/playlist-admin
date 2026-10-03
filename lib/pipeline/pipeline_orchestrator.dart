@@ -7,6 +7,7 @@ import '../services/metadata_enricher.dart';
 import '../services/snapshot_manager.dart';
 import '../services/file_renamer.dart';
 import '../services/playlist_parser.dart';
+import '../services/artwork_embedder.dart';
 import '../services/lufs_service.dart';
 import '../services/rag_service.dart';
 import '../services/youtube_service.dart';
@@ -196,6 +197,12 @@ class PipelineOrchestrator {
         if (savedPath != null && File(tmpPath).existsSync()) {
           if (File(outPath).existsSync()) await File(outPath).delete();
           await File(tmpPath).rename(outPath);
+          // 內嵌封面（YouTube 音源無圖 + 下載本來就 -vn：不嵌就永遠沒圖）。
+          final parts = ArtworkEmbedder.splitStem(
+              File(outPath).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), ''));
+          final art = await ArtworkEmbedder.instance.embedForFile(
+            outPath, title: parts.$1, artist: parts.$2);
+          if (art == ArtworkResult.embedded) onLog('    🖼️ 已嵌封面');
           onLog('    ✅ 完成');
           ok++;
           consecutiveFails = 0;

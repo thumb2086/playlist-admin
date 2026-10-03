@@ -13,6 +13,7 @@ import '../services/spotify_session.dart';
 import '../services/cover_cache.dart';
 import '../widgets/dark_theme.dart';
 import '../services/podcast_service.dart';
+import '../services/artwork_embedder.dart';
 
 /// Unified detail page for music playlists AND podcast shows.
 /// Supports per-track download with checkmarks for already-downloaded items.
@@ -527,6 +528,10 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
         if (File(finalPath).existsSync()) await File(finalPath).delete();
         await File(tmpPath).rename(finalPath);
         debugPrint('[DL] $index OK: $finalPath');
+        // 內嵌封面（下載鏈本來就沒圖：YouTube 音源無圖 + ffmpeg -vn）。
+        final art = await ArtworkEmbedder.instance.embedForFile(
+          finalPath, title: item.name, artist: item.artist);
+        debugPrint('[DL] $index artwork: $art');
         if (mounted) { _localTracks.add(index); setState(() { _downloaded.add(index); _progress[index] = 1.0; }); }
       } else {
         debugPrint('[DL] $index ffmpeg FAILED exit=$code stderr=$stderrOutput');

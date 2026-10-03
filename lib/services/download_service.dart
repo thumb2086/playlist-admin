@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'artwork_embedder.dart';
 import 'config_service.dart';
 import 'youtube_service.dart';
 
@@ -64,6 +65,12 @@ class DownloadService {
 
       if (result != null) {
         onLog('✅ 下載完成: $result');
+        // 內嵌封面（下載鏈本來就沒圖）。
+        final parts = ArtworkEmbedder.splitStem(
+            File(outPath).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), ''));
+        final art = await ArtworkEmbedder.instance.embedForFile(
+          outPath, title: parts.$1, artist: parts.$2);
+        if (art == ArtworkResult.embedded) onLog('🖼️ 已嵌封面');
         onProgress(1.0);
       } else {
         onLog('❌ 下載失敗: $songName${failReason != null ? '：$failReason' : ''}');
@@ -98,6 +105,11 @@ class DownloadService {
 
       if (result != null) {
         onLog('✅ 下載完成: $result');
+        final parts = ArtworkEmbedder.splitStem(
+            File(outputPath).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), ''));
+        final art = await ArtworkEmbedder.instance.embedForFile(
+          outputPath, title: parts.$1, artist: parts.$2);
+        if (art == ArtworkResult.embedded) onLog('🖼️ 已嵌封面');
         onProgress(1.0);
       } else {
         // downloadFromUrl 內部已透出 onError？若無則給通用提示。
