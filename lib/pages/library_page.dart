@@ -5,6 +5,7 @@ import '../services/config_service.dart';
 import '../services/i18n.dart';
 import '../services/usb_exporter.dart';
 import '../services/playlist_parser.dart';
+import 'sync_page.dart';
 import '../services/history_recorder.dart';
 import '../services/library_organizer.dart';
 import '../models/playlist.dart';
@@ -277,6 +278,15 @@ class LibraryPageState extends State<LibraryPage> {
                   onPressed: _export,
                   icon: const Icon(Icons.usb_rounded),
                   tooltip: '匯出到 USB',
+                  style: IconButton.styleFrom(backgroundColor: AppColors.surfaceLight),
+                ),
+                const SizedBox(width: 4),
+                IconButton(
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const SyncPage()),
+                  ),
+                  icon: const Icon(Icons.sync_rounded),
+                  tooltip: '從電腦同步（區網，不耗流量）',
                   style: IconButton.styleFrom(backgroundColor: AppColors.surfaceLight),
                 ),
               ],

@@ -34,6 +34,7 @@ class AppConfig {
   int streamCacheMaxMb;
   String streamQuality; // low / standard / high — yt-dlp format selector
   bool receiveBetaUpdates;
+  bool syncServerEnabled; // 手機區網同步伺服器（電腦端開關，預設關）
   Map<String, String> podcastSubscriptions;
   Map<String, String> podcastHistory;
   Map<String, String> urlNames;
@@ -70,6 +71,7 @@ class AppConfig {
     this.streamCacheMaxMb = 2048,
     this.streamQuality = 'standard',
     this.receiveBetaUpdates = false,
+    this.syncServerEnabled = false,
     Map<String, String>? podcastSubscriptions,
     Map<String, String>? podcastHistory,
     Map<String, String>? urlNames,
@@ -189,6 +191,7 @@ class AppConfig {
         streamCacheMaxMb: json['stream_cache_max_mb'] as int? ?? 2048,
         streamQuality: json['stream_quality'] as String? ?? 'standard',
         receiveBetaUpdates: json['receive_beta_updates'] as bool? ?? false,
+        syncServerEnabled: json['sync_server_enabled'] as bool? ?? false,
         podcastSubscriptions: (json['podcast_subscriptions'] as Map<String, dynamic>?)?.map((k, v) => MapEntry(k, v as String)) ?? {},
         podcastHistory: (json['podcast_history'] as Map<String, dynamic>?)?.map((k, v) => MapEntry(k, v as String)) ?? {},
         urlNames: (json['url_names'] as Map<String, dynamic>?)?.map((k, v) => MapEntry(k, v as String)) ?? {},
@@ -226,6 +229,7 @@ class AppConfig {
         'stream_cache_max_mb': streamCacheMaxMb,
         'stream_quality': streamQuality,
         'receive_beta_updates': receiveBetaUpdates,
+        'sync_server_enabled': syncServerEnabled,
         'podcast_subscriptions': podcastSubscriptions,
         'podcast_history': podcastHistory,
         'url_names': urlNames,

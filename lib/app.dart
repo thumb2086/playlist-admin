@@ -24,6 +24,7 @@ import 'widgets/onboarding_dialog.dart';
 import 'widgets/queue_panel.dart';
 import 'widgets/player_bar.dart';
 import 'services/player_controller.dart';
+import 'services/sync_server.dart';
 
 class PlaylistAdminApp extends StatefulWidget {
   const PlaylistAdminApp({super.key});
@@ -145,6 +146,12 @@ class _MainShellState extends State<MainShell> {
     I18N.instance.addListener(_rebuildNav);
     _updateSvc.addListener(_onUpdate);
     _checkForUpdates();
+    // 上次開著區網同步 → 接著服（手機隨開隨連，不用每次手動開）。
+    if (!kIsWeb &&
+        (Platform.isWindows || Platform.isLinux || Platform.isMacOS) &&
+        ConfigService.instance.config.syncServerEnabled) {
+      SyncServer.instance.start().catchError((_) {});
+    }
     // 首次啟動（setupCompleted=false）→ 新手導引。複用既有死旗標，不加新欄位。
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted && !ConfigService.instance.config.setupCompleted) {

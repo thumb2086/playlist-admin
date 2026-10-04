@@ -1,10 +1,13 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import '../app.dart';
 import '../models/config_model.dart';
 import '../services/config_service.dart';
 import '../services/i18n.dart';
+import '../services/sync_server.dart';
 import '../services/version_checker.dart';
 import '../widgets/dark_theme.dart';
 import '../widgets/update_dialog.dart';
@@ -177,6 +180,11 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
             ),
           ]),
+          const SizedBox(height: 4),
+          // 電腦端開關：手機走區網一鍵同步（手機上不顯示，沒東西可服）。
+          if (!kIsWeb &&
+              (Platform.isWindows || Platform.isLinux || Platform.isMacOS))
+            const _SyncServerRow(),
         ]),
         const SizedBox(height: 12),
         _Section(t('settings.lyrics_section'), [
@@ -423,6 +431,149 @@ class _UpdateCheckRowState extends State<_UpdateCheckRow> {
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           ),
         ),
+      ]),
+    );
+  }
+}
+
+/// 電腦端區網同步開關：打開後手機「音樂庫 → 從電腦同步」可一鍵拉歌。
+/// 只在桌面顯示；開關持久化到 config（下次啟動自動接著服）。
+class _SyncServerRow extends StatefulWidget {
+  const _SyncServerRow();
+  @override
+  State<_SyncServerRow> createState() => _SyncServerRowState();
+}
+
+class _SyncServerRowState extends State<_SyncServerRow> {
+  bool _toggling = false;
+  String _url = '';
+  bool _failed = false;
+
+  bool get _on =>
+      SyncServer.instance.isRunning ||
+      ConfigService.instance.config.syncServerEnabled;
+
+  Future<void> _refreshUrl() async {
+    if (!SyncServer.instance.isRunning) {
+      if (mounted) setState(() => _url = '');
+      return;
+    }
+    final ip = await SyncServer.lanIp();
+    if (mounted) {
+      setState(
+          () => _url = 'http://$ip:${SyncServer.instance.port}');
+    }
+  }
+
+  Future<void> _toggle(bool v) async {
+    if (_toggling) return;
+    setState(() {
+      _toggling = true;
+      _failed = false;
+    });
+    try {
+      if (v) {
+        await SyncServer.instance.start();
+      } else {
+        await SyncServer.instance.stop();
+      }
+      ConfigService.instance.config.syncServerEnabled = v;
+      await ConfigService.instance.save();
+      await _refreshUrl();
+    } catch (e) {
+      if (mounted) {
+        setState(() => _failed = true);
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('啟動失敗：$e')));
+      }
+    } finally {
+      if (mounted) setState(() => _toggling = false);
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshUrl();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          const Expanded(
+            child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('手機同步（區網）', style: TextStyle(fontSize: 13)),
+                  Text('手機掃 QR 一鍵拉歌，只走 Wi-Fi 不耗流量',
+                      style: TextStyle(
+                          fontSize: 11, color: AppColors.textMuted)),
+                ]),
+          ),
+          if (_toggling)
+            const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(strokeWidth: 2))
+          else
+            Switch(
+              value: _on,
+              activeTrackColor: AppColors.accent,
+              onChanged: _toggle,
+            ),
+        ]),
+        if (_failed)
+          const Padding(
+            padding: EdgeInsets.only(top: 4),
+            child: Text('啟動失敗（port 可能被佔用），重開 app 再試',
+                style: TextStyle(fontSize: 11, color: Colors.redAccent)),
+          ),
+        if (_url.isNotEmpty) ...[
+          const SizedBox(height: 8),
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            QrImageView(
+              data: _url,
+              version: QrVersions.auto,
+              size: 120,
+              backgroundColor: Colors.white,
+              eyeStyle: const QrEyeStyle(color: Colors.black),
+              dataModuleStyle:
+                  const QrDataModuleStyle(color: Colors.black),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('手機掃這個 QR（或手輸下面網址）：',
+                        style: TextStyle(
+                            fontSize: 11, color: AppColors.textMuted)),
+                    const SizedBox(height: 4),
+                    Text(_url,
+                        style: const TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.accent)),
+                    const SizedBox(height: 4),
+                    TextButton.icon(
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: _url));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                                content: Text('已複製'),
+                                duration: Duration(seconds: 1)));
+                      },
+                      icon: const Icon(Icons.copy_rounded, size: 14),
+                      label: const Text('複製網址',
+                          style: TextStyle(fontSize: 12)),
+                    ),
+                  ]),
+            ),
+          ]),
+        ],
       ]),
     );
   }
