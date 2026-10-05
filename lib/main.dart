@@ -90,6 +90,9 @@ void main() async {
   if (basePath.isNotEmpty) {
     LogManager.instance.enable(basePath);
   }
+  // 死開關接線：debug 模式控制 LogManager 是否寫 DEBUG 行。
+  LogManager.instance.debugEnabled =
+      ConfigService.instance.config.debugMode;
   await SpotifySession.instance.load();
   MediaKit.ensureInitialized();
   PlayerController.instance.init();

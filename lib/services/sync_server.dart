@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'config_service.dart';
+import 'stream_server.dart';
 
 /// 區網同步伺服器（電腦端）：手機一鍵把電腦的 mp3 拉過去，全程走區網、不耗網路流量。
 ///
@@ -233,6 +234,19 @@ class SyncServer {
         req.response.headers.set('Content-Length', len);
         await req.response.addStream(file.openRead());
         await req.response.close();
+        return;
+      }
+      // 經電腦轉播：手機直連播不動（IP 被 YouTube 擋）時，
+      // 經區網吃電腦的 yt-dlp+cookies 管線（保證能播）。
+      // 用法：GET /relay-stream?q=<歌名>（mpv 直接開這個 URL）。
+      if (segs[0] == 'relay-stream') {
+        final q = (req.uri.queryParameters['q'] ?? '').trim();
+        if (q.isEmpty) {
+          req.response.statusCode = HttpStatus.badRequest;
+          await req.response.close();
+          return;
+        }
+        await StreamServer.instance.serveRelay(req, q);
         return;
       }
       req.response.statusCode = HttpStatus.notFound;

@@ -13,6 +13,7 @@ import '../services/smtc_service.dart';
 import '../services/playback_history.dart';
 import '../services/metadata_reader.dart';
 import '../services/youtube_service.dart';
+import '../services/lyrics_service.dart';
 import '../services/jam_service.dart';
 import '../services/log_manager.dart';
 import '../services/podcast_service.dart';
@@ -195,6 +196,17 @@ class PlayerController {
         next();
         return;
       }
+      // 隊尾（有隊列但播到尾）：autoplay 優先接電台，loop 不再無限循環。
+      // loop 只管「單曲重播」（queue 空且 autoplay 關）。
+      if (_queue.isNotEmpty &&
+          !_hasMore() &&
+          _autoplay &&
+          _title.isNotEmpty &&
+          !_currentIsPodcast &&
+          !jamFollowMode) {
+        await _playRadio();
+        return;
+      }
       // 隊尾 / 單曲：loop 開 → 循環（舊行為）；shuffle 開 → 重洗繼續。
       if (_loop) {
         if (_queue.isEmpty) {
@@ -306,6 +318,7 @@ class PlayerController {
     final uri = Uri.file(path).toString();
     await _player.open(Media(uri));
     _pushSmtc();
+    _warmLyrics();
   }
 
   /// True streaming: 開 local HTTP 端點讓 mpv 邊下邊播，不再等整首下載完
@@ -345,34 +358,95 @@ class PlayerController {
       await _player.open(Media(url));
       _pushSmtc();
       _prefetchNext();
+      _warmLyrics();
     } catch (e) {
-      _statusText = '串流錯誤: $e';
-      _isPlaying = false;
-      _notify();
-      _pushSmtc();
+      // 桌面管線（yt-dlp + cookies）掛了 → 改試直連（手機同款路徑）。
+      // 宿舍網這類直鏈 403 的環境兩邊都會失敗，才報錯。
+      final ok = await _playStreamDirect(query);
+      if (!ok) {
+        _statusText = '串流錯誤: $e';
+        _isPlaying = false;
+        _notify();
+        _pushSmtc();
+      }
     }
   }
 
   /// 手機直連播放：youtube_explode 拿直鏈 → mpv 直接播，不經本地轉碼管線。
-  Future<void> _playStreamDirect(String query) async {
+  /// 回傳是否成功（桌面管線失敗時拿它當 fallback）。
+  ///
+  /// 二段式：① 直連（免電腦，同 Spotube）；② 直連被擋（宿舍網這類 403）
+  /// → 經電腦轉播（電腦有 cookies，區網 pipe 保證能播；需曾連線同步過）。
+  Future<bool> _playStreamDirect(String query) async {
+    final cleanQuery = query.trim().replaceAll(RegExp(r'\s*-\s*$'), '').trim();
+    final q = cleanQuery.isEmpty ? query : cleanQuery;
+    // ① 直連。
     try {
-      final cleanQuery = query.trim().replaceAll(RegExp(r'\s*-\s*$'), '').trim();
-      final r = await YoutubeService.instance
-          .resolveStreamDirect(cleanQuery.isEmpty ? query : cleanQuery);
-      if (r == null || r.audioUrl.isEmpty) {
-        throw Exception('找不到可播放的串流（可能被 YouTube 擋下）');
+      final r = await YoutubeService.instance.resolveStreamDirect(q);
+      if (r != null && r.audioUrl.isNotEmpty) {
+        _sourceKind = '線上串流（YouTube 直連）';
+        _sourceDetail = Uri.tryParse(r.audioUrl)?.host ?? '';
+        if ((_coverPath ?? '').isEmpty) _coverPath = r.thumbnailUrl;
+        await _player.open(Media(r.audioUrl));
+        _pushSmtc();
+        _warmLyrics();
+        return true;
       }
-      _sourceKind = '線上串流（YouTube 直連）';
-      _sourceDetail = Uri.tryParse(r.audioUrl)?.host ?? '';
-      if ((_coverPath ?? '').isEmpty) _coverPath = r.thumbnailUrl;
-      await _player.open(Media(r.audioUrl));
-      _pushSmtc();
-    } catch (e) {
-      _statusText = '串流錯誤: $e';
-      _isPlaying = false;
-      _notify();
-      _pushSmtc();
+    } catch (_) {
+      // 掉下去試轉播。
     }
+    // ② 經電腦轉播（只在手機試；桌面 fallback 不需要繞自己）。
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      try {
+        final host =
+            ConfigService.instance.config.lastSyncHost.trim();
+        if (host.isNotEmpty && await _pingRelay(host)) {
+          _sourceKind = '線上串流（經電腦轉播）';
+          _sourceDetail = host;
+          final url =
+              'http://$host/relay-stream?q=${Uri.encodeComponent(q)}';
+          await _player.open(Media(url));
+          _pushSmtc();
+          _warmLyrics();
+          return true;
+        }
+      } catch (_) {
+        // 掉下去報錯。
+      }
+    }
+    _statusText = '串流錯誤: 直連被擋且電腦轉播連不上（電腦開了同步開關？同 Wi-Fi？曾連線同步過？）';
+    _isPlaying = false;
+    _notify();
+    _pushSmtc();
+    return false;
+  }
+
+  /// 轉播前先 ping：電腦不在線就不讓 mpv 對著黑洞空等。
+  Future<bool> _pingRelay(String host) async {
+    try {
+      final resp = await http
+          .get(Uri.parse('http://$host/api/ping'))
+          .timeout(const Duration(seconds: 3));
+      return resp.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 歌詞預熱（設定「播放時預取歌詞」開才做）：開歌同時背景抓歌詞進快取，
+  /// 打開歌詞頁直接顯示，不用等。Podcast 單集不抓（LRCLib 沒有 podcast）。
+  /// LRCLib 有內建記憶體快取（200 首 LRU），重複開歌不重打。
+  void _warmLyrics() {
+    if (_currentIsPodcast) return;
+    try {
+      if (!ConfigService.instance.config.enableRetroactiveLyrics) return;
+    } catch (_) {
+      return;
+    }
+    final artist = _artist.trim();
+    final title = _title.trim();
+    if (artist.isEmpty || title.isEmpty) return;
+    LyricsService.instance.fetch(artist, title).catchError((_) => null);
   }
 
   /// Smart play: local file if path exists, otherwise search music library, then stream.

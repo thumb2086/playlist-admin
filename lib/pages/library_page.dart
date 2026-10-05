@@ -1,14 +1,17 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../services/config_service.dart';
 import '../services/i18n.dart';
-import '../services/usb_exporter.dart';
 import '../services/playlist_parser.dart';
+import '../services/usb_exporter.dart';
+import '../models/playlist.dart';
+import '../models/playlist_item.dart';
+import 'playlist_detail_page.dart';
 import 'sync_page.dart';
 import '../services/history_recorder.dart';
 import '../services/library_organizer.dart';
-import '../models/playlist.dart';
 import '../widgets/dark_theme.dart';
 
 class LibraryPage extends StatefulWidget {
@@ -221,8 +224,36 @@ class LibraryPageState extends State<LibraryPage> {
     }
   }
 
+  /// 開本機歌單（與側欄同一套：m3u8 → items → 詳情頁）。
+  /// 卡片 onTap 原本是空的死 UI，這裡接上。
+  void _openPlaylist(String name) {
+    final cfg = ConfigService.instance.config;
+    final path = '${cfg.playlistsPath}${Platform.pathSeparator}$name.m3u8';
+    final items = <PlaylistItem>[];
+    final f = File(path);
+    if (f.existsSync()) {
+      for (final stem in PlaylistParser.parseTrackNames(path)) {
+        final sep = stem.split(' - ');
+        items.add(PlaylistItem(
+          name: sep.first,
+          artist: sep.length > 1 ? sep.sublist(1).join(' - ') : '',
+          audioQuery: stem,
+        ));
+      }
+    }
+    String? url;
+    try {
+      url = cfg.urlNames.entries.firstWhere((e) => e.value == name).key;
+    } catch (_) {}
+    Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) =>
+            PlaylistDetailPage(title: name, spotifyUrl: url, items: items)));
+  }
+
   @override
   Widget build(BuildContext context) {
+    final isMobile =
+        !kIsWeb && (Platform.isAndroid || Platform.isIOS);
     final playlists = ConfigService.instance.config.playlists;
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
@@ -274,21 +305,25 @@ class LibraryPageState extends State<LibraryPage> {
                   tooltip: '歌單外歌曲移到「${LibraryOrganizer.unsortedDirName}」資料夾',
                   style: IconButton.styleFrom(backgroundColor: AppColors.surfaceLight),
                 ),
-                IconButton(
-                  onPressed: _export,
-                  icon: const Icon(Icons.usb_rounded),
-                  tooltip: '匯出到 USB',
-                  style: IconButton.styleFrom(backgroundColor: AppColors.surfaceLight),
-                ),
-                const SizedBox(width: 4),
-                IconButton(
-                  onPressed: () => Navigator.of(context).push(
-                    MaterialPageRoute(builder: (_) => const SyncPage()),
+                // USB 匯出是桌面功能（插隨身碟），手機上不顯示；
+                // 區網同步是手機功能（從電腦拉檔），桌面上不顯示。
+                if (!isMobile)
+                  IconButton(
+                    onPressed: _export,
+                    icon: const Icon(Icons.usb_rounded),
+                    tooltip: '匯出到 USB',
+                    style: IconButton.styleFrom(backgroundColor: AppColors.surfaceLight),
                   ),
-                  icon: const Icon(Icons.sync_rounded),
-                  tooltip: '從電腦同步（區網，不耗流量）',
-                  style: IconButton.styleFrom(backgroundColor: AppColors.surfaceLight),
-                ),
+                if (!isMobile) const SizedBox(width: 4),
+                if (isMobile)
+                  IconButton(
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const SyncPage()),
+                    ),
+                    icon: const Icon(Icons.sync_rounded),
+                    tooltip: '從電腦同步（區網，不耗流量）',
+                    style: IconButton.styleFrom(backgroundColor: AppColors.surfaceLight),
+                  ),
               ],
             ),
           ),
@@ -325,6 +360,7 @@ class LibraryPageState extends State<LibraryPage> {
                       itemBuilder: (ctx, i) => _PlaylistCard(
                         playlist: playlists[i],
                         stats: _stats[playlists[i].name],
+                        onTap: () => _openPlaylist(playlists[i].name),
                         onRemove: () {
                           ConfigService.instance.config.urlNames.remove(playlists[i].url);
                           ConfigService.instance.save();
@@ -383,8 +419,8 @@ class _Chip extends StatelessWidget {
 class _PlStats { final int total; final int matched; _PlStats(this.total, this.matched); }
 
 class _PlaylistCard extends StatelessWidget {
-  final PlaylistConfig playlist; final _PlStats? stats; final VoidCallback onRemove;
-  const _PlaylistCard({required this.playlist, this.stats, required this.onRemove});
+  final PlaylistConfig playlist; final _PlStats? stats; final VoidCallback onRemove; final VoidCallback onTap;
+  const _PlaylistCard({required this.playlist, this.stats, required this.onRemove, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -403,7 +439,7 @@ class _PlaylistCard extends StatelessWidget {
         color: Colors.transparent,
         child: InkWell(
           borderRadius: BorderRadius.circular(14),
-          onTap: () {},
+          onTap: onTap,
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: Column(

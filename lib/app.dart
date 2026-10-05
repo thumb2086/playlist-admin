@@ -192,6 +192,11 @@ class _MainShellState extends State<MainShell> {
         if (!info.hasUpdate) return;
         if (!VersionChecker.isNewerThanSkipped(info.latestVersion)) return;
         if (!mounted) return;
+        // 自動下載更新開 → 背景直接下載（完成時 _onUpdate 會跳 snackbar 提示安裝）。
+        if (ConfigService.instance.config.autoDownloadUpdate) {
+          UpdateService.instance.startDownload(info);
+          return;
+        }
         // Always show dialog — user decides when to download.
         showDialog(context: context, builder: (_) => UpdateDialog(info: info));
       } finally {
@@ -303,7 +308,8 @@ class _MainShellState extends State<MainShell> {
       // 手機版只顯示：首頁、搜尋、一起聽、音樂庫、設定
       final isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
       final showPipeline = !isMobile;
-      final showStats = !isMobile;
+      // 統計頁是純本機掃描，手機也看得到（之前藏起來了）。
+      const showStats = true;
 
       _navItems = [
         const _NavItemData(Icons.home_outlined, Icons.home, '首頁', tips: [

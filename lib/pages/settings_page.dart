@@ -7,7 +7,9 @@ import '../app.dart';
 import '../models/config_model.dart';
 import '../services/config_service.dart';
 import '../services/i18n.dart';
+import '../services/log_manager.dart';
 import '../services/sync_server.dart';
+import '../services/update_service.dart';
 import '../services/version_checker.dart';
 import '../widgets/dark_theme.dart';
 import '../widgets/update_dialog.dart';
@@ -122,8 +124,9 @@ class _SettingsPageState extends State<SettingsPage> {
             onChanged: (v) { c.theme = v; ConfigService.instance.save(); setState(() {}); },
           ),
           const SizedBox(height: 4),
-          _Toggle(t('settings.debug_mode'), c.debugMode, (v) { c.debugMode = v; _saveQuiet(); setState(() {}); }),
+          _Toggle(t('settings.debug_mode'), c.debugMode, (v) { c.debugMode = v; LogManager.instance.debugEnabled = v; _saveQuiet(); setState(() {}); }),
           _Toggle(t('settings.metadata_enrich'), c.enableMetadataEnrichment, (v) { c.enableMetadataEnrichment = v; _saveQuiet(); setState(() {}); }),
+          _Toggle('播放時預取歌詞', c.enableRetroactiveLyrics, (v) { c.enableRetroactiveLyrics = v; _saveQuiet(); setState(() {}); }),
           _Toggle(t('settings.auto_update_check'), c.autoUpdateCheck, (v) { c.autoUpdateCheck = v; _saveQuiet(); setState(() {}); }),
           _Toggle('自動下載更新', c.autoDownloadUpdate, (v) { c.autoDownloadUpdate = v; _saveQuiet(); setState(() {}); }),
           _Toggle('接收 Beta 更新', c.receiveBetaUpdates, (v) { c.receiveBetaUpdates = v; _saveQuiet(); setState(() {}); }),
@@ -389,7 +392,15 @@ class _UpdateCheckRowState extends State<_UpdateCheckRow> {
       final info = await VersionChecker.checkForUpdate();
       if (!mounted) return;
       if (info.hasUpdate) {
-        showDialog(context: context, builder: (_) => UpdateDialog(info: info));
+        // 自動下載更新開 → 背景直接下載，不彈對話框。
+        if (ConfigService.instance.config.autoDownloadUpdate) {
+          UpdateService.instance.startDownload(info);
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('已開始背景下載更新，完成後會提示安裝'),
+              duration: Duration(seconds: 2)));
+        } else {
+          showDialog(context: context, builder: (_) => UpdateDialog(info: info));
+        }
       } else if (info.htmlUrl.isEmpty) {
         // checkForUpdate 失敗時回 htmlUrl='' 的空 VersionInfo。
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(

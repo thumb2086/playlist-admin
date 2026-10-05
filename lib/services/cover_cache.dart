@@ -7,9 +7,11 @@ import 'config_service.dart';
 class CoverCache {
   static Map<String, dynamic>? _mem;
 
-  /// 封面快取 key：ISRC 優先，否則正規化「曲名 - 歌手」。
+  /// 封面快取 key：ISRC 優先（統一小寫，防大小寫分叉），否則正規化「曲名 - 歌手」。
   static String key(String? isrc, String name, String artist) {
-    if (isrc != null && isrc.isNotEmpty) return 'isrc:$isrc';
+    if (isrc != null && isrc.isNotEmpty) {
+      return 'isrc:${isrc.toLowerCase()}';
+    }
     return 't:${norm('$name - $artist')}';
   }
 

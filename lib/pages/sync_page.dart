@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/sync_client.dart';
 import '../services/sync_server.dart';
+import '../services/config_service.dart';
 import '../widgets/dark_theme.dart';
 
 /// 手機一鍵同步：從區網電腦把 mp3 拉下來（全程區網、不耗行動數據）。
@@ -67,6 +68,12 @@ class _SyncPageState extends State<SyncPage> {
       _total = 0;
       _failed = 0;
     });
+    // 記住電腦位址：直連播不動時，播放器經這台轉播（免再掃描）。
+    try {
+      final c = ConfigService.instance.config;
+      c.lastSyncHost = '${h.ip}:${h.port}';
+      await ConfigService.instance.save();
+    } catch (_) {}
     _say('已連線 ${h.ip}:${h.port}（電腦共 ${h.tracks} 首），按「比對差異」。');
   }
 

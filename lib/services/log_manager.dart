@@ -46,6 +46,12 @@ class LogManager {
   void info(String msg) => _write('INFO', msg);
   void error(String msg) => _write('ERROR', msg);
 
+  /// 除錯日誌：只在設定頁「debug 模式」開啟時寫檔（預設關，免得洗 log）。
+  bool debugEnabled = false;
+  void debug(String msg) {
+    if (debugEnabled) _write('DEBUG', msg);
+  }
+
   void _write(String level, String msg) {
     if (!_enabled || _logPath == null) return;
     try {

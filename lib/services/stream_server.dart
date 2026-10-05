@@ -135,7 +135,7 @@ class StreamServer {
           await _serveFile(request, File(cached));
           return;
         }
-        await _serveTranscoded(request, query);
+        await serveRelay(request, query);
       } catch (e) {
         print('[stream] handler error: $e');
         try {
@@ -223,7 +223,9 @@ class StreamServer {
   }
 
   /// True streaming: yt-dlp 管線輸出（搜尋+簽章+位元組一氣呵成）→ HTTP response。
-  Future<void> _serveTranscoded(HttpRequest request, String query) async {
+  /// public：區網轉播（SyncServer 的 /relay-stream）複用同一套管線，
+  /// 手機播不動時經電腦轉碼（電腦有 cookies，保證能播）。
+  Future<void> serveRelay(HttpRequest request, String query) async {
     // 三層雷的終極解：yt-dlp 直接 `ytsearch1:query -o -`：
     // ① ffmpeg 直餵 googlevideo 403（缺 header/簽章配套）
     // ② googlevideo 直鏈交給外部 extractor（UA 不符）也失敗

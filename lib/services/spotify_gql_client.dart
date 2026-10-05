@@ -305,10 +305,13 @@ class SpotifyTrackItem {
         final artists = SpotifyTrackItem.parseArtists(item['artists']);
         final duration = SpotifyTrackItem.trackDurationMs(item);
         final albumName = (album?['name'] as String?) ?? '';
+        // ISRC：persisted doc 若有回傳就吃，沒有則 null（呼叫端照舊用 t: key）。
+        final isrc = (item['isrc'] as String?)?.trim();
         if (name.isNotEmpty) {
           out.add(SpotifyTrackItem(
             uri: uri, name: name, artists: artists,
             album: albumName, durationMs: duration, coverUrl: cover,
+            isrc: (isrc != null && isrc.isNotEmpty) ? isrc : null,
           ));
         }
       }
@@ -339,6 +342,7 @@ class SpotifyTrackItem {
         final cover = album != null
             ? SpotifyTrackItem.coverFromSources(album['coverArt']?['sources'])
             : null;
+        final isrc = (track['isrc'] as String?)?.trim();
         out.add(SpotifyTrackItem(
           uri: uri,
           name: name,
@@ -346,6 +350,7 @@ class SpotifyTrackItem {
           album: (album?['name'] as String?) ?? '',
           durationMs: duration,
           coverUrl: cover,
+          isrc: (isrc != null && isrc.isNotEmpty) ? isrc : null,
         ));
       }
     } catch (_) {}

@@ -67,6 +67,21 @@ void main() {
     }
   });
 
+  test('轉播路由存在：/relay-stream 不帶 q 回 400（不斷 yt-dlp）', () async {
+    await SyncServer.instance.start();
+    final port = SyncServer.instance.port;
+    final client = HttpClient();
+    try {
+      final req =
+          await client.getUrl(Uri.parse('http://127.0.0.1:$port/relay-stream'));
+      final resp = await req.close();
+      expect(resp.statusCode, HttpStatus.badRequest);
+      await resp.drain();
+    } finally {
+      client.close();
+    }
+  });
+
   test('UDP 發現回應', () async {
     await SyncServer.instance.start();
     final sock = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
