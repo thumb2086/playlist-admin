@@ -72,12 +72,9 @@ jobs:
         if: github.ref_type != 'tag'
         run: flutter analyze --no-fatal-infos --no-fatal-warnings || true
 
-      - name: Build APK (release)
-        run: flutter build apk --release --split-per-abi --dart-define=APP_VERSION=$APP_VERSION --build-number=$BUILD_NUMBER
-
-      - name: Build universal APK (for in-app update)
-        # split-per-abi 出三包（arm64/x86…）；in-app 更新鏈吃單一 universal 包，
-        # 免得手機端寫 ABI 選型。檔名固定 app-release.apk。
+      - name: Build APK (release, universal single package)
+        # 只打一包 universal（app-release.apk）：手機直接裝、in-app 更新鏈也吃它。
+        # split-per-abi 三包已砍（舊機型本來就沒人用，多包只會讓人裝錯）。
         run: flutter build apk --release --dart-define=APP_VERSION=$APP_VERSION --build-number=$BUILD_NUMBER
 
       - name: Upload APK artifact
