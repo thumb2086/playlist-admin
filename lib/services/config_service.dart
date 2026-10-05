@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:path_provider/path_provider.dart';
 import '../models/config_model.dart';
 import 'app_data_dir.dart';
 
@@ -12,6 +13,23 @@ class ConfigService extends ChangeNotifier {
   String? _configPath;
 
   String get _appDataDir => AppDataDir.dir;
+
+  /// basePath 保底：空時給平台預設（手機 = 文件目錄/playlist-admin，
+  /// 與 SyncClient.ensureLocalLibrary 同一路徑），免得 save() 靜默不寫。
+  /// 回傳是否有有效 basePath。
+  Future<bool> ensureBasePath() async {
+    if (config.basePath.isNotEmpty) return true;
+    // 桌面不擅自決定路徑（使用者要在設定頁選）：只補手機。
+    if (kIsWeb || !(Platform.isAndroid || Platform.isIOS)) return false;
+    try {
+      final docs = await getApplicationDocumentsDirectory();
+      config.basePath =
+          '${docs.path}${Platform.pathSeparator}playlist-admin';
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
 
   /// 平台路徑拼接：舊寫法硬編碼 \\，Android/iOS 會變成檔名含反斜線。
   static String _join(String a, String b) =>
@@ -46,6 +64,9 @@ class ConfigService extends ChangeNotifier {
   }
 
   Future<void> save() async {
+    // basePath 空（手機首次啟動常見）→ 先給預設，否則下面靜默不寫，
+    // 调用端以為存了（新手導引的 setupCompleted 就是這樣每啟動跳一次）。
+    await ensureBasePath();
     final cfg = config;
     final basePath = cfg.basePath;
 

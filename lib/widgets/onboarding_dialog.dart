@@ -44,11 +44,18 @@ class _OnboardingDialogState extends State<OnboardingDialog> {
     });
   }
 
-  void _finish() {
+  void _finish() async {
     final c = ConfigService.instance.config;
     c.setupCompleted = true;
-    ConfigService.instance.save();
-    Navigator.of(context).pop();
+    // 手機首次啟動 basePath 是空的（還沒同步過）：save() 會靜默不寫，
+    // 旗標只活在記憶體 → 下次冷啟動導引又跳出來。先給預設路徑再存。
+    try {
+      await ConfigService.instance.ensureBasePath();
+    } catch (_) {}
+    try {
+      await ConfigService.instance.save();
+    } catch (_) {}
+    if (mounted) Navigator.of(context).pop();
   }
 
   @override

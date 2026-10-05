@@ -135,7 +135,13 @@ class SyncClient {
     await for (final f in dir.list(recursive: true, followLinks: false)) {
       if (f is! File) continue;
       final low = f.path.toLowerCase();
-      if (!low.endsWith('.mp3') && !low.endsWith('.flac')) continue;
+      // 手機獨立下載是 m4a/webm：不認就會誤判缺檔，每次同步都重下。
+      if (!low.endsWith('.mp3') &&
+          !low.endsWith('.flac') &&
+          !low.endsWith('.m4a') &&
+          !low.endsWith('.webm')) {
+        continue;
+      }
       try {
         final st = await f.stat();
         final stem = f.uri.pathSegments.last
