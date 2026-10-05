@@ -324,8 +324,8 @@ class _MainShellState extends State<MainShell> {
       // 手機版只顯示：首頁、搜尋、一起聽、音樂庫、設定
       final isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
       final showPipeline = !isMobile;
-      // 統計頁是純本機掃描，手機也看得到（之前藏起來了）。
-      const showStats = true;
+      // 統計頁只留桌面：手機是離線分身，生產力頁面藏起來（之前放行過，反應醜+用不到）。
+      final showStats = !isMobile;
 
       _navItems = [
         const _NavItemData(Icons.home_outlined, Icons.home, '首頁', tips: [
