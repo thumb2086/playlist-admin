@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 import '../version.dart';
 import 'config_service.dart';
 
@@ -124,16 +126,31 @@ class VersionChecker {
       String? downloadUrl;
       final assets = data['assets'] as List<dynamic>?;
       if (assets != null) {
+        // Android 吃 universal APK（app-release.apk，CI 另打，免 ABI 選型）；
+        // 桌面吃 exe 安裝包。兩邊同一個 Release。
+        final wantApk = !kIsWeb && Platform.isAndroid;
+        String? apkFallback;
         for (final asset in assets) {
           final name = (asset['name'] as String? ?? '').toLowerCase();
-          final ok =
-              (name.startsWith('playlist-admin-setup') || name.startsWith('playlistadministrator-setup')) &&
-              name.endsWith('.exe');
-          if (ok) {
-            downloadUrl = asset['browser_download_url'] as String?;
-            break;
+          if (wantApk) {
+            if (name == 'app-release.apk') {
+              downloadUrl = asset['browser_download_url'] as String?;
+              break;
+            }
+            if (name.contains('arm64') && name.endsWith('.apk')) {
+              apkFallback ??= asset['browser_download_url'] as String?;
+            }
+          } else {
+            final ok =
+                (name.startsWith('playlist-admin-setup') || name.startsWith('playlistadministrator-setup')) &&
+                name.endsWith('.exe');
+            if (ok) {
+              downloadUrl = asset['browser_download_url'] as String?;
+              break;
+            }
           }
         }
+        downloadUrl ??= apkFallback;
       }
       return VersionInfo(
         latestVersion: latestTag, htmlUrl: htmlUrl, downloadUrl: downloadUrl,
@@ -157,7 +174,16 @@ class VersionChecker {
 
       final total = response.contentLength ?? -1;
       if (total > cap) return null; // 200MB 上限防呆
-      final tmp = '${Directory.systemTemp.path}\\PlaylistAdmin_Setup_${DateTime.now().microsecondsSinceEpoch}.exe';
+      // Android 存 APK 到 cache（FileProvider 分享給安裝器）；
+      // 舊寫法硬編碼 \\ + .exe，手機上會變成檔名含反斜線的怪檔。
+      final isApk = !kIsWeb && Platform.isAndroid;
+      final tmpDir = isApk
+          ? (await getTemporaryDirectory()).path
+          : Directory.systemTemp.path;
+      final sep = Platform.pathSeparator;
+      final tmp = isApk
+          ? '$tmpDir${sep}playlist-admin-update-${DateTime.now().microsecondsSinceEpoch}.apk'
+          : '$tmpDir${sep}PlaylistAdmin_Setup_${DateTime.now().microsecondsSinceEpoch}.exe';
       final sink = File(tmp).openWrite();
       int written = 0;
       try {

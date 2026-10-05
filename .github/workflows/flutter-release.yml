@@ -59,6 +59,12 @@ jobs:
             echo "PRERELEASE=true" >> "$GITHUB_ENV"
           fi
           echo "APP_VERSION=$version" >> "$GITHUB_ENV"
+          # Android versionCode 必須是遞增整數：v2.15.44 → 2015044。
+          # （apk 覆蓋安裝靠它判斷新舊；pubspec 版號只給桌面看。）
+          nums=$(echo "$version" | grep -oE '[0-9]+' | head -3)
+          major=$(echo "$nums" | sed -n '1p'); minor=$(echo "$nums" | sed -n '2p'); patch=$(echo "$nums" | sed -n '3p')
+          [ -n "$major" ] || major=0; [ -n "$minor" ] || minor=0; [ -n "$patch" ] || patch=0
+          echo "BUILD_NUMBER=$((major * 1000000 + minor * 1000 + patch))" >> "$GITHUB_ENV"
 
       - run: flutter pub get
 
@@ -67,7 +73,12 @@ jobs:
         run: flutter analyze --no-fatal-infos --no-fatal-warnings || true
 
       - name: Build APK (release)
-        run: flutter build apk --release --split-per-abi --dart-define=APP_VERSION=$APP_VERSION
+        run: flutter build apk --release --split-per-abi --dart-define=APP_VERSION=$APP_VERSION --build-number=$BUILD_NUMBER
+
+      - name: Build universal APK (for in-app update)
+        # split-per-abi 出三包（arm64/x86…）；in-app 更新鏈吃單一 universal 包，
+        # 免得手機端寫 ABI 選型。檔名固定 app-release.apk。
+        run: flutter build apk --release --dart-define=APP_VERSION=$APP_VERSION --build-number=$BUILD_NUMBER
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4

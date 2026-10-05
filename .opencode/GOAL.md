@@ -63,3 +63,7 @@ flutter test test/sync_lan_test.dart test/stream_direct_test.dart
 - [2026-10-05] v2.15.42 發版（手機獨立下載）：同上全綠，main + tag 已推。
 - [2026-10-05] v2.15.43 發版（手機導引無限重現修復 + localIndex 認 m4a）：
   同上全綠，main + tag 已推。
+- [2026-10-05] v2.15.44 候選（用戶決議落地）：全站統一 MP3（kAudioExts 共用判重、
+  同步下載後刪同目錄 m4a/webm）、loop 隊尾優先回歸、_openPlaylist 重複碼合併、
+  整理無 m3u8 拒絕、手機 in-app APK 更新（CI universal 包 + versionCode、
+  open_filex 安裝、FileProvider/權限）。

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:open_filex/open_filex.dart';
 import 'version_checker.dart';
 
 enum UpdateState { idle, downloading, ready, error }
@@ -41,11 +42,29 @@ class UpdateService extends ChangeNotifier {
     notifyListeners();
   }
 
-  void launchInstaller() {
-    if (_savedPath != null && File(_savedPath!).existsSync()) {
-      Process.start(_savedPath!, []);
+  /// Android：走系統安裝器（ACTION_VIEW + FileProvider，需 REQUEST_INSTALL_PACKAGES）。
+  /// 桌面：直接跑 installer exe。
+  Future<bool> launchInstaller() async {
+    if (_savedPath == null || !File(_savedPath!).existsSync()) return false;
+    if (!kIsWeb &&
+        (Platform.isAndroid || Platform.isIOS)) {
+      try {
+        final r = await OpenFilex.open(
+          _savedPath!,
+          type: 'application/vnd.android.package-archive',
+        );
+        return r.type == ResultType.done;
+      } catch (_) {
+        return false;
+      }
+    }
+    try {
+      await Process.start(_savedPath!, []);
       // Give the process a moment to start, then exit
       Future.delayed(const Duration(milliseconds: 500), () => exit(0));
+      return true;
+    } catch (_) {
+      return false;
     }
   }
 

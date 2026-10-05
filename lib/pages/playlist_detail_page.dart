@@ -15,6 +15,7 @@ import '../services/cover_cache.dart';
 import '../widgets/dark_theme.dart';
 import '../services/podcast_service.dart';
 import '../services/artwork_embedder.dart';
+import '../services/audio_exts.dart';
 
 /// Unified detail page for music playlists AND podcast shows.
 /// Supports per-track download with checkmarks for already-downloaded items.
@@ -364,13 +365,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     final localFiles = <String>{};
     if (await musicDir.exists()) {
       await for (final f in musicDir.list(recursive: true, followLinks: false)) {
-        // 手機下載是 m4a/webm（無 ffmpeg 轉 mp3）：副檔名都要認，
-        // 否則手機下的歌會被誤判「沒下載」一直重下。
-        final low = f.path.toLowerCase();
-        if (f is File &&
-            (low.endsWith('.mp3') ||
-                low.endsWith('.m4a') ||
-                low.endsWith('.webm'))) {
+        // 全站正規集合（見 audio_exts）：過渡 m4a/webm 也認，免得誤判缺檔。
+        if (f is File && isAudioFile(f.path)) {
           localFiles.add(f.uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '').toLowerCase());
         }
       }

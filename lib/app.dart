@@ -5,7 +5,6 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'widgets/dark_theme.dart';
-import 'models/playlist_item.dart';
 import 'pages/home_page.dart';
 import 'pages/search_page.dart';
 import 'pages/jam_page.dart';
@@ -169,12 +168,29 @@ class _MainShellState extends State<MainShell> {
   void _onUpdate() {
     if (mounted) setState(() {});
     if (_updateSvc.state == UpdateState.ready && mounted && _context != null) {
+      final isMobile =
+          !kIsWeb && (Platform.isAndroid || Platform.isIOS);
       ScaffoldMessenger.maybeOf(_context!)?.showSnackBar(
         SnackBar(
-          content: const Text('更新已下載完成，點擊側邊欄「安裝更新」'),
+          // 手機無側欄：直接按「安裝」走系統安裝器。
+          content: Text(isMobile
+              ? '更新已下載完成，按「安裝」系統會引導安裝'
+              : '更新已下載完成，點擊側邊欄「安裝更新」'),
           behavior: SnackBarBehavior.floating,
           duration: const Duration(seconds: 5),
-          action: SnackBarAction(label: '安裝', onPressed: _updateSvc.launchInstaller),
+          action: SnackBarAction(
+              label: '安裝',
+              onPressed: () async {
+                final ok = await _updateSvc.launchInstaller();
+                if (!ok && mounted && _context != null) {
+                  ScaffoldMessenger.maybeOf(_context!)?.showSnackBar(
+                    const SnackBar(
+                        content: Text(
+                            '啟動安裝失敗（需允許「安裝未知應用」後重試）'),
+                        duration: Duration(seconds: 4)),
+                  );
+                }
+              }),
         ),
       );
     }
@@ -477,20 +493,8 @@ class _NavItemData {
 /// 封面/時長由詳情頁背景補齊（需 spotifyUrl，這裡從 urlNames 反查帶過去）。
 void _openLocalPlaylist(BuildContext context, String name) {
   final cfg = ConfigService.instance.config;
-  final path = '${cfg.playlistsPath}${Platform.pathSeparator}$name.m3u8';
-  final items = <PlaylistItem>[];
-  if (File(path).existsSync()) {
-    for (final stem in PlaylistParser.parseTrackNames(path)) {
-      // 檔名慣例是「曲名 - 歌手」（下載時 `${name} - ${artist}`），
-      // 與 _titleFromPath/_artistFromPath 一致：第一段=曲名。
-      final sep = stem.split(' - ');
-      items.add(PlaylistItem(
-        name: sep.first,
-        artist: sep.length > 1 ? sep.sublist(1).join(' - ') : '',
-        audioQuery: stem,
-      ));
-    }
-  }
+  final items =
+      PlaylistParser.loadLocalItems(cfg.playlistsPath, name);
   String? url;
   try {
     url = cfg.urlNames.entries.firstWhere((e) => e.value == name).key;

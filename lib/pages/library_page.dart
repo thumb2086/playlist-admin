@@ -7,7 +7,6 @@ import '../services/i18n.dart';
 import '../services/playlist_parser.dart';
 import '../services/usb_exporter.dart';
 import '../models/playlist.dart';
-import '../models/playlist_item.dart';
 import 'playlist_detail_page.dart';
 import 'sync_page.dart';
 import '../services/history_recorder.dart';
@@ -172,6 +171,27 @@ class LibraryPageState extends State<LibraryPage> {
   /// 歌單整理：歌單外歌曲 → 未分類\（歌單原位，m3u8 路徑不變）。
   Future<void> _organize() async {
     if (_organizing) return;
+    // 手機通常沒有 m3u8（同步只拉音樂檔）：一點整理全庫搬進未分類，擋下。
+    try {
+      final plDir = Directory(ConfigService.instance.config.playlistsPath);
+      var hasM3u8 = false;
+      if (await plDir.exists()) {
+        await for (final e in plDir.list(followLinks: false)) {
+          if (e is File && e.path.toLowerCase().endsWith('.m3u8')) {
+            hasM3u8 = true;
+            break;
+          }
+        }
+      }
+      if (!hasM3u8) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+              content: Text('沒有本機歌單（m3u8），整理會把全部歌曲搬走，已拒絕'),
+              duration: Duration(seconds: 3)));
+        }
+        return;
+      }
+    } catch (_) {}
     setState(() => _organizing = true);
     try {
       final r = await LibraryOrganizer.organize(log: (m) => debugPrint(m));
@@ -224,23 +244,12 @@ class LibraryPageState extends State<LibraryPage> {
     }
   }
 
-  /// 開本機歌單（與側欄同一套：m3u8 → items → 詳情頁）。
+  /// 開本機歌單（與側欄同一套，見 PlaylistParser.loadLocalItems）。
   /// 卡片 onTap 原本是空的死 UI，這裡接上。
   void _openPlaylist(String name) {
     final cfg = ConfigService.instance.config;
-    final path = '${cfg.playlistsPath}${Platform.pathSeparator}$name.m3u8';
-    final items = <PlaylistItem>[];
-    final f = File(path);
-    if (f.existsSync()) {
-      for (final stem in PlaylistParser.parseTrackNames(path)) {
-        final sep = stem.split(' - ');
-        items.add(PlaylistItem(
-          name: sep.first,
-          artist: sep.length > 1 ? sep.sublist(1).join(' - ') : '',
-          audioQuery: stem,
-        ));
-      }
-    }
+    final items =
+        PlaylistParser.loadLocalItems(cfg.playlistsPath, name);
     String? url;
     try {
       url = cfg.urlNames.entries.firstWhere((e) => e.value == name).key;

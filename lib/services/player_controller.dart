@@ -14,6 +14,7 @@ import '../services/playback_history.dart';
 import '../services/metadata_reader.dart';
 import '../services/youtube_service.dart';
 import '../services/lyrics_service.dart';
+import '../services/audio_exts.dart';
 import '../services/jam_service.dart';
 import '../services/log_manager.dart';
 import '../services/podcast_service.dart';
@@ -186,28 +187,12 @@ class PlayerController {
         return;
       }
       // 隊列還有下一首 → 直接接（不管 loop 開關；播完停只發生在隊尾）。
-      if (_queue.isEmpty && _autoplay && _title.isNotEmpty &&
-          !_currentIsPodcast && !jamFollowMode) {
-        // 單曲直撥：自動接歌優先於重播（關掉 autoplay 才回到單曲重播）。
-        await _playRadio();
-        return;
-      }
       if (_queue.isNotEmpty && _hasMore()) {
         next();
         return;
       }
-      // 隊尾（有隊列但播到尾）：autoplay 優先接電台，loop 不再無限循環。
-      // loop 只管「單曲重播」（queue 空且 autoplay 關）。
-      if (_queue.isNotEmpty &&
-          !_hasMore() &&
-          _autoplay &&
-          _title.isNotEmpty &&
-          !_currentIsPodcast &&
-          !jamFollowMode) {
-        await _playRadio();
-        return;
-      }
-      // 隊尾 / 單曲：loop 開 → 循環（舊行為）；shuffle 開 → 重洗繼續。
+      // 隊尾 / 單曲：loop 開 → 循環整單（loop 優先於 autoplay，用戶決議）。
+      // autoplay 只在 loop 關時接電台。
       if (_loop) {
         if (_queue.isEmpty) {
           // 單曲直撥（queue 空）→ 重播 = 無限自動播放（舊版在這裡空轉卡死）。
@@ -222,6 +207,7 @@ class PlayerController {
         return;
       }
       // 都沒開 → 自動接歌（電台）：播完播相似歌曲；Podcast 單集不接。
+      // （loop 優先：上面 loop 開已 return，到這裡表示 loop 關。）
       if (_autoplay &&
           _title.isNotEmpty &&
           !_currentIsPodcast &&
@@ -781,12 +767,8 @@ class PlayerController {
       final musicDir = Directory(ConfigService.instance.config.musicPath);
       if (await musicDir.exists()) {
         await for (final f in musicDir.list(recursive: true, followLinks: false)) {
-          // 同詳情頁：認 mp3/m4a/webm（手機下載不經 ffmpeg，無 mp3）。
-          final low = f.path.toLowerCase();
-          if (f is File &&
-              (low.endsWith('.mp3') ||
-                  low.endsWith('.m4a') ||
-                  low.endsWith('.webm'))) {
+          // 全站正規集合：m4a/webm 過渡檔也要認（播得到），同步會再換成 MP3。
+          if (f is File && isAudioFile(f.path)) {
             idx[File(f.path).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '').toLowerCase()] = f.path;
           }
         }

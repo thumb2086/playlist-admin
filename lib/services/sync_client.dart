@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'config_service.dart';
 import 'sync_server.dart';
+import 'audio_exts.dart';
 
 /// 區網同步客戶端（手機端）：從電腦把 mp3 拉下來，全程區網、不耗行動數據。
 ///
@@ -134,14 +135,8 @@ class SyncClient {
     if (!await dir.exists()) return out;
     await for (final f in dir.list(recursive: true, followLinks: false)) {
       if (f is! File) continue;
-      final low = f.path.toLowerCase();
-      // 手機獨立下載是 m4a/webm：不認就會誤判缺檔，每次同步都重下。
-      if (!low.endsWith('.mp3') &&
-          !low.endsWith('.flac') &&
-          !low.endsWith('.m4a') &&
-          !low.endsWith('.webm')) {
-        continue;
-      }
+      // 全站正規集合：過渡 m4a/webm 計入本地（播得到），同步換成 MP3 後刪舊檔。
+      if (!isAudioFile(f.path)) continue;
       try {
         final st = await f.stat();
         final stem = f.uri.pathSegments.last
@@ -229,6 +224,22 @@ class SyncClient {
           if (await target.exists()) await target.delete();
         } catch (_) {}
         await part.rename(target.path);
+        // 全站統一 MP3：同目錄同 stem 的 m4a/webm 過渡檔刪掉，免雙份共存。
+        try {
+          final stem = target.uri.pathSegments.last
+              .replaceAll(RegExp(r'\.\w+$'), '')
+              .toLowerCase();
+          await for (final f in target.parent.list(followLinks: false)) {
+            if (f is! File || f.path == target.path) continue;
+            final n = f.uri.pathSegments.last.toLowerCase();
+            if ((n.endsWith('.m4a') || n.endsWith('.webm')) &&
+                n.replaceAll(RegExp(r'\.\w+$'), '') == stem) {
+              try {
+                await f.delete();
+              } catch (_) {}
+            }
+          }
+        } catch (_) {}
         try {
           if (track.mtime > 0) {
             await target.setLastModified(

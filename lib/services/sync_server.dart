@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'config_service.dart';
 import 'stream_server.dart';
+import 'audio_exts.dart';
 
 /// 區網同步伺服器（電腦端）：手機一鍵把電腦的 mp3 拉過去，全程走區網、不耗網路流量。
 ///
@@ -140,8 +141,9 @@ class SyncServer {
       if (await dir.exists()) {
         await for (final f in dir.list(recursive: true, followLinks: false)) {
           if (f is File) {
-            final low = f.path.toLowerCase();
-            if (low.endsWith('.mp3') || low.endsWith('.flac')) n++;
+            // 全站正規集合：m4a/webm 也列（手機過渡檔可被拉回去，同步再換 MP3）。
+            if (!isAudioFile(f.path)) continue;
+            n++;
           }
         }
       }
@@ -175,8 +177,7 @@ class SyncServer {
             await for (final f
                 in dir.list(recursive: true, followLinks: false)) {
               if (f is! File) continue;
-              final low = f.path.toLowerCase();
-              if (!low.endsWith('.mp3') && !low.endsWith('.flac')) continue;
+              if (!isAudioFile(f.path)) continue;
               final st = await f.stat();
               var rel = f.path;
               final base = dir.path;
@@ -213,10 +214,9 @@ class SyncServer {
             })
             .join('/');
         // 防目錄穿越：拒 ..、絕對路徑、非音訊副檔名。
-        final low = rel.toLowerCase();
         if (rel.contains('..') ||
             rel.startsWith('/') ||
-            (!low.endsWith('.mp3') && !low.endsWith('.flac'))) {
+            !isAudioFile(rel)) {
           req.response.statusCode = HttpStatus.forbidden;
           await req.response.close();
           return;
