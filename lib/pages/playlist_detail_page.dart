@@ -335,6 +335,9 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   static String _favKey(String s) =>
       s.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
 
+  /// 手機是 PC 的離線分身：不下載（歌從電腦同步，串流走轉播/直連）。
+  bool get _isMobile => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+
   bool _isFav(PlaylistItem item) {
     final key = _favKey('${item.name} - ${item.artist}');
     return _favorites.any((f) => _favKey(f) == key);
@@ -508,14 +511,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
         return;
       }
       // Prefer artist+title for better YouTube matching, not ISRC.
+      // （手機無下載：下載鈕已隱藏，這裡只剩桌面走。下面是 ffmpeg 轉 mp3＋嵌封面。）
       final searchQuery = '${item.artist} ${item.name}'.trim();
-      // 手機獨立下載（Spotube 式）：無 yt-dlp/ffmpeg，直鏈存檔（m4a/webm）。
-      // 桌面走下面 ffmpeg 轉 mp3＋內嵌封面那條（副檔名不同，兩邊不互蓋）。
-      if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
-        debugPrint('[DL] $index mobile direct: query="$searchQuery"');
-        await _downloadTrackMobile(index, item, musicDir, finalName);
-        return;
-      }
       debugPrint('[DL] $index start: query="$searchQuery" isrc=${item.isrc}');
       final streamResult = await YoutubeService.instance.resolveStream(searchQuery)
           .timeout(const Duration(seconds: 30), onTimeout: () {
@@ -575,50 +572,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     }
   }
 
-  /// 手機獨立下載：resolveStreamDirect（純 Dart）→ downloadDirect 存檔。
-  /// 不經 ffmpeg（手機沒有），副檔名跟直鏈容器（m4a/webm）；
-  /// 封面不內嵌（ArtworkEmbedder 只吃 mp3），播放時走 CoverCache/網路圖。
-  Future<void> _downloadTrackMobile(
-      int index, PlaylistItem item, Directory musicDir, String finalName) async {
-    final searchQuery = '${item.artist} ${item.name}'.trim();
-    try {
-      final r = await YoutubeService.instance
-          .resolveStreamDirect(searchQuery)
-          .timeout(const Duration(seconds: 60), onTimeout: () => null);
-      if (r == null) {
-        debugPrint('[DL] $index mobile NOT FOUND: ${item.name}');
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('找不到: ${item.name}'), duration: const Duration(seconds: 2)));
-        }
-        return;
-      }
-      if (mounted) setState(() => _progress[index] = 0.3);
-      final saved = await YoutubeService.instance.downloadDirect(
-        videoId: r.videoId,
-        dir: musicDir.path,
-        stem: finalName,
-        onProgress: (p) {
-          if (mounted) setState(() => _progress[index] = 0.3 + p * 0.7);
-        },
-      );
-      if (saved.isNotEmpty) {
-        debugPrint('[DL] $index mobile OK: $saved');
-        if (mounted) {
-          _localTracks.add(index);
-          setState(() => _downloaded.add(index));
-          _progress[index] = 1.0;
-        }
-      } else if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('下載失敗: ${item.name}'), duration: const Duration(seconds: 3)));
-      }
-    } catch (e) {
-      debugPrint('[DL] $index mobile error: $e');
-    }
-  }
-
   /// 整單下載開關：true 跑 serial，false 停在當前這首後。
+  /// （手機無下載：整單鈕已隱藏，只剩桌面用。）
   bool _downloadingAll = false;
 
   /// 已訂閱狀態：進頁面即判 config（不只依賴點過訂閱鈕的 flag）。
@@ -768,18 +723,18 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                     ),
                   ],
                   const SizedBox(width: 8),
-                  // 下載鈕不再排除 podcast：單集走 _downloadTrack 的 RSS 分支
-                  // 進 podcasts\<節目>\（跟 pipeline 同資料夾）。
-                  OutlinedButton.icon(
-                    onPressed: _downloadAll,
-                    icon: Icon(_downloadingAll ? Icons.stop_rounded : Icons.download_rounded, size: 16),
-                    label: Text(_downloadingAll ? '取消下載' : (localCount > 0 ? '下載 ($localCount/$totalCount)' : '下載全部')),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: AppColors.text,
-                      side: const BorderSide(color: AppColors.border),
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  // 手機無下載：歌從電腦同步來。這顆（含整單）只在桌面顯示。
+                  if (!_isMobile)
+                    OutlinedButton.icon(
+                      onPressed: _downloadAll,
+                      icon: Icon(_downloadingAll ? Icons.stop_rounded : Icons.download_rounded, size: 16),
+                      label: Text(_downloadingAll ? '取消下載' : (localCount > 0 ? '下載 ($localCount/$totalCount)' : '下載全部')),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: AppColors.text,
+                        side: const BorderSide(color: AppColors.border),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      ),
                     ),
-                  ),
                 ]),
               ],
             ),
@@ -884,7 +839,8 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
               constraints: const BoxConstraints(minWidth: 32),
             ),
           ),
-          // Download / play button
+          // Download / play button：
+          // 手機顯示本機狀態（勾勾）但無下載鈕；podcast 列是播放鈕（點列也能播）。
           if (!widget.isPodcast)
             SizedBox(
               width: 32,
@@ -892,12 +848,14 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                   ? const Icon(Icons.check_circle_rounded, size: 18, color: AppColors.accent)
                   : isDownloading
                       ? const SizedBox(width: 18, height: 18)
-                      : IconButton(
-                          icon: const Icon(Icons.download_rounded, size: 18, color: AppColors.textMuted),
-                          onPressed: () => _downloadTrack(index),
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(minWidth: 32),
-                        ),
+                      : _isMobile
+                          ? const SizedBox(width: 18)
+                          : IconButton(
+                              icon: const Icon(Icons.download_rounded, size: 18, color: AppColors.textMuted),
+                              onPressed: () => _downloadTrack(index),
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(minWidth: 32),
+                            ),
             )
           else
             IconButton(

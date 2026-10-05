@@ -23,6 +23,7 @@ class _SyncPageState extends State<SyncPage> {
   String _status = '';
   List<SyncTrack> _missing = [];
   int _done = 0, _total = 0, _failed = 0;
+  int _plsDone = 0, _plsTotal = 0;
   String _current = '';
   double _fileProgress = 0;
   bool _cancel = false;
@@ -67,6 +68,8 @@ class _SyncPageState extends State<SyncPage> {
       _done = 0;
       _total = 0;
       _failed = 0;
+      _plsDone = 0;
+      _plsTotal = 0;
     });
     // 記住電腦位址：直連播不動時，播放器經這台轉播（免再掃描）。
     try {
@@ -119,6 +122,55 @@ class _SyncPageState extends State<SyncPage> {
           : '手機缺 ${missing.length} 首，按「一鍵同步」。');
     } catch (e) {
       _say('比對失敗：$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// 歌單同步：清單→逐一下載 m3u8→urlNames 補上缺的（音樂庫卡片靠它長出來）。
+  /// 覆寫本機同名歌單（電腦是唯一真相來源）。
+  Future<void> _syncPlaylists() async {
+    final h = _host;
+    if (h == null || _busy) return;
+    setState(() {
+      _busy = true;
+      _plsDone = 0;
+      _plsTotal = 0;
+    });
+    _say('抓電腦歌單清單…');
+    try {
+      final remote = await SyncClient.fetchPlaylists(h);
+      if (!mounted) return;
+      if (remote.isEmpty) {
+        _say('電腦沒有歌單。');
+        return;
+      }
+      setState(() => _plsTotal = remote.length);
+      var ok = 0;
+      final cfg = ConfigService.instance.config;
+      var urlAdded = 0;
+      for (final p in remote) {
+        if (!mounted) break;
+        final good = await SyncClient.downloadPlaylist(h, p.name);
+        if (!mounted) break;
+        if (good) {
+          ok++;
+          // urlNames 補上：音樂庫卡片列表讀它；已有不覆蓋（手機端不改名）。
+          if (p.url.isNotEmpty && !cfg.urlNames.containsKey(p.url)) {
+            cfg.urlNames[p.url] = p.name;
+            urlAdded++;
+          }
+        }
+        if (mounted) setState(() => _plsDone = ok);
+      }
+      if (urlAdded > 0) {
+        try {
+          await ConfigService.instance.save();
+        } catch (_) {}
+      }
+      _say('歌單同步完成：$ok/${remote.length}（音樂庫多了 $urlAdded 個歌單）');
+    } catch (e) {
+      _say('歌單同步失敗：$e');
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -299,6 +351,19 @@ class _SyncPageState extends State<SyncPage> {
                   ),
                 ),
               ]),
+              const SizedBox(height: 8),
+              // 歌單同步：m3u8 拉回來＋urlNames 補上，音樂庫卡片才長得出來。
+              // （之前只同步音樂檔，手機音乐庫永遠是空的。）
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _busy ? null : _syncPlaylists,
+                  icon: const Icon(Icons.playlist_add_check_rounded, size: 16),
+                  label: Text(_plsTotal > 0
+                      ? '同步歌單（$_plsDone/$_plsTotal）'
+                      : '同步歌單'),
+                ),
+              ),
               if (_busy && _total > 0) ...[
                 const SizedBox(height: 8),
                 ClipRRect(

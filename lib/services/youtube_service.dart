@@ -112,68 +112,10 @@ class YoutubeService {
     }
   }
 
-  /// Spotube 式下載：直鏈 HTTP 存檔（純 Dart，無 yt-dlp/ffmpeg）。
-  /// 回傳存檔路徑，失敗回 ''。先寫 .part，完整才改名（截斷檔不可留）。
-  Future<String> downloadDirect({
-    required String videoId,
-    required String dir,
-    required String stem,
-    void Function(double progress)? onProgress,
-  }) async {
-    final d = await getAudioDirect(videoId);
-    if (d == null || d.url.isEmpty) return '';
-    final safeStem =
-        stem.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
-    if (safeStem.isEmpty) return '';
-    final finalPath =
-        '$dir${Platform.pathSeparator}$safeStem.${d.ext}';
-    if (File(finalPath).existsSync() &&
-        File(finalPath).lengthSync() > 65536) {
-      return finalPath;
-    }
-    final partPath = '$finalPath.part';
-    final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
-    try {
-      final req = await client.getUrl(Uri.parse(d.url));
-      final resp = await req.close();
-      if (resp.statusCode != 200) return '';
-      final total = resp.contentLength;
-      final sink = File(partPath).openWrite();
-      var got = 0;
-      try {
-        await for (final chunk
-            in resp.timeout(const Duration(seconds: 60))) {
-          sink.add(chunk);
-          got += chunk.length;
-          if (total > 0) onProgress?.call(got / total);
-        }
-        await sink.flush();
-        await sink.close();
-      } catch (_) {
-        try { await sink.close(); } catch (_) {}
-        try { await File(partPath).delete(); } catch (_) {}
-        return '';
-      }
-      if (total > 0 && got < total) {
-        try { await File(partPath).delete(); } catch (_) {}
-        return '';
-      }
-      if (File(finalPath).existsSync()) {
-        await File(finalPath).delete();
-      }
-      await File(partPath).rename(finalPath);
-      return finalPath;
-    } catch (_) {
-      try { await File(partPath).delete(); } catch (_) {}
-      return '';
-    } finally {
-      client.close();
-    }
-  }
-
   /// 手機直連解析（純 Dart，不需 yt-dlp/cookies）：搜尋 → 取最佳音訊直鏈。
   /// Spotube 手機能播就是這條路：youtube_explode 拿 manifest 直鏈給 mpv。
   /// 限制：無 cookies，遇到年齡限制/嚴格 bot 檢查的影片會失敗（回 null）。
+  /// （手機下載已移除：手機是 PC 的離線分身，歌從電腦同步。直連只用於播放。）
   Future<YoutubeStreamResult?> resolveStreamDirect(String query) async {
     if (_closed) return null;
     try {

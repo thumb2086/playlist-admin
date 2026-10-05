@@ -38,6 +38,7 @@ void main() {
 
   tearDown(() async {
     SyncServer.instance.debugMusicRoot = null;
+    SyncServer.instance.debugPlaylistsRoot = null;
     await SyncServer.instance.stop();
   });
 
@@ -147,5 +148,61 @@ void main() {
     expect(SyncClient.diff(remote, idx), isEmpty);
     idx = await SyncClient.localIndex();
     expect(SyncClient.diff(remote, idx), isEmpty);
+  });
+
+  test('歌單同步：清單＋下載 m3u8（含目錄穿越拒絕）', () async {
+    // 電腦端擺兩個歌單（含一個 urlNames 對照）。
+    final plDir =
+        Directory('${musicDir.parent.path}${Platform.pathSeparator}playlists');
+    await plDir.create(recursive: true);
+    await File('${plDir.path}${Platform.pathSeparator}我的歌單.m3u8')
+        .writeAsString('#EXTM3U\n#EXTINF:-1,歌1\n../music/歌1.mp3\n');
+    await File('${plDir.path}${Platform.pathSeparator}_Unsorted.m3u8')
+        .writeAsString('#EXTM3U\n');
+    ConfigService.instance.config = AppConfig(
+      basePath: musicDir.parent.path,
+      language: 'zh-TW',
+      urlNames: {'https://open.spotify.com/playlist/abc': '我的歌單'},
+    );
+    await SyncServer.instance.start();
+    final port = SyncServer.instance.port;
+    final host = await SyncClient.ping('127.0.0.1', port);
+    expect(host, isNotNull);
+
+    final lists = await SyncClient.fetchPlaylists(host!);
+    expect(lists.length, 2);
+    final mine = lists.firstWhere((p) => p.name == '我的歌單');
+    expect(mine.url, 'https://open.spotify.com/playlist/abc');
+
+    // 切到「手機」目錄下載。
+    ConfigService.instance.config =
+        AppConfig(basePath: phoneDir.path, language: 'zh-TW');
+    SyncServer.instance.debugMusicRoot =
+        '${musicDir.path}${Platform.pathSeparator}';
+    SyncServer.instance.debugPlaylistsRoot = plDir.path;
+    final ok = await SyncClient.downloadPlaylist(host, '我的歌單');
+    expect(ok, true);
+    final saved = File(
+        '${phoneDir.path}${Platform.pathSeparator}playlists${Platform.pathSeparator}我的歌單.m3u8');
+    expect(await saved.exists(), true);
+    expect(await saved.length(), greaterThan(0));
+
+    // 目錄穿越必須拒絕（403/404，不吐檔案）。
+    final client = HttpClient();
+    try {
+      final req = await client.getUrl(
+          Uri.parse('http://127.0.0.1:$port/playlist/..%2Fsecret'));
+      final resp = await req.close();
+      expect(resp.statusCode == HttpStatus.forbidden ||
+          resp.statusCode == HttpStatus.notFound, true);
+      await resp.drain();
+      final req2 = await client.getUrl(
+          Uri.parse('http://127.0.0.1:$port/playlist/不存在的歌單'));
+      final resp2 = await req2.close();
+      expect(resp2.statusCode, HttpStatus.notFound);
+      await resp2.drain();
+    } finally {
+      client.close();
+    }
   });
 }

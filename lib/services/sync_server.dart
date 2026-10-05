@@ -13,8 +13,12 @@ import 'audio_exts.dart';
 /// - HTTP 15487（被佔用自動 +1）：`GET /api/ping` → `{ok,app,version,tracks}`
 /// - `GET /api/tracks` → `[{p,size,mtime}]`（p = 相對 music/ 的路徑，`/` 分隔）
 /// - `GET /file/<rel...>` → 檔案位元組（附 content-length 供進度條）
+/// - `GET /api/playlists` → `[{n,u}]`（n = 歌單名，u = Spotify URL 或空；
+///   手機拿去長歌單卡＋開詳情；內部歌單（_Unsorted 等）照給，手機整理用得到）
+/// - `GET /playlist/<name>.m3u8` → 歌單檔位元組
 ///
-/// 只讀 music/ 內的 .mp3/.flac；路徑含 `..` 一律拒絕（防目錄穿越）。
+/// 只讀 music/ 內的音訊（見 audio_exts）與 playlists/ 內的 .m3u8；
+/// 路徑含 `..` 一律拒絕（防目錄穿越）。
 class SyncServer {
   static SyncServer? _instance;
   static SyncServer get instance => _instance ??= SyncServer._();
@@ -37,6 +41,9 @@ class SyncServer {
   /// 測試/特殊用途覆寫：不讀全域 config，直接指定要服的音樂目錄。
   String? debugMusicRoot;
 
+  /// 同上：歌單目錄覆寫（回環測試 server/client 同行程，config 切換會互相踩）。
+  String? debugPlaylistsRoot;
+
   Directory _musicDir() {
     final o = debugMusicRoot;
     if (o != null && o.isNotEmpty) {
@@ -48,6 +55,12 @@ class SyncServer {
       return Directory(p);
     }
     return Directory(ConfigService.instance.config.musicPath);
+  }
+
+  Directory _playlistsDir() {
+    final o = debugPlaylistsRoot;
+    if (o != null && o.isNotEmpty) return Directory(o);
+    return Directory(ConfigService.instance.config.playlistsPath);
   }
 
   /// 本機區網 IPv4（沒有就回 127.0.0.1，僅本機可測）。
@@ -231,6 +244,65 @@ class SyncServer {
         }
         final len = await file.length();
         req.response.headers.contentType = ContentType('audio', 'mpeg');
+        req.response.headers.set('Content-Length', len);
+        await req.response.addStream(file.openRead());
+        await req.response.close();
+        return;
+      }
+      // ── 歌單同步（手機是 PC 的離線分身：歌單也要過去，否則音樂庫是空的）──
+      // GET /api/playlists → [{n,u}]；GET /playlist/<name>.m3u8 → 檔位元組。
+      if (segs[0] == 'api' && segs.length >= 2 && segs[1] == 'playlists') {
+        final out = <Map<String, String>>[];
+        try {
+          final dir = _playlistsDir();
+          final urlNames = ConfigService.instance.config.urlNames;
+          final nameToUrl = <String, String>{};
+          for (final e in urlNames.entries) {
+            nameToUrl[e.value] = e.key;
+          }
+          if (await dir.exists()) {
+            await for (final f in dir.list(followLinks: false)) {
+              if (f is! File) continue;
+              final fname = f.uri.pathSegments.last;
+              if (!fname.toLowerCase().endsWith('.m3u8')) continue;
+              final name =
+                  fname.replaceAll(RegExp(r'\.m3u8$', caseSensitive: false), '');
+              if (name.isEmpty || name.contains('..')) continue;
+              out.add({'n': name, 'u': nameToUrl[name] ?? ''});
+            }
+          }
+        } catch (_) {}
+        out.sort((a, b) => a['n']!.compareTo(b['n']!));
+        req.response.headers.contentType = ContentType.json;
+        req.response.write(jsonEncode(out));
+        await req.response.close();
+        return;
+      }
+      if (segs[0] == 'playlist' && segs.length == 2) {
+        var name = segs[1];
+        try {
+          name = Uri.decodeComponent(name);
+        } catch (_) {}
+        // 只允許單純歌單名（防目錄穿越）；副檔名一律當 .m3u8。
+        if (name.isEmpty ||
+            name.contains('..') ||
+            name.contains('/') ||
+            name.contains('\\')) {
+          req.response.statusCode = HttpStatus.forbidden;
+          await req.response.close();
+          return;
+        }
+        final stem =
+            name.replaceAll(RegExp(r'\.m3u8$', caseSensitive: false), '');
+        final file = File(
+            '${_playlistsDir().path}${Platform.pathSeparator}$stem.m3u8');
+        if (!await file.exists()) {
+          req.response.statusCode = HttpStatus.notFound;
+          await req.response.close();
+          return;
+        }
+        final len = await file.length();
+        req.response.headers.contentType = ContentType('text', 'plain');
         req.response.headers.set('Content-Length', len);
         await req.response.addStream(file.openRead());
         await req.response.close();

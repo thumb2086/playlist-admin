@@ -32,6 +32,17 @@ class SyncTrack {
       );
 }
 
+/// 電腦端歌單（m3u8）：n = 歌單名，u = Spotify URL（空=本機歌單）。
+class SyncPlaylist {
+  final String name;
+  final String url;
+  SyncPlaylist({required this.name, required this.url});
+  factory SyncPlaylist.fromJson(Map<String, dynamic> j) => SyncPlaylist(
+        name: (j['n'] ?? '') as String,
+        url: (j['u'] ?? '') as String,
+      );
+}
+
 class SyncClient {
   static final _http = HttpClient()..connectionTimeout = const Duration(seconds: 8);
 
@@ -109,6 +120,55 @@ class SyncClient {
         .map((e) => SyncTrack.fromJson(e as Map<String, dynamic>))
         .where((t) => t.path.isNotEmpty)
         .toList();
+  }
+
+  /// 抓電腦歌單清單（m3u8 名＋Spotify URL 對照）。
+  static Future<List<SyncPlaylist>> fetchPlaylists(SyncHost host) async {
+    final req = await _http
+        .getUrl(Uri.parse('${host.baseUrl}/api/playlists'))
+        .timeout(const Duration(seconds: 30));
+    final resp = await req.close().timeout(const Duration(seconds: 60));
+    if (resp.statusCode != 200) {
+      throw Exception('電腦回了 ${resp.statusCode}');
+    }
+    final body = await resp.transform(utf8.decoder).join();
+    final list = jsonDecode(body) as List<dynamic>;
+    return list
+        .map((e) => SyncPlaylist.fromJson(e as Map<String, dynamic>))
+        .where((p) => p.name.isNotEmpty)
+        .toList();
+  }
+
+  /// 保證本機歌單目錄存在（`<base>/playlists`，與桌面同結構）。
+  static Future<Directory> ensureLocalPlaylists() async {
+    await ensureLocalLibrary(); // 順便補 basePath（手機首次是空的）
+    final dir = Directory(ConfigService.instance.config.playlistsPath);
+    await dir.create(recursive: true);
+    return dir;
+  }
+
+  /// 下單一歌單檔（覆寫本機同名）。回傳 true=成功。
+  static Future<bool> downloadPlaylist(SyncHost host, String name) async {
+    try {
+      final dir = await ensureLocalPlaylists();
+      final safe = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+      if (safe.isEmpty || safe.contains('..')) return false;
+      final req = await _http
+          .getUrl(Uri.parse(
+              '${host.baseUrl}/playlist/${Uri.encodeComponent(safe)}'))
+          .timeout(const Duration(seconds: 15));
+      final resp = await req.close().timeout(const Duration(seconds: 60));
+      if (resp.statusCode != 200) return false;
+      final bytes = await resp.fold<List<int>>(
+          [], (prev, chunk) => prev..addAll(chunk));
+      if (bytes.isEmpty) return false;
+      final target = File(
+          '${dir.path}${Platform.pathSeparator}$safe.m3u8');
+      await target.writeAsBytes(bytes, flush: true);
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// 保證本機音樂庫目錄存在（手機首次 basePath 是空的 → 指到 app 文件夾）。

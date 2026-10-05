@@ -32,33 +32,5 @@ void main() {
         skip: Platform.environment['YT_E2E'] == '1'
             ? false
             : '網路探針（會打 YouTube）：set YT_E2E=1 再跑');
-
-    test('E2E：手機獨立下載（直鏈→存檔 m4a/webm，無 yt-dlp/ffmpeg）', () async {
-      final r = await YoutubeService.instance
-          .resolveStreamDirect('周杰倫 晴天');
-      expect(r, isNotNull, reason: '直連解析失敗（可能被 YouTube bot 擋）');
-      final tmp =
-          await Directory.systemTemp.createTemp('dl_direct_test_');
-      try {
-        final saved = await YoutubeService.instance.downloadDirect(
-          videoId: r!.videoId,
-          dir: tmp.path,
-          stem: 'test-song',
-        );
-        expect(saved.isNotEmpty, true, reason: '下載失敗（直鏈被擋？）');
-        expect(saved.endsWith('.m4a') || saved.endsWith('.webm'), true,
-            reason: '副檔名非 m4a/webm：$saved');
-        expect(File(saved).lengthSync(), greaterThan(65536),
-            reason: '檔案過小，疑似截斷');
-        // ignore: avoid_print
-        print('downloaded: $saved (${File(saved).lengthSync()} B)');
-      } finally {
-        try { await tmp.delete(recursive: true); } catch (_) {}
-      }
-    },
-        timeout: const Timeout(Duration(minutes: 5)),
-        skip: Platform.environment['YT_E2E'] == '1'
-            ? false
-            : '網路探針（會打 YouTube）：set YT_E2E=1 再跑');
   });
 }
