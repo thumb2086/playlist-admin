@@ -105,7 +105,7 @@ class _OnboardingDialogState extends State<OnboardingDialog> {
                   backgroundColor: AppColors.accent,
                   foregroundColor: Colors.black,
                 ),
-                child: Text(_page == 3 ? '開始使用' : (_page == 2 ? '完成' : '下一步')),
+                child: Text(_page == 3 ? '開始使用' : '下一步'),
               ),
             ]),
           ],

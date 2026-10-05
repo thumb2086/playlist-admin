@@ -18,6 +18,9 @@ Usage:
   playlist-admin pipeline [--step N]     Run full pipeline (or from step N)
   playlist-admin podcast                 Run podcast pipeline
   playlist-admin status                  Show status
+  playlist-admin play <歌曲名>             播放（本機庫優先，找不到走串流）
+  playlist-admin organize                  歌單外歌曲移入「未分類」資料夾
+  playlist-admin artwork backfill          全庫 mp3 內嵌封面（有圖跳過）
   playlist-admin favorite list           List favorite songs
   playlist-admin favorite toggle <song>  Toggle favorite (我的最愛)
   playlist-admin rag build [--reset]     Build podcast RAG vector DB
@@ -25,7 +28,7 @@ Usage:
   playlist-admin study build [--reset]   Build study RAG (PDF + 課程)
   playlist-admin study query "問題" [--topk N] [--category X] [--json]
   playlist-admin skill list              List bundled opencode skills
-  playlist-admin skill install [--dir X] Install skill(s) to opencode (~/.config/opencode/skills)
+  playlist-admin skill install [name] [--dir X] Install skill(s) to opencode (~/.config/opencode/skills)
   playlist-admin skill path [name]       Print installed path of a skill
 `;
 

@@ -286,6 +286,7 @@ class PlayerController {
       {String? title, String? artist, String? coverUrl, String? album}) async {
     StreamServer.instance.stopActive();
     await _player.stop();
+    _currentIsPodcast = false; // 本機檔一定是音樂（防 Podcast 後殘留旗標）
     _position = Duration.zero; // 開新檔歸零：error 判斷(見 listener)依賴它
     _statusText = ''; // 入口清殘留錯誤（playFile 不設 statusText，不清會帶到下一首）
     _resetAudioInfo();
@@ -492,6 +493,7 @@ class PlayerController {
   Future<void> playItem(PlaylistItem item) async {
     StreamServer.instance.stopActive();
     await _player.stop();
+    _currentIsPodcast = false; // 預設音樂；單集分支後面會改回 true
     _position = Duration.zero; // 開新檔歸零（見 error listener）
     _statusText = ''; // 入口清殘留錯誤（分支需要時會再設）
     _resetAudioInfo();

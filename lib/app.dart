@@ -342,10 +342,9 @@ class _MainShellState extends State<MainShell> {
             '最近播放與收藏成長',
           ]),
         _NavItemData(Icons.settings_outlined, Icons.settings, t('app.sidebar.settings'), tips: [
-          '路徑、主題、串流音質、睡眠定時',
-          'Groq：下拉選 推薦 router / 官方 / 自訂',
-          'Spotify 登入（僅桌面版）',
-          '更新檢查；「新手導引」隨時重看本導覽',
+          '路徑、主題、串流音質、Groq 下拉（推薦 router / 官方 / 自訂）',
+          '睡眠定時在播放列（月亮圖示）；Spotify 登入在搜尋頁',
+          '更新檢查；設定頁「開啟導引」隨時重看本導覽',
         ]),
       ];
 
@@ -443,7 +442,7 @@ class _MainShellState extends State<MainShell> {
                 });
               },
               destinations: [
-                for (final it in _navItems.take(5))
+                for (final it in _navItems)
                   NavigationDestination(
                     icon: Icon(it.icon),
                     selectedIcon: Icon(it.activeIcon),

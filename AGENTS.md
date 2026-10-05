@@ -55,6 +55,11 @@ $env:PA_CLI_ARGS = '["podcast"]'; & $exe  # 測 podcast pipeline
 # 3. RAG 測試
 python rag/study_query.py "齒輪有哪些" --topk 3  # study RAG
 python rag/query.py "test" --topk 1 --json       # podcast RAG
+
+# 4. 新命令冒煙（有改相關程式才跑）
+$env:PA_CLI_ARGS = '["favorite","list"]'; & $exe
+$env:PA_CLI_ARGS = '["skill","list"]'; node cli/index.js skill list
+# artwork backfill 會改 4600 檔，只跑一次驗證過就好，平常跳過
 ```
 
 ### 失敗處理
@@ -80,7 +85,7 @@ npm 包名：`playlist-admin`（帳號 `thumb2087`，已搶注）
 
 ### 注意
 - 發佈走 npm Trusted Publishing（OIDC），不需要任何 npm token/secret
-- 包含：`cli/index.js`、`rag/*.py`、`rag/README.md`
+- 包含：`cli/index.js`、`rag/*.py`、`rag/README.md`、`.opencode/skills/<name>/SKILL.md`（新增 skill 記得加進 `files`，npm 不收沒列的 dot 路徑）
 - 版本略過發失敗時看 workflow log：E_STAGE_REQUIRED/EOTP/403 各對應 token 型態問題（已由 OIDC 根除）
 
 ## RAG 腳本同步

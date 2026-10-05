@@ -24,6 +24,7 @@ Future<void> runCli(List<String> args) async {
 Usage:
   dart cli_main.dart pipeline                   Run full pipeline
   dart cli_main.dart pipeline --step N          Run single step
+  dart cli_main.dart podcast                    Run podcast pipeline
   dart cli_main.dart status                     Show status
   dart cli_main.dart play <歌曲名>               播放（本機庫優先，找不到走串流）
   dart cli_main.dart organize                    歌單外歌曲移入「未分類」資料夾（歌單原位）
