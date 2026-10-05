@@ -12,6 +12,7 @@ import '../services/stream_server.dart';
 import '../services/smtc_service.dart';
 import '../services/playback_history.dart';
 import '../services/metadata_reader.dart';
+import '../services/youtube_service.dart';
 import '../services/jam_service.dart';
 import '../services/log_manager.dart';
 import '../services/podcast_service.dart';
@@ -309,6 +310,7 @@ class PlayerController {
   /// True streaming: 開 local HTTP 端點讓 mpv 邊下邊播，不再等整首下載完
   /// （舊 resolveToFile = download-then-play，一首歌要卡 10~30 秒才出聲）。
   /// 下一首仍由 _prefetchNext 後台完整下載入快取，換歌不卡。
+  /// 手機版改走 _playStreamDirect（無 yt-dlp，直連 youtube_explode 直鏈）。
   Future<void> playStream(String query,
       {String? title, String? artist, String? isrc, String? coverUrl, String? album}) async {
     _currentIsPodcast = false;
@@ -324,6 +326,12 @@ class PlayerController {
     _statusText = '';
     _isPlaying = true;
     _notify();
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      // 手機沒有 yt-dlp 執行檔，StreamServer 管線播不了：
+      // 改走 youtube_explode 直鏈（Spotube 同款，純 Dart）。
+      await _playStreamDirect(query);
+      return;
+    }
     try {
       await StreamServer.instance.start();
       // 來源細節要在 start() 之後記：之前取會拿到 port 0（server 未 bind）。
@@ -336,6 +344,28 @@ class PlayerController {
       await _player.open(Media(url));
       _pushSmtc();
       _prefetchNext();
+    } catch (e) {
+      _statusText = '串流錯誤: $e';
+      _isPlaying = false;
+      _notify();
+      _pushSmtc();
+    }
+  }
+
+  /// 手機直連播放：youtube_explode 拿直鏈 → mpv 直接播，不經本地轉碼管線。
+  Future<void> _playStreamDirect(String query) async {
+    try {
+      final cleanQuery = query.trim().replaceAll(RegExp(r'\s*-\s*$'), '').trim();
+      final r = await YoutubeService.instance
+          .resolveStreamDirect(cleanQuery.isEmpty ? query : cleanQuery);
+      if (r == null || r.audioUrl.isEmpty) {
+        throw Exception('找不到可播放的串流（可能被 YouTube 擋下）');
+      }
+      _sourceKind = '線上串流（YouTube 直連）';
+      _sourceDetail = Uri.tryParse(r.audioUrl)?.host ?? '';
+      if ((_coverPath ?? '').isEmpty) _coverPath = r.thumbnailUrl;
+      await _player.open(Media(r.audioUrl));
+      _pushSmtc();
     } catch (e) {
       _statusText = '串流錯誤: $e';
       _isPlaying = false;

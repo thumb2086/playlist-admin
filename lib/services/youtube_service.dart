@@ -97,6 +97,34 @@ class YoutubeService {
     }
   }
 
+  /// 手機直連解析（純 Dart，不需 yt-dlp/cookies）：搜尋 → 取最佳音訊直鏈。
+  /// Spotube 手機能播就是這條路：youtube_explode 拿 manifest 直鏈給 mpv。
+  /// 限制：無 cookies，遇到年齡限制/嚴格 bot 檢查的影片會失敗（回 null）。
+  Future<YoutubeStreamResult?> resolveStreamDirect(String query) async {
+    if (_closed) return null;
+    try {
+      final hits = await search(query, limit: 3);
+      for (final h in hits) {
+        final url = await getAudioUrl(h.videoId);
+        if (url != null && url.startsWith('http')) {
+          _log.i('direct resolve "$query" → ${h.videoId}');
+          return YoutubeStreamResult(
+            videoId: h.videoId,
+            title: h.title,
+            author: h.author,
+            duration: h.duration,
+            thumbnailUrl:
+                'https://i.ytimg.com/vi/${h.videoId}/hqdefault.jpg',
+            audioUrl: url,
+          );
+        }
+      }
+    } catch (e) {
+      _log.e('direct resolve 失敗: $e');
+    }
+    return null;
+  }
+
   /// 根據查詢一次搞定：搜尋 → 取最佳音訊 URL。
   /// 舊實作用 youtube_explode 搜尋/manifest（不支援 cookies）→ 被 YouTube
   /// bot 擋死（mpv 404 "Failed to open"）。改走 yt-dlp + yt_cookies：
