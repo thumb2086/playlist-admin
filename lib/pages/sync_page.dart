@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import '../services/sync_client.dart';
 import '../services/sync_server.dart';
 import '../services/config_service.dart';
@@ -80,8 +81,46 @@ class _SyncPageState extends State<SyncPage> {
     _say('已連線 ${h.ip}:${h.port}（電腦共 ${h.tracks} 首），按「比對差異」。');
   }
 
-  Future<void> _connectManual() async {
-    final ip = _ipCtrl.text.trim();
+  /// 掃電腦設定頁的 QR（內容就是 http://ip:port）：掃到→ping→連線。
+  /// 相機被拒/掃到別的東西都有文字回報，不靜默失敗。
+  Future<void> _scanQr() async {
+    if (_busy) return;
+    String? code;
+    try {
+      code = await Navigator.of(context).push<String>(
+        MaterialPageRoute(builder: (_) => const _ScanPage()),
+      );
+    } catch (e) {
+      _say('開相機失敗：$e（檢查相機權限）');
+      return;
+    }
+    if (!mounted || code == null || code.isEmpty) return;
+    final m =
+        RegExp(r'http://([\d.]+):(\d+)').firstMatch(code.trim());
+    if (m == null) {
+      _say('這個 QR 不是電腦同步網址（要掃設定頁「手機同步」的 QR）');
+      return;
+    }
+    final port = int.tryParse(m.group(2)!) ?? 0;
+    if (port <= 0) return;
+    _ipCtrl.text = m.group(1)!;
+    _portCtrl.text = '$port';
+    setState(() => _busy = true);
+    _say('QR 掃到 ${m.group(1)}:$port，連線中…');
+    try {
+      final h = await SyncClient.ping(m.group(1)!, port);
+      if (!mounted) return;
+      if (h == null) {
+        _say('連不上（電腦開關沒開？不同 Wi-Fi？熱點 IP 變了？重看電腦 QR）');
+      } else {
+        await _connect(h);
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _connectManual() async {    final ip = _ipCtrl.text.trim();
     final port = int.tryParse(_portCtrl.text.trim()) ?? 0;
     if (ip.isEmpty || port <= 0) {
       _say('IP 或 port 不對。port 預設 ${SyncServer.httpPortBase}。');
@@ -320,6 +359,15 @@ class _SyncPageState extends State<SyncPage> {
                 onPressed: _busy ? null : _connectManual,
                 child: const Text('連線'),
               ),
+              const SizedBox(width: 8),
+              // 掃電腦設定頁的 QR（http://ip:port）：免手輸。
+              IconButton(
+                onPressed: _busy ? null : _scanQr,
+                icon: const Icon(Icons.qr_code_scanner_rounded),
+                tooltip: '掃電腦 QR 連線',
+                style: IconButton.styleFrom(
+                    backgroundColor: AppColors.surfaceLight),
+              ),
             ]),
             const SizedBox(height: 12),
             if (_status.isNotEmpty)
@@ -393,6 +441,46 @@ class _SyncPageState extends State<SyncPage> {
             ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// QR 掃描頁（同步電腦用）：對準電腦設定頁的 QR 即自動回傳網址。
+class _ScanPage extends StatefulWidget {
+  const _ScanPage();
+  @override
+  State<_ScanPage> createState() => _ScanPageState();
+}
+
+class _ScanPageState extends State<_ScanPage> {
+  final _ctl = MobileScannerController(detectionSpeed: DetectionSpeed.noDuplicates);
+  bool _done = false;
+
+  @override
+  void dispose() {
+    _ctl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        title: const Text('掃電腦 QR', style: TextStyle(fontSize: 15)),
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+      ),
+      body: MobileScanner(
+        controller: _ctl,
+        onDetect: (cap) {
+          if (_done || cap.barcodes.isEmpty) return;
+          final v = cap.barcodes.first.rawValue;
+          if (v == null || v.isEmpty) return;
+          _done = true;
+          Navigator.of(context).pop(v);
+        },
       ),
     );
   }

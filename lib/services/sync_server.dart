@@ -65,24 +65,52 @@ class SyncServer {
 
   /// 本機區網 IPv4（沒有就回 127.0.0.1，僅本機可測）。
   static Future<String> lanIp() async {
+    final ips = await lanIps();
+    return ips.isNotEmpty ? ips.first : '127.0.0.1';
+  }
+
+  /// 全部候選區網 IPv4（虛擬網卡已濾掉，否則 QR 常指到 VirtualBox/VMware
+  /// 的 192.168.x 導致手機連不上；Windows 行動熱點 192.168.137.x 排最前，
+  /// 那是手機熱點情境下唯一可達的地址）。
+  static Future<List<String>> lanIps() async {
+    final out = <String>[];
     try {
       final ifs = await NetworkInterface.list(
           includeLoopback: false, type: InternetAddressType.IPv4);
       for (final i in ifs) {
+        final n = i.name.toLowerCase();
+        // 虛擬/隧道介面：VirtualBox、VMware、Hyper-V/vEthernet、WSL、
+        // VPN/Teredo/6to4/ISATAP——都不可能是手機要連的那張網卡。
+        if (n.contains('virtual') ||
+            n.contains('vmware') ||
+            n.contains('virtualbox') ||
+            n.contains('hyper-v') ||
+            n.contains('vethernet') ||
+            n.contains('wsl') ||
+            n.contains('teredo') ||
+            n.contains('6to4') ||
+            n.contains('isatap') ||
+            n.contains('loopback') ||
+            n.contains('pseudo')) {
+          continue;
+        }
         for (final a in i.addresses) {
           final ip = a.address;
           if (ip.startsWith('192.168.') ||
               ip.startsWith('10.') ||
               RegExp(r'^172\.(1[6-9]|2\d|3[01])\.').hasMatch(ip)) {
-            return ip;
+            if (!out.contains(ip)) out.add(ip);
           }
         }
       }
-      for (final i in ifs) {
-        if (i.addresses.isNotEmpty) return i.addresses.first.address;
-      }
+      // 行動熱點網段優先（手機連熱點時只有它可達）。
+      out.sort((a, b) {
+        final ah = a.startsWith('192.168.137.') ? 0 : 1;
+        final bh = b.startsWith('192.168.137.') ? 0 : 1;
+        return ah.compareTo(bh);
+      });
     } catch (_) {}
-    return '127.0.0.1';
+    return out;
   }
 
   Future<void> start() async {

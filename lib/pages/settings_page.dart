@@ -459,6 +459,9 @@ class _SyncServerRowState extends State<_SyncServerRow> {
   bool _toggling = false;
   String _url = '';
   bool _failed = false;
+  // 多網卡時讓使用者切（宿舍乙太/熱點/虛擬網卡殘留，QR 指錯就掃了白掃）。
+  List<String> _ips = [];
+  String _ip = '';
 
   bool get _on =>
       SyncServer.instance.isRunning ||
@@ -469,11 +472,23 @@ class _SyncServerRowState extends State<_SyncServerRow> {
       if (mounted) setState(() => _url = '');
       return;
     }
-    final ip = await SyncServer.lanIp();
-    if (mounted) {
-      setState(
-          () => _url = 'http://$ip:${SyncServer.instance.port}');
-    }
+    final ips = await SyncServer.lanIps();
+    if (!mounted) return;
+    final ip = _ip.isNotEmpty && ips.contains(_ip)
+        ? _ip
+        : (ips.isNotEmpty ? ips.first : await SyncServer.lanIp());
+    setState(() {
+      _ips = ips;
+      _ip = ip;
+      _url = 'http://$ip:${SyncServer.instance.port}';
+    });
+  }
+
+  void _pickIp(String ip) {
+    setState(() {
+      _ip = ip;
+      _url = 'http://$ip:${SyncServer.instance.port}';
+    });
   }
 
   Future<void> _toggle(bool v) async {
@@ -544,6 +559,23 @@ class _SyncServerRowState extends State<_SyncServerRow> {
           ),
         if (_url.isNotEmpty) ...[
           const SizedBox(height: 8),
+          // 多 IP 切換（熱點 192.168.137.x vs 家裡 Wi-Fi，掃錯 QR 等於白掃）。
+          if (_ips.length > 1)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Wrap(
+                spacing: 6,
+                children: [
+                  for (final ip in _ips)
+                    ChoiceChip(
+                      label: Text(ip,
+                          style: const TextStyle(fontSize: 11)),
+                      selected: ip == _ip,
+                      onSelected: (_) => _pickIp(ip),
+                    ),
+                ],
+              ),
+            ),
           Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
             QrImageView(
               data: _url,
