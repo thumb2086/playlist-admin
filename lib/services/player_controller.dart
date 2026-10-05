@@ -1172,6 +1172,9 @@ class PlayerController {
   }
 
   /// 播放一個遠端 URL（jam 成員收到房主提供的串流 URL 時用）。
+  /// 房主給的是 PC 解析的 googlevideo 直鏈：手機網路下常 403（宿舍網），
+  /// 且失敗原本無聲無息（error listener 在 jamFollowMode 直接 return）。
+  /// 手機改走自己的解析（直連→轉播→房主 URL 兜底），並把失敗寫進狀態列。
   Future<void> playJamUrl(String url,
       {String? title, String? artist, String? coverUrl}) async {
     StreamServer.instance.stopActive();
@@ -1184,8 +1187,44 @@ class PlayerController {
     _statusText = '';
     _isPlaying = true;
     _notify();
-    await _player.open(Media(url));
-    _pushSmtc();
+    // 手機：房主 URL 最後才試（通常已過期/被擋），先用自己的路。
+    if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+      final q = '$_artist $_title'.trim();
+      if (q.isNotEmpty) {
+        try {
+          final r = await YoutubeService.instance.resolveStreamDirect(q);
+          if (r != null && r.audioUrl.isNotEmpty) {
+            _sourceKind = '一起聽（YouTube 直連）';
+            _sourceDetail = Uri.tryParse(r.audioUrl)?.host ?? '';
+            await _player.open(Media(r.audioUrl));
+            _pushSmtc();
+            return;
+          }
+        } catch (_) {}
+        try {
+          final host = ConfigService.instance.config.lastSyncHost.trim();
+          if (host.isNotEmpty && await _pingRelay(host)) {
+            _sourceKind = '一起聽（經電腦轉播）';
+            _sourceDetail = host;
+            await _player.open(Media(
+                'http://$host/relay-stream?q=${Uri.encodeComponent(q)}'));
+            _pushSmtc();
+            return;
+          }
+        } catch (_) {}
+      }
+    }
+    try {
+      _sourceKind = '一起聽（房主串流）';
+      _sourceDetail = Uri.tryParse(url)?.host ?? '';
+      await _player.open(Media(url));
+      _pushSmtc();
+    } catch (e) {
+      _statusText = '跟播失敗: $e（房主換首歌會重試）';
+      _isPlaying = false;
+      _notify();
+      _pushSmtc();
+    }
   }
 
   /// 本機 seek（jam 成員做 drift 校正用，不會送指令給房主）。

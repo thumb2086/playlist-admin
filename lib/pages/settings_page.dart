@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:share_plus/share_plus.dart';
 import '../app.dart';
 import '../models/config_model.dart';
 import '../services/config_service.dart';
@@ -143,6 +144,10 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
           const SizedBox(height: 4),
           const _UpdateCheckRow(),
+          const SizedBox(height: 4),
+          // 診斷匯出：當機/無聲抓不到現場時，把最新日誌分享出來（手機私有目錄
+          // 檔案總管拿不到，只能走系統分享）。
+          const _ExportLogRow(),
           const SizedBox(height: 4),
           Row(children: [
             const Expanded(
@@ -358,6 +363,64 @@ class _Toggle extends StatelessWidget {
       title: Text(label, style: const TextStyle(fontSize: 13)),
       value: value, onChanged: onChanged, dense: true, contentPadding: EdgeInsets.zero,
       activeTrackColor: AppColors.accent,
+    );
+  }
+}
+
+/// 手動檢查更新（自動檢查之外的按鈕）：
+/// 有新版 → UpdateDialog（用戶主動按的，不理会 skippedVersion）；
+/// 已最新 / 連線失敗 → snackbar 回報。
+class _ExportLogRow extends StatefulWidget {
+  const _ExportLogRow();
+  @override
+  State<_ExportLogRow> createState() => _ExportLogRowState();
+}
+
+class _ExportLogRowState extends State<_ExportLogRow> {
+  bool _busy = false;
+
+  Future<void> _export() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final p = LogManager.instance.latestLogPath;
+      if (!mounted) return;
+      if (p == null) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('沒有日誌檔（這次啟動還沒寫過日誌）'),
+            duration: Duration(seconds: 2)));
+        return;
+      }
+      await SharePlus.instance.share(
+          ShareParams(files: [XFile(p)], text: 'playlist-admin 診斷日誌'));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('匯出失敗：$e')));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(children: [
+        const Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('匯出診斷日誌', style: TextStyle(fontSize: 13)),
+            Text('當機/無聲時把日誌分享出來抓現場',
+                style: TextStyle(fontSize: 11, color: AppColors.textMuted)),
+          ]),
+        ),
+        OutlinedButton.icon(
+          onPressed: _busy ? null : _export,
+          icon: const Icon(Icons.ios_share_rounded, size: 16),
+          label: Text(_busy ? '準備中…' : '匯出'),
+        ),
+      ]),
     );
   }
 }

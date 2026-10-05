@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import '../version.dart';
+import 'config_service.dart';
 import 'fs_paths.dart';
 
 class LogManager {
@@ -46,6 +47,27 @@ class LogManager {
 
   void info(String msg) => _write('INFO', msg);
   void error(String msg) => _write('ERROR', msg);
+
+  /// 最新日誌檔路徑（診斷匯出用；手機私有目錄用檔案總管拿不到，只能用分享）。
+  String? get latestLogPath {
+    try {
+      final p = _logPath;
+      if (p != null && File(p).existsSync()) return p;
+      final dir = Directory(joinPath(
+          ConfigService.instance.config.basePath, 'logs'));
+      if (!dir.existsSync()) return null;
+      final files = dir
+          .listSync()
+          .whereType<File>()
+          .where((f) => f.path.endsWith('.log'))
+          .toList();
+      if (files.isEmpty) return null;
+      files.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+      return files.first.path;
+    } catch (_) {
+      return null;
+    }
+  }
 
   /// 除錯日誌：只在設定頁「debug 模式」開啟時寫檔（預設關，免得洗 log）。
   bool debugEnabled = false;

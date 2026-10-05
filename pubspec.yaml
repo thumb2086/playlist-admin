@@ -33,6 +33,7 @@ dependencies:
   crypto: any
   open_filex: ^4.7.0
   mobile_scanner: ^7.4.2
+  share_plus: ^12.0.2
 dev_dependencies:
   flutter_test:
     sdk: flutter
