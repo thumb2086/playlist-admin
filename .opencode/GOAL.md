@@ -41,6 +41,10 @@ flutter test test/sync_lan_test.dart test/stream_direct_test.dart
   - [x] 代碼完成：SyncServer `/relay-stream?q=` 複用 StreamServer.serveRelay 管線；
     config.lastSyncHost（SyncPage 連線時記住）；_playStreamDirect 二段式（直連→轉播）
 - [ ] P0-9 實機驗證：手機 Wi-Fi/4G 下三路播放 + 回報
+- [x] P0-10 手機獨立下載（Spotube 式）：YoutubeService.downloadDirect
+  （直鏈 HTTP 存檔 m4a/webm，無 yt-dlp/ffmpeg）+ 詳情頁手機分支 +
+  本地判重認 m4a/webm（三處）；宿舍網 E2E 驗到 manifest 通、
+  媒體 403（環境擋，清網下應過）
 
 ## P1（下一個 goal 候選）
 - Spotify mutation（like/加入清單，需抓 persisted hash）
@@ -53,4 +57,6 @@ flutter test test/sync_lan_test.dart test/stream_direct_test.dart
 - [2026-10-05] 開新 goal（舊 achieved 歸檔為 GOAL_achieved_2026-09-24.md）；
   P0-1～P0-8 已實作：直連串流/桌面fallback/隊尾autoplay/死開關接線/ISRC/
   小修包/播放旗標/經電腦轉播；`dart analyze lib` 0 issues；
-  sync_lan（+轉播路由測試）與 stream_direct 全過；待 v2.15.41 發版 + 實機驗證。
+  sync_lan（+轉播路由測試）與 stream_direct 全過；
+- [2026-10-05] v2.15.41 發版：本地 build ✓、CLI smoke（status/podcast exit 0）✓、
+  analyze 0 issues ✓，main + tag 已推，CI 跑 Release + npm 中。

@@ -776,7 +776,12 @@ class PlayerController {
       final musicDir = Directory(ConfigService.instance.config.musicPath);
       if (await musicDir.exists()) {
         await for (final f in musicDir.list(recursive: true, followLinks: false)) {
-          if (f is File && f.path.endsWith('.mp3')) {
+          // 同詳情頁：認 mp3/m4a/webm（手機下載不經 ffmpeg，無 mp3）。
+          final low = f.path.toLowerCase();
+          if (f is File &&
+              (low.endsWith('.mp3') ||
+                  low.endsWith('.m4a') ||
+                  low.endsWith('.webm'))) {
             idx[File(f.path).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '').toLowerCase()] = f.path;
           }
         }

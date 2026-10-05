@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../models/playlist_item.dart';
@@ -363,7 +364,13 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
     final localFiles = <String>{};
     if (await musicDir.exists()) {
       await for (final f in musicDir.list(recursive: true, followLinks: false)) {
-        if (f is File && f.path.endsWith('.mp3')) {
+        // 手機下載是 m4a/webm（無 ffmpeg 轉 mp3）：副檔名都要認，
+        // 否則手機下的歌會被誤判「沒下載」一直重下。
+        final low = f.path.toLowerCase();
+        if (f is File &&
+            (low.endsWith('.mp3') ||
+                low.endsWith('.m4a') ||
+                low.endsWith('.webm'))) {
           localFiles.add(f.uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '').toLowerCase());
         }
       }
@@ -481,13 +488,37 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       final musicDir = Directory(cfg.musicPath);
       await musicDir.create(recursive: true);
       final finalName = '${item.name} - ${item.artist}'.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+      // 同 stem 任一副檔名（mp3/m4a/webm）都算已下載：手機下的 m4a
+      // 同步回電腦後，桌面不該再重下一份 mp3。
+      final stemLower = finalName.toLowerCase();
+      var haveLocal = File('${musicDir.path}\\$finalName.mp3').existsSync();
+      if (!haveLocal) {
+        try {
+          await for (final f in musicDir.list(followLinks: false)) {
+            if (f is! File) continue;
+            final n = f.uri.pathSegments.last.toLowerCase();
+            if ((n.endsWith('.m4a') || n.endsWith('.webm')) &&
+                n.replaceAll(RegExp(r'\.\w+$'), '') == stemLower) {
+              haveLocal = true;
+              break;
+            }
+          }
+        } catch (_) {}
+      }
       final finalPath = '${musicDir.path}\\$finalName.mp3';
-      if (File(finalPath).existsSync()) {
+      if (haveLocal) {
         if (mounted) { _localTracks.add(index); setState(() { _downloaded.add(index); _progress[index] = 1.0; }); }
         return;
       }
       // Prefer artist+title for better YouTube matching, not ISRC.
       final searchQuery = '${item.artist} ${item.name}'.trim();
+      // 手機獨立下載（Spotube 式）：無 yt-dlp/ffmpeg，直鏈存檔（m4a/webm）。
+      // 桌面走下面 ffmpeg 轉 mp3＋內嵌封面那條（副檔名不同，兩邊不互蓋）。
+      if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
+        debugPrint('[DL] $index mobile direct: query="$searchQuery"');
+        await _downloadTrackMobile(index, item, musicDir, finalName);
+        return;
+      }
       debugPrint('[DL] $index start: query="$searchQuery" isrc=${item.isrc}');
       final streamResult = await YoutubeService.instance.resolveStream(searchQuery)
           .timeout(const Duration(seconds: 30), onTimeout: () {
@@ -544,6 +575,49 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       debugPrint('[DL] error: $e');
     } finally {
       if (mounted) setState(() { _downloading.remove(index); });
+    }
+  }
+
+  /// 手機獨立下載：resolveStreamDirect（純 Dart）→ downloadDirect 存檔。
+  /// 不經 ffmpeg（手機沒有），副檔名跟直鏈容器（m4a/webm）；
+  /// 封面不內嵌（ArtworkEmbedder 只吃 mp3），播放時走 CoverCache/網路圖。
+  Future<void> _downloadTrackMobile(
+      int index, PlaylistItem item, Directory musicDir, String finalName) async {
+    final searchQuery = '${item.artist} ${item.name}'.trim();
+    try {
+      final r = await YoutubeService.instance
+          .resolveStreamDirect(searchQuery)
+          .timeout(const Duration(seconds: 60), onTimeout: () => null);
+      if (r == null) {
+        debugPrint('[DL] $index mobile NOT FOUND: ${item.name}');
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('找不到: ${item.name}'), duration: const Duration(seconds: 2)));
+        }
+        return;
+      }
+      if (mounted) setState(() => _progress[index] = 0.3);
+      final saved = await YoutubeService.instance.downloadDirect(
+        videoId: r.videoId,
+        dir: musicDir.path,
+        stem: finalName,
+        onProgress: (p) {
+          if (mounted) setState(() => _progress[index] = 0.3 + p * 0.7);
+        },
+      );
+      if (saved.isNotEmpty) {
+        debugPrint('[DL] $index mobile OK: $saved');
+        if (mounted) {
+          _localTracks.add(index);
+          setState(() => _downloaded.add(index));
+          _progress[index] = 1.0;
+        }
+      } else if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('下載失敗: ${item.name}'), duration: const Duration(seconds: 3)));
+      }
+    } catch (e) {
+      debugPrint('[DL] $index mobile error: $e');
     }
   }
 

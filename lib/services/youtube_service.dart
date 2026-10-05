@@ -80,20 +80,94 @@ class YoutubeService {
   /// 根據 videoId 取得最佳音訊串流 URL。
   /// 回傳可直接播放的 HTTP URL。
   Future<String?> getAudioUrl(String videoId) async {
+    final d = await getAudioDirect(videoId);
+    return d?.url;
+  }
+
+  /// 根據 videoId 取直鏈＋容器副檔名（Spotube 式：manifest → audioOnly）。
+  /// 副檔名只會是 m4a（mp4 容器，相容性最高）或 webm（opus），
+  /// 存檔直接用，不經 ffmpeg 轉碼——手機下載就靠這個。
+  Future<AudioDirect?> getAudioDirect(String videoId) async {
     if (_closed) return null;
     final yt = _fresh();
     try {
       final manifest = await yt.videos.streams.getManifest(VideoId(videoId));
       final audioOnly = manifest.audioOnly.sortByBitrate();
       if (audioOnly.isEmpty) return null;
-      final best = audioOnly.last;
-      _log.i('YouTube 音訊: ${best.bitrate} (${best.container})');
-      return best.url.toString();
+      // 相容優先：m4a（mp4 容器）裡挑最高碼率；沒有才拿 webm/opus。
+      dynamic pick;
+      final mp4s = audioOnly.where(
+          (s) => s.container.name.toLowerCase().contains('mp4'));
+      pick = mp4s.isNotEmpty ? mp4s.last : audioOnly.last;
+      final ext = pick.container.name.toLowerCase().contains('webm')
+          ? 'webm'
+          : 'm4a';
+      _log.i('YouTube 音訊: ${pick.bitrate} (${pick.container}) → .$ext');
+      return AudioDirect(url: pick.url.toString(), ext: ext);
     } catch (e) {
       _log.e('YouTube 取串流失敗: $e');
       return null;
     } finally {
       yt.close();
+    }
+  }
+
+  /// Spotube 式下載：直鏈 HTTP 存檔（純 Dart，無 yt-dlp/ffmpeg）。
+  /// 回傳存檔路徑，失敗回 ''。先寫 .part，完整才改名（截斷檔不可留）。
+  Future<String> downloadDirect({
+    required String videoId,
+    required String dir,
+    required String stem,
+    void Function(double progress)? onProgress,
+  }) async {
+    final d = await getAudioDirect(videoId);
+    if (d == null || d.url.isEmpty) return '';
+    final safeStem =
+        stem.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
+    if (safeStem.isEmpty) return '';
+    final finalPath =
+        '$dir${Platform.pathSeparator}$safeStem.${d.ext}';
+    if (File(finalPath).existsSync() &&
+        File(finalPath).lengthSync() > 65536) {
+      return finalPath;
+    }
+    final partPath = '$finalPath.part';
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
+    try {
+      final req = await client.getUrl(Uri.parse(d.url));
+      final resp = await req.close();
+      if (resp.statusCode != 200) return '';
+      final total = resp.contentLength;
+      final sink = File(partPath).openWrite();
+      var got = 0;
+      try {
+        await for (final chunk
+            in resp.timeout(const Duration(seconds: 60))) {
+          sink.add(chunk);
+          got += chunk.length;
+          if (total > 0) onProgress?.call(got / total);
+        }
+        await sink.flush();
+        await sink.close();
+      } catch (_) {
+        try { await sink.close(); } catch (_) {}
+        try { await File(partPath).delete(); } catch (_) {}
+        return '';
+      }
+      if (total > 0 && got < total) {
+        try { await File(partPath).delete(); } catch (_) {}
+        return '';
+      }
+      if (File(finalPath).existsSync()) {
+        await File(finalPath).delete();
+      }
+      await File(partPath).rename(finalPath);
+      return finalPath;
+    } catch (_) {
+      try { await File(partPath).delete(); } catch (_) {}
+      return '';
+    } finally {
+      client.close();
     }
   }
 
@@ -677,6 +751,13 @@ class YoutubeSearchResult {
     required this.duration,
     required this.thumbnailUrl,
   });
+}
+
+/// 直鏈＋容器副檔名（m4a 或 webm）：播放直接開 URL，下載存 `stem.ext`。
+class AudioDirect {
+  final String url;
+  final String ext;
+  const AudioDirect({required this.url, required this.ext});
 }
 
 /// 解析後的串流結果（含可播放 URL）。
