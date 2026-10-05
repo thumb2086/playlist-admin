@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'config_service.dart';
 import 'playlist_parser.dart';
+import 'fs_paths.dart';
 
 /// 歌單整理：歌單內的歌曲留在原位（既有 m3u8 路徑全部不變），
 /// 不在任何歌單的歌曲移入 `music\未分類\` 子資料夾，
@@ -39,7 +40,8 @@ class LibraryOrganizer {
     if (!await musicDir.exists()) return (moved: 0, kept: keep.length, conflict: 0);
 
     // 2) 只掃 top-level（子資料夾不動）：歌單內留原位，其餘移入 未分類。
-    final unsortedDir = Directory('${cfg.musicPath}\\$unsortedDirName');
+    final unsortedDir =
+        Directory(joinPath(cfg.musicPath, unsortedDirName));
     int moved = 0, kept = 0, conflict = 0;
     await for (final f in musicDir.list(followLinks: false)) {
       if (f is! File) continue;
@@ -53,7 +55,7 @@ class LibraryOrganizer {
         continue;
       }
       await unsortedDir.create(recursive: true);
-      final target = '${unsortedDir.path}\\$name';
+      final target = joinPath(unsortedDir.path, name);
       if (File(target).existsSync()) {
         conflict++; // 同名已在目標：跳過（不覆蓋）
         continue;
@@ -83,7 +85,8 @@ class LibraryOrganizer {
         sb.writeln('#EXTINF:-1,$stem');
         sb.writeln('../music/$unsortedDirName/$name');
       }
-      final unsortedFile = File('${cfg.playlistsPath}\\_Unsorted.m3u8');
+      final unsortedFile =
+          File(joinPath(cfg.playlistsPath, '_Unsorted.m3u8'));
       await unsortedFile.writeAsString(sb.toString(), flush: true);
       log?.call('  📋 _Unsorted.m3u8 已重寫（${files.length} 首 → music\\$unsortedDirName\\）');
     } catch (e) {

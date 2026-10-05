@@ -3,6 +3,7 @@ import 'dart:io';
 import 'config_service.dart';
 import 'playlist_parser.dart';
 import 'app_data_dir.dart';
+import 'fs_paths.dart';
 
 class Snapshot {
   final DateTime time;
@@ -39,7 +40,7 @@ class Snapshot {
 }
 
 class HistoryRecorder {
-  static String get _path => '${AppDataDir.dir}\\history.json';
+  static String get _path => joinPath(AppDataDir.dir, 'history.json');
 
   static List<Snapshot> load() {
     try {
@@ -83,7 +84,7 @@ class HistoryRecorder {
     await scanDir(libDir);
     final baseDir = Directory(cfg.basePath);
     if (baseDir.path.toLowerCase() != libDir.path.toLowerCase() && await baseDir.exists()) {
-      await scanDir(Directory('${cfg.basePath}\\native'));
+      await scanDir(Directory(joinPath(cfg.basePath, 'native')));
     }
 
     // Playlist stats (use pre-built stem set for O(1) lookup)

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import '../version.dart';
+import 'fs_paths.dart';
 
 class LogManager {
   static final LogManager _instance = LogManager._();
@@ -17,12 +18,12 @@ class LogManager {
   void enable(String basePath, {int maxFiles = 10}) {
     _maxFiles = maxFiles;
     _enabled = true;
-    final logDir = Directory('$basePath\\logs');
+    final logDir = Directory(joinPath(basePath, 'logs'));
     logDir.createSync(recursive: true);
     final now = DateTime.now();
     final name = 'session_${now.year}${_p2(now.month)}${_p2(now.day)}_'
         '${_p2(now.hour)}${_p2(now.minute)}${_p2(now.second)}.log';
-    _logPath = '${logDir.path}\\$name';
+    _logPath = joinPath(logDir.path, name);
     _cleanup(logDir.path);
     info('--- 系統啟動 v$appVersion ---');
   }

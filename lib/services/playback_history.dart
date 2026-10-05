@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'config_service.dart';
+import 'fs_paths.dart';
 
 /// Playback history: records a track when the user has listened to at least
 /// 50% of it (or 4 minutes, whichever is less) — the same rule Spotube uses
@@ -16,8 +17,8 @@ class PlaybackHistory {
   // 寫檔 debounce：每首歌都全量重寫 5000 筆 JSON 會卡主 thread，2s 合併一次。
   Timer? _saveTimer;
 
-  static String get _path =>
-      '${ConfigService.instance.config.cachePath}\\playback_history.json';
+  static String get _path => joinPath(
+      ConfigService.instance.config.cachePath, 'playback_history.json');
 
   List<PlaybackEntry> get entries {
     if (!_loaded) load();

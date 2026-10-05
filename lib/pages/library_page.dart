@@ -6,6 +6,7 @@ import '../services/config_service.dart';
 import '../services/i18n.dart';
 import '../services/playlist_parser.dart';
 import '../services/usb_exporter.dart';
+import '../services/fs_paths.dart';
 import '../models/playlist.dart';
 import 'playlist_detail_page.dart';
 import 'sync_page.dart';
@@ -81,7 +82,7 @@ class LibraryPageState extends State<LibraryPage> {
     final baseDir = Directory(cfg.basePath);
     if (baseDir.path.toLowerCase() != libDir.path.toLowerCase() && await baseDir.exists()) {
       for (final sub in ['mp3', 'm4a', 'flac']) {
-        final subDir = Directory('${cfg.basePath}\\$sub');
+        final subDir = Directory(joinPath(cfg.basePath, sub));
         if (await subDir.exists()) {
           await for (final f in subDir.list(recursive: true, followLinks: false)) {
             if (f is File) {

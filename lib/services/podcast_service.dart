@@ -7,6 +7,7 @@ import '../models/podcast_episode.dart';
 import '../models/podcast_search_result.dart';
 import 'config_service.dart';
 import 'youtube_service.dart';
+import 'fs_paths.dart';
 
 enum PodcastSubtitleResult { found, notFound, failed }
 
@@ -28,7 +29,7 @@ class PodcastService {
     final sub = podcastName != null && podcastName.isNotEmpty
         ? podcastName.replaceAll(RegExp(r'[<>:"/\\|?*]'), '_')
         : '';
-    final path = sub.isNotEmpty ? '$base\\$sub' : base;
+    final path = sub.isNotEmpty ? joinPath(base, sub) : base;
     Directory(path).createSync(recursive: true);
     return path;
   }
@@ -117,7 +118,7 @@ class PodcastService {
     final ext = _guessExtension(audioUrl);
     final name = normalizeFileName(title);
     final podDir = podcastName != null ? _podcastDir(podcastName) : _downloadPath;
-    if (File('$podDir\\$name.$ext').existsSync()) return true;
+    if (File(joinPath(podDir, '$name.$ext')).existsSync()) return true;
     final titleEp = RegExp(r'EP(\d+)', caseSensitive: false).firstMatch(title);
     if (titleEp == null) return false;
     final epNumInt = int.tryParse(titleEp.group(1)!);
@@ -140,7 +141,7 @@ class PodcastService {
   String episodeOutputPath(String title, String audioUrl) {
     final safeName = title.replaceAll(RegExp(r'[<>:"/\\|?*]'), '_');
     final ext = _guessExtension(audioUrl);
-    return '$_downloadPath\\$safeName.$ext';
+    return joinPath(_downloadPath, '$safeName.$ext');
   }
 
   /// Download episode audio natively (HTTP streaming, no Python).
@@ -180,7 +181,7 @@ class PodcastService {
     final name = normalizeFileName(title);
     final ext = _guessExtension(audioUrl);
     final outDir = _podcastDir(podcastName);
-    final outputPath = '$outDir\\$name.$ext';
+    final outputPath = joinPath(outDir, '$name.$ext');
     if (await File(outputPath).exists()) {
       onProgress(1.0);
       return false;
@@ -245,7 +246,7 @@ class PodcastService {
   }) async {
     final outDir = _podcastDir(podcastName);
     final safeName = normalizeFileName(episodeTitle);
-    final outputPath = '$outDir\\$safeName.mp3';
+    final outputPath = joinPath(outDir, '$safeName.mp3');
 
     if (await File(outputPath.replaceAll('.mp3', '.srt')).exists()) {
       onLog('已有字幕，跳過');

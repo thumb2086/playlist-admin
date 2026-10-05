@@ -8,6 +8,7 @@ import '../services/i18n.dart';
 import '../services/history_recorder.dart';
 import '../services/playback_history.dart';
 import '../services/playlist_parser.dart';
+import '../services/fs_paths.dart';
 import '../widgets/dark_theme.dart';
 
 class StatsPage extends StatefulWidget {
@@ -126,7 +127,8 @@ class _StatsPageState extends State<StatsPage> {
 
   Future<void> _loadDownloadRuns() async {
     try {
-      final f = File('${ConfigService.instance.config.cachePath}\\downloads_log.json');
+      final f = File(joinPath(
+          ConfigService.instance.config.cachePath, 'downloads_log.json'));
       if (!await f.exists()) {
         if (mounted) setState(() => _dlRuns = []);
         return;
@@ -143,7 +145,7 @@ class _StatsPageState extends State<StatsPage> {
     final base = ConfigService.instance.config.basePath;
     List<double> loadOne(String name) {
       try {
-        final f = File('$base\\${name}_lufs_cache.json');
+        final f = File(joinPath(base, '${name}_lufs_cache.json'));
         if (!f.existsSync()) return [];
         final json = jsonDecode(f.readAsStringSync()) as Map<String, dynamic>;
         return json.values.whereType<num>().map((e) => e.toDouble()).toList();

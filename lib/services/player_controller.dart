@@ -15,6 +15,7 @@ import '../services/metadata_reader.dart';
 import '../services/youtube_service.dart';
 import '../services/lyrics_service.dart';
 import '../services/audio_exts.dart';
+import '../services/fs_paths.dart';
 import '../services/jam_service.dart';
 import '../services/log_manager.dart';
 import '../services/podcast_service.dart';
@@ -743,7 +744,7 @@ class PlayerController {
       roots.add(PodcastService.instance.podcastDir(''));
       for (final dir in roots) {
         for (final ext in ['mp3', 'm4a', 'mp4', 'wav', 'aac']) {
-          final f = File('$dir\\$safe.$ext');
+          final f = File(joinPath(dir, '$safe.$ext'));
           if (f.existsSync()) return f.path;
         }
       }
@@ -794,7 +795,7 @@ class PlayerController {
       final cacheDir = Directory(ConfigService.instance.config.streamCachePath);
       await cacheDir.create(recursive: true);
       final safeName = item.name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
-      final outPath = '${cacheDir.path}\\$safeName.mp3';
+      final outPath = joinPath(cacheDir.path, '$safeName.mp3');
       if (await File(outPath).exists()) return;
       // 串流寫檔：整集 bodyBytes 進 RAM，大檔直接爆記憶體。
       final client = http.Client();
@@ -952,8 +953,8 @@ class PlayerController {
       final seen = <String>{_radioNorm('$_title - $_artist')};
       // 1. 同歌單其他歌（snapshot 快照，順序保留）。
       try {
-        final snapFile = File(
-            '${ConfigService.instance.config.basePath}\\snapshot_cache.json');
+        final snapFile = File(joinPath(
+            ConfigService.instance.config.basePath, 'snapshot_cache.json'));
         if (await snapFile.exists()) {
           final snap =
               jsonDecode(await snapFile.readAsString()) as Map<String, dynamic>;

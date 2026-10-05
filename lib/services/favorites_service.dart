@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'config_service.dart';
+import 'fs_paths.dart';
 
 class FavoritesService {
   static const playlistName = '_Favorites';
@@ -12,8 +13,8 @@ class FavoritesService {
     return next;
   }
 
-  static String get _filePath =>
-      '${ConfigService.instance.config.playlistsPath}\\$playlistName.m3u8';
+  static String get _filePath => joinPath(
+      ConfigService.instance.config.playlistsPath, '$playlistName.m3u8');
 
   static Future<Set<String>> load() async {
     final path = _filePath;
@@ -34,7 +35,7 @@ class FavoritesService {
         }
         final abs = File(decoded).isAbsolute
             ? File(decoded).absolute.path
-            : File('$plAbs\\$decoded').absolute.path;
+            : File(joinPath(plAbs, decoded)).absolute.path;
         favs.add(_norm(abs));
       }
     } catch (_) {}

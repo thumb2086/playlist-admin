@@ -16,6 +16,7 @@ import '../widgets/dark_theme.dart';
 import '../services/podcast_service.dart';
 import '../services/artwork_embedder.dart';
 import '../services/audio_exts.dart';
+import '../services/fs_paths.dart';
 
 /// Unified detail page for music playlists AND podcast shows.
 /// Supports per-track download with checkmarks for already-downloaded items.
@@ -487,7 +488,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       // 同 stem 任一副檔名（mp3/m4a/webm）都算已下載：手機下的 m4a
       // 同步回電腦後，桌面不該再重下一份 mp3。
       final stemLower = finalName.toLowerCase();
-      var haveLocal = File('${musicDir.path}\\$finalName.mp3').existsSync();
+      var haveLocal = File(joinPath(musicDir.path, '$finalName.mp3')).existsSync();
       if (!haveLocal) {
         try {
           await for (final f in musicDir.list(followLinks: false)) {
@@ -501,7 +502,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
           }
         } catch (_) {}
       }
-      final finalPath = '${musicDir.path}\\$finalName.mp3';
+      final finalPath = joinPath(musicDir.path, '$finalName.mp3');
       if (haveLocal) {
         if (mounted) { _localTracks.add(index); setState(() { _downloaded.add(index); _progress[index] = 1.0; }); }
         return;
@@ -531,7 +532,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
       }
       debugPrint('[DL] $index resolved: ${streamResult.title}');
       if (mounted) setState(() { _progress[index] = 0.3; });
-      final tmpPath = '${musicDir.path}\\dl_${finalName.hashCode.toRadixString(16)}.mp3';
+      final tmpPath = joinPath(musicDir.path, 'dl_${finalName.hashCode.toRadixString(16)}.mp3');
       final ffmpeg = cfg.resolvedFfmpegPath;
       debugPrint('[DL] $index ffmpeg: $ffmpeg');
       final proc = await Process.start(
