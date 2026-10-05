@@ -26,6 +26,23 @@ class CoverCache {
           '${Platform.pathSeparator}cover_cache.json');
       if (await f.exists()) {
         _mem = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
+        // 一次性遷移：舊 key `isrc:大寫` 改小寫（key() 已統一小寫，
+        // 不遷則舊條目永遠 miss、白白重抓一次 GQL）。
+        var dirty = false;
+        for (final k in _mem!.keys.toList()) {
+          if (k.startsWith('isrc:') && k != k.toLowerCase()) {
+            if (!_mem!.containsKey(k.toLowerCase())) {
+              _mem![k.toLowerCase()] = _mem![k];
+            }
+            _mem!.remove(k);
+            dirty = true;
+          }
+        }
+        if (dirty) {
+          try {
+            await f.writeAsString(jsonEncode(_mem));
+          } catch (_) {}
+        }
         return _mem!;
       }
     } catch (_) {}

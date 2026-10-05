@@ -17,6 +17,10 @@ class UpdateService extends ChangeNotifier {
 
   Future<void> startDownload(VersionInfo info) async {
     if (info.downloadUrl == null) return;
+    // 10 分鐘 timer 會重複觸發：下載中/已就緒不重下。
+    if (state == UpdateState.downloading || state == UpdateState.ready) {
+      return;
+    }
     this.info = info;
     state = UpdateState.downloading;
     progress = 0;

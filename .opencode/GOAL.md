@@ -60,3 +60,6 @@ flutter test test/sync_lan_test.dart test/stream_direct_test.dart
   sync_lan（+轉播路由測試）與 stream_direct 全過；
 - [2026-10-05] v2.15.41 發版：本地 build ✓、CLI smoke（status/podcast exit 0）✓、
   analyze 0 issues ✓，main + tag 已推，CI 跑 Release + npm 中。
+- [2026-10-05] v2.15.42 發版（手機獨立下載）：同上全綠，main + tag 已推。
+- [2026-10-05] v2.15.43 發版（手機導引無限重現修復 + localIndex 認 m4a）：
+  同上全綠，main + tag 已推。

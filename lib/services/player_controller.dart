@@ -362,8 +362,9 @@ class PlayerController {
     } catch (e) {
       // 桌面管線（yt-dlp + cookies）掛了 → 改試直連（手機同款路徑）。
       // 宿舍網這類直鏈 403 的環境兩邊都會失敗，才報錯。
-      final ok = await _playStreamDirect(query);
-      if (!ok) {
+      final ok = await _playStreamDirect(query, fromDesktopFallback: true);
+      if (!ok && _statusText.isEmpty) {
+        // _playStreamDirect 失敗時自己會設具體指引：有就不蓋掉。
         _statusText = '串流錯誤: $e';
         _isPlaying = false;
         _notify();
@@ -377,7 +378,9 @@ class PlayerController {
   ///
   /// 二段式：① 直連（免電腦，同 Spotube）；② 直連被擋（宿舍網這類 403）
   /// → 經電腦轉播（電腦有 cookies，區網 pipe 保證能播；需曾連線同步過）。
-  Future<bool> _playStreamDirect(String query) async {
+  /// [fromDesktopFallback] 為 true 時錯誤文案不提轉播（桌面用戶用不上）。
+  Future<bool> _playStreamDirect(String query,
+      {bool fromDesktopFallback = false}) async {
     final cleanQuery = query.trim().replaceAll(RegExp(r'\s*-\s*$'), '').trim();
     final q = cleanQuery.isEmpty ? query : cleanQuery;
     // ① 直連。
@@ -414,7 +417,9 @@ class PlayerController {
         // 掉下去報錯。
       }
     }
-    _statusText = '串流錯誤: 直連被擋且電腦轉播連不上（電腦開了同步開關？同 Wi-Fi？曾連線同步過？）';
+    _statusText = fromDesktopFallback
+        ? '串流錯誤: 管線與直連都失敗（換首歌或檢查網路/cookies）'
+        : '串流錯誤: 直連被擋且電腦轉播連不上（電腦開了同步開關？同 Wi-Fi？曾連線同步過？）';
     _isPlaying = false;
     _notify();
     _pushSmtc();
