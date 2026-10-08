@@ -515,12 +515,15 @@ def _clean_query(text):
 
 
 def _ep_num(text):
-    """Extract episode number from titles like 'EP114', 'EP 114', 'ep-114'.
-    Returns int or None. int-compare avoids EP11-vs-EP114 prefix traps.
+    """Extract episode number: 'EP114', 'EP 114', 'ep-114',
+    'E194' (single-E numbering). int-compare avoids EP11-vs-EP114 traps.
     """
     if not text:
         return None
     m = re.search(r'ep[\s_\-.]*(\d+)', text, re.IGNORECASE)
+    if not m:
+        # Single-E style: E194｜... (2-4 digits, boundary guarded)
+        m = re.search(r'\bE(\d{2,4})\b', text)
     if not m:
         return None
     try:
