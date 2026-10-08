@@ -133,7 +133,9 @@ def cmd_rss_download(args):
                     os.remove(part_path)
             except Exception:
                 pass
-            time.sleep(3 * (attempt + 1))
+            # 最後一次失敗就直接報錯，不要再睡。
+            if attempt < 1:
+                time.sleep(3 * (attempt + 1))
     emit_json({'type': 'error', 'message': f'rss-download failed: {last_err}'})
 
 
@@ -512,9 +514,29 @@ def _clean_query(text):
     return text
 
 
-def _pick_best_video(unique, podcast_name, youtube_dl):
-    """Validate candidate video IDs against the podcast name.
-    Returns (video_id, match_source) where match_source is 'title', 'fallback', or None.
+def _ep_num(text):
+    """Extract episode number from titles like 'EP114', 'EP 114', 'ep-114'.
+    Returns int or None. int-compare avoids EP11-vs-EP114 prefix traps.
+    """
+    if not text:
+        return None
+    m = re.search(r'ep[\s_\-.]*(\d+)', text, re.IGNORECASE)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return None
+
+
+def _pick_best_video(unique, podcast_name, youtube_dl, episode_title=''):
+    """Validate candidate video IDs against the podcast name AND the episode.
+    Returns (video_id, match_source) where match_source is
+    'episode', 'title', 'fallback', or (None, None) when nothing fits.
+
+    集數級驗證（EP114 左派 ≠ 同節目的健保集）：
+    query 帶 EP 號時，候選標題必須是同一集，否則整批拒收回 not_found
+    （讓 pipeline 走 Groq 轉寫真音檔——錯字幕比沒字幕糟：會污染 RAG）。
     """
     import yt_dlp as _yt
 
@@ -528,6 +550,7 @@ def _pick_best_video(unique, podcast_name, youtube_dl):
     podcast_norm = _normalize(podcast_name)
     # Extract meaningful keywords from podcast name (skip very short tokens)
     podcast_kw = [w for w in podcast_norm.split() if len(w) >= 2]
+    want_ep = _ep_num(episode_title)
 
     # Check up to 5 candidates (enough to find the right one without being slow)
     for vid in unique[:5]:
@@ -545,12 +568,20 @@ def _pick_best_video(unique, podcast_name, youtube_dl):
             title_norm = _normalize(title)
             channel_norm = _normalize(channel)
 
+            # Episode gate first: query 有 EP 號 → 候選必須是同一集。
+            if want_ep is not None and _ep_num(title) != want_ep:
+                continue
+
             # Check if podcast name keywords appear in the video title or channel
             for kw in podcast_kw:
                 if kw in title_norm or kw in channel_norm:
-                    return vid, 'title'
+                    return vid, ('episode' if want_ep is not None else 'title')
         except Exception:
             continue
+
+    if want_ep is not None:
+        # 有 EP 號卻無一候選是該集 → 寧可 not_found（Groq 兜底），不貼錯字幕。
+        return None, None
 
     # Fallback: return first candidate (original behavior)
     return unique[0], 'fallback'
@@ -586,9 +617,21 @@ def cmd_youtube_subs(args):
             emit_json({'type': 'not_found', 'message': '找不到符合的 YouTube 影片'})
             return
         # Validate: prefer a video whose title/channel matches the podcast name
+        # AND the episode (EP-gated inside the picker; returns None when no
+        # candidate is the requested episode — never attach wrong subs).
         if podcast_name:
-            video_id, match_src = _pick_best_video(unique, podcast_name, youtube_dl)
-            if match_src == 'title':
+            episode_title = query
+            if query.endswith(podcast_name):
+                episode_title = query[: -len(podcast_name)].strip()
+            video_id, match_src = _pick_best_video(
+                unique, podcast_name, youtube_dl, episode_title)
+            if video_id is None:
+                emit_json({'type': 'not_found',
+                           'message': '搜尋結果無該集（只找到同節目別集），跳過字幕等 Groq 轉寫'})
+                return
+            if match_src == 'episode':
+                emit_json({'type': 'log', 'message': f'  ✅ 找到影片 (集數+podcast 雙匹配): https://youtube.com/watch?v={video_id}'})
+            elif match_src == 'title':
                 emit_json({'type': 'log', 'message': f'  ✅ 找到影片 (匹配 podcast): https://youtube.com/watch?v={video_id}'})
             else:
                 emit_json({'type': 'log', 'message': f'  ⚠️ 未找到匹配 podcast 的影片，使用第一個結果: https://youtube.com/watch?v={video_id}'})
@@ -661,6 +704,39 @@ def cmd_youtube_subs(args):
                 break
 
         if srt_found and os.path.exists(srt_found):
+            # Duration guard：字幕時間跨度 vs 同目錄音檔時長。
+            # 錯集字幕通常更長（別集整集字幕），超過 15% 直接銷毀走 not_found
+            # （Groq 轉寫真音檔），不讓它污染逐字稿與 RAG。
+            # ffprobe 沒有就跳過（best-effort，不擋正常流程）。
+            try:
+                mp3_path = os.path.splitext(output_path)[0] + '.mp3'
+                ffprobe = shutil.which('ffprobe')
+                if os.path.exists(mp3_path) and ffprobe:
+                    with open(srt_found, 'r', encoding='utf-8',
+                              errors='replace') as _sf:
+                        _cues = re.findall(
+                            r'(\d+):(\d\d):(\d\d)[,.](\d+)\s+-->',
+                            _sf.read())
+                    if _cues:
+                        _span = max(int(h) * 3600 + int(m) * 60 + int(s)
+                                    for h, m, s, ms in _cues)
+                        _pr = subprocess.run(
+                            [ffprobe, '-v', 'error', '-show_entries',
+                             'format=duration', '-of',
+                             'default=noprint_wrappers=1:nokey=1', mp3_path],
+                            capture_output=True, text=True, timeout=60)
+                        _dur = float(_pr.stdout.strip())
+                        if _dur > 0 and _span > _dur * 1.15:
+                            emit_json({'type': 'log', 'message': (
+                                f'  🗑️ 字幕時長 {_span}s vs 音檔 {_dur:.0f}s'
+                                f'（超 {(_span / _dur - 1) * 100:.0f}%），'
+                                f'判定為別集字幕已刪除，等 Groq 轉寫')})
+                            os.remove(srt_found)
+                            emit_json({'type': 'not_found',
+                                       'message': '字幕與音檔時長不符（別集），已刪除'})
+                            return
+            except Exception as _e:
+                emit_json({'type': 'log', 'message': f'  （時長校驗跳過: {_e}）'})
             # Rename to clean name
             if srt_found != srt_path:
                 os.replace(srt_found, srt_path)
