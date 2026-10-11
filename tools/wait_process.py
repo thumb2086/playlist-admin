@@ -31,6 +31,13 @@ def alive(pid):
     return "Y" in (r.stdout or "")
 
 
+def _cp950_safe(s):
+    """Windows console 是 cp950：不可編碼字元（emoji、中日韓、俄文）換成 ?，
+    否則 print 會 UnicodeEncodeError 讓等待器自己掛掉。"""
+    enc = sys.stdout.encoding or "cp950"
+    return s.encode(enc, errors="replace").decode(enc, errors="replace")
+
+
 def tail(path, n=TAIL):
     try:
         with io.open(path, encoding="utf-8", errors="replace") as fh:
@@ -61,7 +68,8 @@ def main():
     if log and os.path.exists(log):
         print("--- log tail ---", flush=True)
         for line in tail(log):
-            print("  " + line, flush=True)
+            # Windows console 是 cp950，印 emoji/生僻字會 UnicodeEncodeError
+            print("  " + _cp950_safe(line), flush=True)
     return 0
 
 
