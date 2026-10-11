@@ -113,6 +113,37 @@ Copy-Item rag\*.py "C:\Users\CPXru\Music\playlist-admin\rag\" -Force
 ```
 忘記同步的後果：`_SKIP_DIRS` filter 無效，課程逐字稿被灌進 podcast DB（曾灌入 11828 筆）。
 
+## 等待長任務的正確做法（重要）
+
+長任務（backfill／逐字稿重抓／metadata years 全庫這種 1~6 小時的）**不要**用
+`& $exe > log 2>&1` 直接丟背景 —— PowerShell 重定向會**立刻回報「完成」**，
+但 exe 其實還在跑，於是誤以為跑完了，接著做驗證/發版全都對不上。
+
+**要開真正的等待器**：先拿到 PID，再跑一個會阻塞到行程結束的監看腳本。
+
+```powershell
+# 1. 背景啟動，取得 PID（用 Start-Process 才拿得到 $p.Id）
+$env:PA_CLI_ARGS = '["metadata","years"]'
+$p = Start-Process -FilePath build/windows/x64/runner/Release/playlist-admin.exe `
+     -NoNewWindow -PassThru
+$p.Id
+
+# 2. 監看（每 30 秒檢查存活並印進度，行程結束才回報 → 通知主控接手）
+python tools\wait_process.py $p.Id
+```
+
+`tools/wait_process.py` 是本專案的等待器：會定期檢查 PID、印出進度，
+最後印摘要與 log 尾巴。**它結束 = 任務真的結束**，這時才動下一步
+（驗證 → 發版）。
+
+反面教訓：2026-10-12 補年份第一次就是用重定向丟背景，收到「完成」通知後
+差點在 exe 還在跑時就去驗資料。
+
+### 編譯前務必確認沒有執行中的 app
+`flutter build windows` 會鎖 `WebView2Loader.dll`；使用者開著 app 時會
+`MSB3027` 編譯失敗。編譯前先 `Get-Process playlist-admin`，
+有的話請使用者關閉（或徵得同意後 `Stop-Process`）。
+
 ## 工作紀律
 
 - 不要用 shell 寫檔案（Set-Content / echo 重定向會毀掉中文編碼）：讀用 Read，改用 Edit，驗證用 `python -c` 只印 ASCII。
