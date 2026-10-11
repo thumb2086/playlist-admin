@@ -21,6 +21,8 @@ Usage:
   playlist-admin play <歌曲名>             播放（本機庫優先，找不到走串流）
   playlist-admin organize                  歌單外歌曲移入「未分類」資料夾
   playlist-admin artwork backfill          全庫 mp3 內嵌封面（有圖跳過）
+  playlist-admin metadata enrich           補 album/date/title/artist（只讀本地快取）
+  playlist-admin metadata artists          ID3 英文歌手名轉中文（對照表內）
   playlist-admin favorite list           List favorite songs
   playlist-admin favorite toggle <song>  Toggle favorite (我的最愛)
   playlist-admin rag build [--reset]     Build podcast RAG vector DB

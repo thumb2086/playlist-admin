@@ -212,6 +212,10 @@ class SpotifyTrackItem {
   final int durationMs;
   final String? coverUrl;
   final String? isrc;
+  /// 專輯發行年份（4 位數字）：albumOfTrack.date 的前 4 碼。
+  /// 以前 parser 沒讀這個欄位 → 全庫 album/date 幾乎是空（enricher 拿不到就
+  /// 寫空 date，ffprobe 讀回 1970）。Spotify 每張專輯都有 date，不是資料源缺。
+  final String? year;
 
   SpotifyTrackItem({
     required this.uri,
@@ -221,6 +225,7 @@ class SpotifyTrackItem {
     required this.durationMs,
     this.coverUrl,
     this.isrc,
+    this.year,
   });
 
   String get id => uri.split(':').last;
@@ -276,6 +281,27 @@ class SpotifyTrackItem {
     return 0;
   }
 
+  /// 專輯年份：albumOfTrack.date（ISO '2011-07-08'）或 releaseDate
+  /// （年份字串 / 毫秒時間戳）都吃，只認 4 位數 1000~2999。
+  static String? albumYear(Map<String, dynamic>? album) {
+    if (album == null) return null;
+    for (final key in const ['date', 'releaseDate', 'release_date']) {
+      final v = album[key];
+      if (v is String) {
+        final m = RegExp(r'(1\d{3}|2\d{3})').firstMatch(v);
+        if (m != null) return m.group(1);
+      } else if (v is num) {
+        final ms = v.toInt();
+        // 毫秒時間戳（1e12 以上）才轉，秒級太小不是年份。
+        if (ms >= 946684800000 && ms < 4102444800000) {
+          final y = DateTime.fromMillisecondsSinceEpoch(ms).year;
+          if (y >= 1000 && y <= 2999) return '$y';
+        }
+      }
+    }
+    return null;
+  }
+
   /// 從 fetchPlaylist 回應解析曲目（含封面/時長/ISRC）。
   /// 原本散在 home_page._extractPlaylistTracks，收攏至此避免分叉。
   static List<SpotifyTrackItem> parsePlaylistTracks(Map<String, dynamic> data) {
@@ -312,6 +338,7 @@ class SpotifyTrackItem {
             uri: uri, name: name, artists: artists,
             album: albumName, durationMs: duration, coverUrl: cover,
             isrc: (isrc != null && isrc.isNotEmpty) ? isrc : null,
+            year: SpotifyTrackItem.albumYear(album),
           ));
         }
       }
@@ -351,6 +378,7 @@ class SpotifyTrackItem {
           durationMs: duration,
           coverUrl: cover,
           isrc: (isrc != null && isrc.isNotEmpty) ? isrc : null,
+          year: SpotifyTrackItem.albumYear(album),
         ));
       }
     } catch (_) {}

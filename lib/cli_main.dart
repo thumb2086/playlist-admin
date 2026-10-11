@@ -6,6 +6,7 @@ import 'services/config_service.dart';
 import 'services/favorites_service.dart';
 import 'services/library_organizer.dart';
 import 'services/artwork_embedder.dart';
+import 'services/metadata_enricher.dart';
 import 'services/spotify_session.dart';
 import 'services/stream_server.dart';
 import 'pipeline/pipeline_orchestrator.dart';
@@ -98,7 +99,44 @@ Downloaded: ${cfg.lastUpdated.length}''');
       );
       print('完成：共 ${stats['total']} 首，'
           '已嵌 ${stats['embedded']}，已有圖跳過 ${stats['skipped']}，'
-          '無封面 ${stats['noCover']}，失敗 ${stats['failed']}');
+          '無封面 ${stats['noCover']}，失敗 ${stats['failed']}，'
+          '補 album/date ${stats['tagged'] ?? 0}');
+      break;
+
+    case 'metadata':
+      if (args.length < 2) {
+        print('Usage: dart cli_main.dart metadata <enrich|artists>');
+        print('  enrich    補 album/date/title/artist（只讀本地快取）');
+        print('  artists   ID3 英文歌手名轉中文（ArtistNames 對照表內）');
+        return;
+      }
+      if (args[1] == 'artists') {
+        print('artist 英文名 → 中文（只轉對照表有的，日韓歐美不動）...');
+        await MetadataEnricher(
+          log: print,
+          libraryPath: cfg.musicPath,
+        ).localizeArtists(
+          onProgress: (done, total) {
+            if (done % 100 == 0 || done == total) {
+              print('  [$done/$total]');
+            }
+          },
+        );
+        break;
+      }
+      if (args[1] != 'enrich' && args[1] != 'tags') {
+        print('Usage: dart cli_main.dart metadata <enrich|artists>');
+        return;
+      }
+      print('補 metadata（只讀本地 spotify_cache + cover_cache）...');
+      await MetadataEnricher(
+        log: print,
+        libraryPath: cfg.musicPath,
+      ).enrichAll(
+        onProgress: (done, total) {
+          if (done % 50 == 0 || done == total) print('  [$done/$total]');
+        },
+      );
       break;
 
     case 'favorite':
@@ -107,7 +145,7 @@ Downloaded: ${cfg.lastUpdated.length}''');
 
     default:
       stderr.writeln('未知命令: $cmd');
-      print('可用命令: pipeline, podcast, status, favorite, play, organize, artwork');
+      print('可用命令: pipeline, podcast, status, favorite, play, organize, artwork, metadata');
       exit(1);
   }
 }

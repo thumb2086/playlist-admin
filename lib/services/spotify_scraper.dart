@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:html/parser.dart' show parse;
 import 'config_service.dart';
+import 'artist_names.dart';
 
 class SpotifyTrackMeta {
   final String title;
@@ -28,25 +29,18 @@ class SpotifyTrackMeta {
 }
 
 class SpotifyScraper {
-  static const _cn2en = {
-    '郭靜': 'Claire Kuo', '蔡依林': 'Jolin Tsai', '盧廣仲': 'Crowd Lu',
-    '曾沛慈': 'Pets Tseng', '王艷薇': 'Evangeline Wong', '胡恂舞': 'Sabrina Hu',
-    '周興哲': 'Eric Chou', '孫盛希': 'Shi Shi', '文慧如': 'Boon Hui Lu',
-    '陳忻玥': 'Vicky Chen', '邱鋒澤': 'Feng Ze', '艾薇': 'Ivy',
-    '幻藍小熊': 'GENBLUE', '利比': 'LBI', '連穎': 'Erin',
-    '李芷婷': 'Eleanor', '白安': 'Ann Bai', '王詩安': 'Diana Wang',
-    '陳威全': 'Ethan', '持修': 'Chih Siou', '羅志祥': 'Show Luo',
-    '陳零九': 'Nine Chen', '九澤CP': 'Nine Ze CP',
-    '告五人': 'Accusefive', '理想混蛋': 'Bestards',
-    '魏如萱': 'Waa Wei', '魏如昀': 'Queen Wei',
-  };
+  /// Spotify embed 回的是英文 artist 名（Bestards / Claire Kuo…）。
+  /// 舊版用 _cn2en 把它「轉成英文」寫進檔名——方向相反，
+  /// 害全庫中英不一（同樣 _cn2en 裡有「理想混蛋→Bestards」）。
+  /// 現在反向用 ArtistNames 轉回中文顯示；對照表移至 artist_names.dart。
+  String _toChinese(String name) => ArtistNames.toDisplayList(name.trim());
 
-  String _toEnglish(String name) => _cn2en[name] ?? name;
-
-  String _englishDisplayName(String raw) {
-    if (!raw.contains(' - ')) return raw;
+  String _chineseDisplayName(String raw) {
+    if (!raw.contains(' - ')) return _toChinese(raw);
     final idx = raw.lastIndexOf(' - ');
-    return '${raw.substring(0, idx)} - ${_toEnglish(raw.substring(idx + 3).trim())}';
+    final title = raw.substring(0, idx);
+    final artist = raw.substring(idx + 3).trim();
+    return '$title - ${_toChinese(artist)}';
   }
 
   final void Function(String) log;
@@ -198,9 +192,9 @@ class SpotifyScraper {
                       .join(', ') ??
                   (track['subtitle'] as String?);
               final displayName = (artists != null && artists.isNotEmpty) ? '$name - $artists' : name;
-              final engName = _englishDisplayName(displayName);
-              tracks.add(engName);
-              await _saveTrackCache(engName, name, _toEnglish(artists?.trim() ?? ''), track);
+              final cnName = _chineseDisplayName(displayName);
+              tracks.add(cnName);
+              await _saveTrackCache(cnName, name, _toChinese(artists?.trim() ?? ''), track);
             }
           }
         }
@@ -232,9 +226,9 @@ class SpotifyScraper {
                     .join(', ') ?? '';
             final title = track['name'] as String? ?? '';
             final displayName = artists.isNotEmpty ? '$title - $artists' : title;
-            final engName = _englishDisplayName(displayName);
-            tracks.add(engName);
-            await _saveTrackCache(engName, title, _toEnglish(artists.trim()), track);
+            final cnName = _chineseDisplayName(displayName);
+            tracks.add(cnName);
+            await _saveTrackCache(cnName, title, _toChinese(artists.trim()), track);
           }
           break;
         } catch (_) {}

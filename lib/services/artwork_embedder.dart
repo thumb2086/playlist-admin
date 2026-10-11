@@ -68,7 +68,8 @@ class ArtworkEmbedder {
   Future<ArtworkResult> embedForFile(String mp3path,
       {String? title, String? artist, String? coverUrl}) async {
     if (!await File(mp3path).exists()) return ArtworkResult.failed;
-    if (await hasArtwork(mp3path)) return ArtworkResult.skippedHasArt;
+    // 已有圖但可能沒有 album/date（舊版只嵌圖）：仍要看一次快取補標籤。
+    final alreadyHasArt = await hasArtwork(mp3path);
     final stem = File(mp3path)
         .uri
         .pathSegments
@@ -78,10 +79,111 @@ class ArtworkEmbedder {
     final t = (title != null && title.isNotEmpty) ? title : parts.$1;
     final a = (artist != null && artist.isNotEmpty) ? artist : parts.$2;
 
+    if (alreadyHasArt) {
+      // 補標籤（不回頭寫圖）：album/year 從 CoverCache 取。
+      await _writeTagsFromCache(mp3path, t, a);
+      return ArtworkResult.skippedHasArt;
+    }
     String? url = (coverUrl != null && coverUrl.isNotEmpty) ? coverUrl : null;
     url ??= await _resolveCoverUrl(t, a);
     if (url == null || url.isEmpty) return ArtworkResult.noCover;
     return await embedFromUrl(mp3path, url);
+  }
+
+  /// 從 CoverCache 取 album/year 寫進 ID3（ffmpeg 音訊 copy，不重編碼）。
+  /// 已在檔案裡的值不覆蓋（避免二次跑洗掉人工修正）。
+  /// 空值一律不寫：寫 `-metadata date=` 會讓 ffprobe 讀回 1970。
+  Future<bool> _writeTagsFromCache(String mp3path, String title, String artist) async {
+    Map<String, dynamic>? e;
+    try {
+      final cache = await CoverCache.load();
+      final raw = cache[CoverCache.key(null, title, artist)];
+      if (raw is Map<String, dynamic>) e = raw;
+    } catch (_) {}
+    if (e == null) return false;
+    final album = (e['a'] as String?)?.trim() ?? '';
+    final year = (e['y'] as String?)?.trim() ?? '';
+    if (album.isEmpty && year.isEmpty) return false;
+    return await _ffmpegTags(mp3path, {
+      if (album.isNotEmpty) 'album': album,
+      if (year.isNotEmpty) 'date': year,
+    });
+  }
+
+  /// ffmpeg 只改標籤（音訊 copy）。values 為空鍵一律跳過。
+  Future<bool> _ffmpegTags(String mp3path, Map<String, String> values) async {
+    if (values.isEmpty) return false;
+    final tmp = '$mp3path.tags.mp3';
+    Process? proc;
+    try {
+      final args = <String>['-y', '-i', mp3path, '-map', '0:a', '-c:a', 'copy'];
+      values.forEach((k, v) {
+        if (v.isNotEmpty) args.addAll(['-metadata', '$k=$v']);
+      });
+      args.add(tmp);
+      proc = await Process.start(_ffmpegPath(), args, runInShell: false);
+      unawaited(proc.stdout.drain());
+      unawaited(proc.stderr.drain());
+      final code = await proc.exitCode.timeout(
+        const Duration(seconds: 120),
+        onTimeout: () {
+          _killTree(proc!);
+          return -1;
+        },
+      );
+      if (code != 0 || !await File(tmp).exists()) return false;
+      // 保留原有封面：copy 封面進去再 swap（ffmpeg 只 map 0:a 會掉圖）。
+      final hadArt = await hasArtwork(mp3path);
+      if (hadArt == true) {
+        final withArt = await _copyArtwork(mp3path, tmp);
+        if (withArt.isEmpty) {
+          try { await File(tmp).delete(); } catch (_) {}
+          return false;
+        }
+        await File(mp3path).delete();
+        await File(withArt).rename(mp3path);
+      } else {
+        await File(mp3path).delete();
+        await File(tmp).rename(mp3path);
+      }
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      try {
+        if (await File(tmp).exists()) await File(tmp).delete();
+      } catch (_) {}
+    }
+  }
+
+  /// 把 mp3path 的封面 stream 複製到 target（音訊 copy，不重編碼）。
+  Future<String> _copyArtwork(String mp3path, String target) async {
+    final out = '$target.withart.mp3';
+    Process? proc;
+    try {
+      proc = await Process.start(_ffmpegPath(), [
+        '-y', '-i', target, '-i', mp3path,
+        '-map', '0:a', '-map', '1:v',
+        '-c:a', 'copy', '-c:v', 'mjpeg',
+        '-id3v2_version', '3',
+        '-metadata:s:v', 'title=Album cover',
+        '-metadata:s:v', 'comment=Cover (front)',
+        out,
+      ], runInShell: false);
+      unawaited(proc.stdout.drain());
+      unawaited(proc.stderr.drain());
+      final code = await proc.exitCode.timeout(
+        const Duration(seconds: 120),
+        onTimeout: () {
+          _killTree(proc!);
+          return -1;
+        },
+      );
+      if (code != 0 || !await File(out).exists()) return '';
+      return out;
+    } catch (_) {
+      return '';
+    }
   }
 
   /// 封面解析：磁碟快取 → Spotify 搜一次（驗收曲名相符才收，寫透快取）。
@@ -119,6 +221,7 @@ class ArtworkEmbedder {
             'c': url,
             'd': pick.durationMs,
             'a': pick.album,
+            if (pick.year != null) 'y': pick.year,
           };
           await CoverCache.save(cache);
         } catch (_) {}
@@ -289,6 +392,7 @@ class ArtworkEmbedder {
           'c': m.coverUrl,
           'd': m.durationMs,
           'a': m.album,
+          if (m.year != null) 'y': m.year,
         };
         warmed++;
       }
@@ -301,7 +405,7 @@ class ArtworkEmbedder {
     required void Function(int done, int total, String file) onProgress,
     bool Function()? isCancelled,
   }) async {
-    var embedded = 0, skipped = 0, noCover = 0, failed = 0;
+    var embedded = 0, skipped = 0, noCover = 0, failed = 0, tagged = 0;
     // CLI 進程不會經過 main.dart 的 session 載入：這裡自己載，
     // 否則 isLoggedIn 永遠 false，暖快取+搜尋全被跳過（1701 首 noCover 的教訓）。
     try {
@@ -366,6 +470,24 @@ class ArtworkEmbedder {
       onProgress(checked, total, '暖快取完成（$warmed 首已定位封面）');
     }
 
+    // 標籤補寫（album/date）：全庫 mp3 大多只嵌了圖、沒 album/year。
+    // 與嵌圖迴圈同一份 CoverCache，不需要 Spotify 登入以外的任何網路。
+    if (isCancelled?.call() != true) {
+      onProgress(files.length, total, '補寫 album/date 標籤…');
+      for (int i = 0; i < files.length; i += 1) {
+        if (isCancelled?.call() == true) break;
+        final p = files[i];
+        final parts = splitStem(
+            File(p).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), ''));
+        if (await _writeTagsFromCache(p, parts.$1, parts.$2)) tagged++;
+        if (i % 50 == 0) {
+          onProgress(i, total, '補標籤 $tagged/$total…');
+          await Future<void>.delayed(Duration.zero);
+        }
+      }
+      onProgress(total, total, '標籤補寫完成：$tagged/$total');
+    }
+
     // 圖片位元組記憶體去重：同專輯多首歌只下載一次。
     final imgCache = <String, List<int>>{};
     Future<List<int>?> fetchImg(String url) async {
@@ -427,6 +549,7 @@ class ArtworkEmbedder {
       'skipped': skipped,
       'noCover': noCover,
       'failed': failed,
+      'tagged': tagged,
     };
   }
 }
