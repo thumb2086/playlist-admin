@@ -105,9 +105,14 @@ Downloaded: ${cfg.lastUpdated.length}''');
 
     case 'metadata':
       if (args.length < 2) {
-        print('Usage: dart cli_main.dart metadata <enrich|artists>');
-        print('  enrich    補 album/date/title/artist（只讀本地快取）');
+        print('Usage: dart cli_main.dart metadata <enrich|artists|years>');
+        print('  enrich    從 spotify_cache + cover_cache 補 album/date/'
+            'title/artist 到 ID3');
+        print('            （album/date 的來源是 artwork backfill 寫的快取，'
+            '所以正常流程是 backfill → enrich，不要同時跑）');
         print('  artists   ID3 英文歌手名轉中文（ArtistNames 對照表內）');
+        print('  years     用 Spotify getTrack 補年份（需登入，每首一次請求，'
+            '慢；--limit N 可先試跑）');
         return;
       }
       if (args[1] == 'artists') {
@@ -124,8 +129,28 @@ Downloaded: ${cfg.lastUpdated.length}''');
         );
         break;
       }
+      if (args[1] == 'years') {
+        // Spotify 只有 getTrack 查詢會回 albumOfTrack.date；searchTracks 不回。
+        var lim = 0;
+        final li = args.indexOf('--limit');
+        if (li > 0 && li + 1 < args.length) {
+          lim = int.tryParse(args[li + 1]) ?? 0;
+        }
+        await MetadataEnricher(
+          log: print,
+          libraryPath: cfg.musicPath,
+        ).fillYearsFromSpotify(
+          limit: lim,
+          onProgress: (done, total, file) {
+            if (done % 50 == 0 || done == total) {
+              print('  [$done/$total] $file');
+            }
+          },
+        );
+        break;
+      }
       if (args[1] != 'enrich' && args[1] != 'tags') {
-        print('Usage: dart cli_main.dart metadata <enrich|artists>');
+        print('Usage: dart cli_main.dart metadata <enrich|artists|years>');
         return;
       }
       print('補 metadata（只讀本地 spotify_cache + cover_cache）...');

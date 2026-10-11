@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'i18n.dart';
 import 'spotify_session.dart';
 
 /// Spotify internal GraphQL client (APQ persisted queries against
@@ -8,6 +9,38 @@ import 'spotify_session.dart';
 /// audio streaming is handled separately via yt-dlp.
 class SpotifyGqlClient {
   static const _endpoint = 'https://api-partner.spotify.com/pathfinder/v2/query';
+
+/// 依 app 語言設定決定 Spotify 回傳的 artist/專輯名語言。
+  /// 不帶這個的話 Spotify 永遠回英文（搜「晴天 周杰倫」得到 artist=Jay Chou），
+  /// 導致全庫 artist 名要靠映射表兜，且顯示與設定頁語言不一致。
+  /// 語言來源：設定頁「語言」（I18N.currentLang，預設 zh-TW）。
+  static String _locale() {
+    var lang = 'zh-TW';
+    try {
+      lang = I18N.instance.currentLang;
+    } catch (_) {}
+    switch (lang) {
+      case 'en':
+        return 'en';
+      case 'zh-CN':
+        return 'zh-CN';
+      case 'ja':
+        return 'ja';
+      case 'ko':
+        return 'ko';
+      default:
+        return 'zh-TW';
+    }
+  }
+
+  /// 語言請求標頭（兩個都要帶：Accept-Language 給通用、Spotify 專用頭給 GQL）。
+  static Map<String, String> _langHeaders() {
+    final l = _locale();
+    return {
+      'Accept-Language': '$l,${l.split('-').first};q=0.9,en;q=0.5',
+      'X-Spotify-Language': l,
+    };
+  }
 
   static const _searchDesktop = 'd9f785900f0710b31c07818d617f4f7600c1e21217e80f5b043d1e78d74e6026';
   static const _fetchPlaylist = 'cd2275433b29f7316176e7b5b5e098ae7744724e1a52d63549c76636b3257749';
@@ -152,6 +185,7 @@ class SpotifyGqlClient {
         'Authorization': 'Bearer $token',
         'Cookie': 'sp_dc=${session.spDc ?? ''}; sp_t=${session.spT ?? ''}',
         'User-Agent': _ua(),
+        ..._langHeaders(),
       },
       body: jsonEncode({
         'variables': variables,
@@ -187,6 +221,7 @@ class SpotifyGqlClient {
         'Authorization': 'Bearer $token',
         'Cookie': 'sp_dc=${session.spDc ?? ''}; sp_t=${session.spT ?? ''}',
         'User-Agent': _ua(),
+        ..._langHeaders(),
       },
       body: jsonEncode({
         'variables': variables,
@@ -281,25 +316,88 @@ class SpotifyTrackItem {
     return 0;
   }
 
-  /// 專輯年份：albumOfTrack.date（ISO '2011-07-08'）或 releaseDate
-  /// （年份字串 / 毫秒時間戳）都吃，只認 4 位數 1000~2999。
+  /// 專輯年份。實測 Spotify 回應有三種形狀，全要吃：
+  /// ① {date: {isoString: "2003-07-29T00:00:00Z", precision: DAY, year: 2003}}
+  ///    —— getTrack 查詢才有（searchTracks/fetchPlaylist 不回）
+  /// ② {date: "2011-07-08"} 或 {releaseDate: "1999-12-31"}
+  /// ③ {date: 1433116800000}（毫秒時間戳；秒級太小不是年份，不可誤判）
+  /// 只認 1000~2999 的 4 位數。
   static String? albumYear(Map<String, dynamic>? album) {
     if (album == null) return null;
+
+    String? valid(Object? y) {
+      final n = y is num ? y.toInt() : int.tryParse('${y ?? ''}');
+      if (n == null || n < 1000 || n > 2999) return null;
+      return '$n';
+    }
+
     for (final key in const ['date', 'releaseDate', 'release_date']) {
       final v = album[key];
+      if (v == null) continue;
+      // ① 巢狀 {year, isoString, precision}
+      if (v is Map) {
+        final hit = valid(v['year']);
+        if (hit != null) return hit;
+        final iso = v['isoString'] ?? v['fullDate'];
+        if (iso is String) {
+          final m = RegExp(r'(1\d{3}|2\d{3})').firstMatch(iso);
+          if (m != null) return m.group(1);
+        }
+        continue;
+      }
+      // ② 字串 / ③ 數字
       if (v is String) {
         final m = RegExp(r'(1\d{3}|2\d{3})').firstMatch(v);
         if (m != null) return m.group(1);
       } else if (v is num) {
         final ms = v.toInt();
-        // 毫秒時間戳（1e12 以上）才轉，秒級太小不是年份。
         if (ms >= 946684800000 && ms < 4102444800000) {
-          final y = DateTime.fromMillisecondsSinceEpoch(ms).year;
-          if (y >= 1000 && y <= 2999) return '$y';
+          final hit = valid(DateTime.fromMillisecondsSinceEpoch(ms).year);
+          if (hit != null) return hit;
         }
       }
     }
     return null;
+  }
+
+  /// 從 getTrack 回應取「主曲目所屬專輯」的年份。
+  ///
+  /// 為什麼不能用深層 DFS：getTrack 回應有 60KB+，內含推薦/「更多來自」等
+  /// 其他專輯物件，深層掃描會抓到別張專輯的日期（實測把 BTS 的歌標成
+  /// ARIRANG/2026）。改成 BFS（逐層掃、先到者為主曲目）＋專輯名比對。
+  static String? yearFromResponse(Map<String, dynamic> resp,
+      {String? expectAlbumName}) {
+    // BFS：層級由淺到深，第一個帶年份的 albumOfTrack 就是主曲目。
+    var queue = <dynamic>[resp];
+    Map<String, dynamic>? found;
+    var depth = 0;
+    while (queue.isNotEmpty && found == null && depth < 8) {
+      final next = <dynamic>[];
+      for (final node in queue) {
+        if (node is Map) {
+          final a = node['albumOfTrack'];
+          if (a is Map) {
+            final am = a.cast<String, dynamic>();
+            if (albumYear(am) != null) {
+              found = am;
+              break;
+            }
+          }
+          next.addAll(node.values);
+        } else if (node is List) {
+          next.addAll(node);
+        }
+      }
+      queue = next;
+      depth++;
+    }
+    if (found == null) return null;
+    // 專輯名對不上 → 多半抓到別的專輯，寧可不要。
+    if (expectAlbumName != null && expectAlbumName.trim().isNotEmpty) {
+      final got = (found['name'] ?? '').toString();
+      if (got.trim() != expectAlbumName.trim()) return null;
+    }
+    return albumYear(found);
   }
 
   /// 從 fetchPlaylist 回應解析曲目（含封面/時長/ISRC）。

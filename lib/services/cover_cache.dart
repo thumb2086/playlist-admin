@@ -50,7 +50,11 @@ class CoverCache {
     return _mem!;
   }
 
-  static Future<void> save(Map<String, dynamic> cache) async {
+  /// 清掉記憶體快取（不動磁碟）。切換 app 語言時呼叫：
+/// Spotify 回的 artist/專輯名語言跟著變，不清的話沿用舊譯名。
+static void invalidate() => _mem = null;
+
+static Future<void> save(Map<String, dynamic> cache) async {
     _mem = cache;
     try {
       final dir = Directory(ConfigService.instance.config.spotifyCachePath);

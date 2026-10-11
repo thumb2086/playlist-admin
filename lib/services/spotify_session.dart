@@ -47,14 +47,20 @@ class SpotifySession extends ChangeNotifier {
       _spT = data['sp_t'] as String?;
       _accessToken = data['access_token'] as String?;
       _tokenExpiryMs = (data['expiry_ms'] as num?)?.toInt() ?? 0;
-      // Load cached nuances from session file.
-      final nuData = data['nuances'] as Map<String, dynamic>?;
-      if (nuData != null) {
-        _nuancesCache = {for (final e in nuData.entries) int.parse(e.key): e.value as String};
+      // Load cached nuances from session file（int key 化，容忍髒值）。
+      final nuRaw = data['nuances'];
+      if (nuRaw is Map) {
+        _nuancesCache = {
+          for (final e in nuRaw.entries)
+            if (int.tryParse(e.key.toString()) != null)
+              int.parse(e.key.toString()): e.value.toString(),
+        };
+        if (_nuancesCache!.isEmpty) _nuancesCache = null;
       }
       if (_spDc == null || _spDc!.isEmpty) return;
+      // 已過期或快過期（<10 分鐘）就立刻續；否則排定時續期。
       if (_tokenExpiryMs - DateTime.now().millisecondsSinceEpoch <
-          const Duration(minutes: 5).inMilliseconds) {
+          const Duration(minutes: 10).inMilliseconds) {
         await refreshToken();
       } else {
         _scheduleRefresh();
@@ -85,9 +91,14 @@ class SpotifySession extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> refreshToken() async {
+  /// 續 token（sp_dc → TOTP → open.spotify.com/api/token）。
+  /// 回傳是否成功；失敗會指明原因，方便 UI 提示「需重登」。
+  Future<bool> refreshToken() async {
     final dc = _spDc;
-    if (dc == null || dc.isEmpty) return;
+    if (dc == null || dc.isEmpty) {
+      _lastError = '尚未登入（沒有 sp_dc cookie）';
+      return false;
+    }
     try {
       final nuances = await _fetchNuances();
       final version = nuances.keys.reduce(max);
@@ -104,24 +115,70 @@ class SpotifySession extends ChangeNotifier {
             '${_randomHex(16)}',
         'Cookie': 'sp_dc=$dc;',
       }).timeout(const Duration(seconds: 20));
-      if (resp.statusCode != 200) return;
+      if (resp.statusCode != 200) {
+        // 400 = sp_dc 被 Spotify 淘汰（重登也救不了，要走完整登入流程）。
+        _lastError = resp.statusCode == 400
+            ? 'sp_dc 已失效（HTTP 400），需重新登入 Spotify'
+            : '續期失敗 HTTP ${resp.statusCode}';
+        return false;
+      }
       final data = jsonDecode(resp.body) as Map<String, dynamic>;
-      _accessToken = data['accessToken'] as String?;
-      _tokenExpiryMs =
+      final token = data['accessToken'] as String?;
+      final expiry =
           (data['accessTokenExpirationTimestampMs'] as num?)?.toInt() ?? 0;
+      if (token == null || token.isEmpty || expiry <= 0) {
+        _lastError = '續期回應缺少 token/expiry';
+        return false;
+      }
+      _accessToken = token;
+      _tokenExpiryMs = expiry;
+      _lastError = null;
+      _refreshFails = 0;
       _save();
       _scheduleRefresh();
       notifyListeners();
-    } catch (_) {}
+      return true;
+    } catch (e) {
+      _lastError = '續期例外: $e';
+      return false;
+    }
   }
+
+  /// 上次續期失敗原因（null = 正常）。UI 可顯示「需重登」提示。
+  String? _lastError;
+  String? get lastError => _lastError;
+
+  /// 續期連續失敗次數。
+  int _refreshFails = 0;
+  int get refreshFails => _refreshFails;
 
   void _scheduleRefresh() {
     _refreshTimer?.cancel();
     final remainMs = _tokenExpiryMs - DateTime.now().millisecondsSinceEpoch;
-    if (remainMs <= 0) return;
+    if (remainMs <= 0) {
+      // 已過期：短延遲重試（下次續期成功就恢復正常節奏）。
+      _refreshTimer = Timer(const Duration(seconds: 30), () async {
+        final ok = await refreshToken();
+        if (!ok) {
+          _refreshFails++;
+          // 連續失敗別無限重試轟 API：拉長到 5 分鐘一次。
+          _refreshTimer = Timer(
+              const Duration(minutes: 5), () => refreshToken());
+        }
+      });
+      return;
+    }
     // remain<60s 時 Duration 會是負值直接拋 ArgumentError：clamp 保底。
-    final delayMs = (remainMs - 60000).clamp(0, remainMs);
-    _refreshTimer = Timer(Duration(milliseconds: delayMs), refreshToken);
+    final delayMs = (remainMs - 120000).clamp(0, remainMs);
+    _refreshTimer = Timer(Duration(milliseconds: delayMs), () async {
+      final ok = await refreshToken();
+      if (!ok) {
+        _refreshFails++;
+        // 續期失敗：2 分鐘後再試（短暫 5xx/網路抖動通常就好了）。
+        _refreshTimer =
+            Timer(const Duration(minutes: 2), () => refreshToken());
+      }
+    });
   }
 
   void _save() {
@@ -145,13 +202,28 @@ class SpotifySession extends ChangeNotifier {
       final resp = await http.get(Uri.parse(_nuancesUrl))
           .timeout(const Duration(seconds: 10));
       if (resp.statusCode == 200) {
-        final list = jsonDecode(resp.body) as List<dynamic>;
-        _nuancesCache = {
-          for (final e in list.cast<Map<String, dynamic>>())
-            (e['v'] as num).toInt(): e['s'] as String,
-        };
-        _save();
-        return _nuancesCache!;
+        final decoded = jsonDecode(resp.body);
+        // 格式會變：舊版 {version: secret}，新版 [{v: version, s: secret}]。
+        // 兩種都吃，否則 gist 一改格式整條續期鏈就死。
+        if (decoded is List) {
+          _nuancesCache = {
+            for (final e in decoded.cast<Map<String, dynamic>>())
+              if (e['v'] is num && e['s'] is String)
+                (e['v'] as num).toInt(): e['s'] as String,
+          };
+        } else if (decoded is Map) {
+          _nuancesCache = {
+            for (final e in decoded.entries)
+              if (int.tryParse(e.key.toString()) != null)
+                int.parse(e.key.toString()): e.value.toString(),
+          };
+        }
+        if (_nuancesCache == null || _nuancesCache!.isEmpty) {
+          _nuancesCache = null;
+        } else {
+          _save();
+          return _nuancesCache!;
+        }
       }
     } catch (_) {}
     // Fallback: try loading from session file cache.

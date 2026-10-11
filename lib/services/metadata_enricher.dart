@@ -4,6 +4,28 @@ import 'config_service.dart';
 import 'cover_cache.dart';
 import 'metadata_reader.dart';
 import 'artist_names.dart';
+import 'spotify_gql_client.dart';
+import 'spotify_session.dart';
+
+/// ffmpeg / ffprobe 實際路徑：優先用設定裡的（desktop 的 bin/ffmpeg.exe
+  /// 不在 PATH），退回 PATH 名稱。舊寫法直接用裸 'ffmpeg' → 找不到就是
+  /// 每次寫入都失敗（年份/專輯一直補不進 ID3 的真正原因）。
+String _ffmpegPath() {
+  try {
+    final p = ConfigService.instance.config.resolvedFfmpegPath;
+    if (p.isNotEmpty) return p;
+  } catch (_) {}
+  return 'ffmpeg';
+}
+
+String _ffprobePath() {
+  final f = _ffmpegPath();
+  if (f == 'ffmpeg') return 'ffprobe';
+  // ...\bin\ffmpeg.exe → ...\bin\ffprobe.exe
+  final i = f.lastIndexOf('ffmpeg');
+  if (i > 0) return '${f.substring(0, i)}ffprobe${f.substring(i + 6)}';
+  return 'ffprobe';
+}
 
 /// 檔名 stem（不含副檔名）——cache key 兜底用。
 String fileNameFor(String path) =>
@@ -100,6 +122,132 @@ class MetadataEnricher {
     }
     log('🎉 artist 中文化完成：$changed/$total');
     return changed;
+  }
+
+  /// 補年份：唯一會回 albumOfTrack.date 的查詢是 getTrack
+  ///（searchTracks / fetchPlaylist 的 albumOfTrack 只有 coverArt/id/name/uri）。
+  /// 流程：本機檔名 → searchTracks 取 trackId → getTrack 取 year → 寫 ID3。
+  /// 每首一次 Spotify 請求（1.2s 間隔避免 429），結果寫進 CoverCache 快取，
+  /// 重跑會跳過已補的。
+  Future<int> fillYearsFromSpotify({
+    int limit = 0,
+    void Function(int done, int total, String file)? onProgress,
+  }) async {
+    log('📅 補年份（Spotify getTrack）…');
+    try {
+      await SpotifySession.instance.load();
+    } catch (_) {}
+    if (!SpotifySession.instance.isLoggedIn) {
+      log('⚠️ Spotify 未登入：先在 app 重登再跑（搜尋頁有「重登」鈕）');
+      return 0;
+    }
+    final cache = await CoverCache.load();
+    final gql = SpotifyGqlClient();
+
+    final targets = <String>[];
+    try {
+      final dir = Directory(libraryPath);
+      if (await dir.exists()) {
+        await for (final e
+            in dir.list(recursive: true, followLinks: false)) {
+          if (e is! File || !e.path.toLowerCase().endsWith('.mp3')) continue;
+          targets.add(e.path);
+        }
+      }
+    } catch (_) {}
+    targets.sort();
+    final total = limit > 0 && limit < targets.length ? limit : targets.length;
+
+    var done = 0, ok = 0, skip = 0, fail = 0;
+    final yearRe = RegExp(r'^(1\d{3}|2\d{3})$');
+    for (int i = 0; i < total; i++) {
+      final path = targets[i];
+      done++;
+      final name = fileNameFor(path);
+      final parts = name.split(' - ');
+      final title = parts.first.trim();
+      final artist =
+          parts.length > 1 ? parts.sublist(1).join(' - ').trim() : '';
+      onProgress?.call(done, total, name);
+
+      // 快取有年份 → 直接寫 ID3（不重打 Spotify）
+      final key = CoverCache.key(null, title, artist);
+      var year = (cache[key] is Map)
+          ? ((cache[key] as Map)['y'] as String?)
+          : null;
+
+      if (year == null) {
+        final q = artist.isEmpty ? title : '$title $artist';
+        try {
+          final s = await gql.searchTracks(q, limit: 1);
+          final tracks = SpotifyTrackItem.parseSearchTracks(s);
+          if (tracks.isEmpty) {
+            fail++;
+            await Future<void>.delayed(const Duration(milliseconds: 1200));
+            continue;
+          }
+          // 曲名必須「正規化後完全相同」才接受。
+          // 舊寫法用 contains：'2002'.contains('20') → 給 BTS 的歌套上
+          // 別首歌的專輯與年份（實測把 2.0 BTS 標成 ARIRANG）。
+          //
+          // 歌手不做硬比對：Spotify 的 artist 名會隨語言/地區不同
+          // （米津玄師 ↔ Kenshi Yonezu、周杰倫 ↔ Jay Chou），硬比會把
+          // 全部日韓歌手擋掉。曲名全等 + 之後用 getTrack 鎖定該 track id
+          // 已經足夠安全。
+          final pick = tracks.first;
+          final pn = CoverCache.norm(pick.name);
+          final ln = CoverCache.norm(title);
+          if (ln.isEmpty || pn != ln) {
+            fail++;
+            log('  ⚠️ 曲名不符: 「$title」→ 搜尋回「${pick.name}」');
+            await Future<void>.delayed(const Duration(milliseconds: 1200));
+            continue;
+          }
+          final t = await gql.getTrack(pick.id);
+          year = SpotifyTrackItem.yearFromResponse(t,
+              expectAlbumName: pick.album);
+          if (year == null) {
+            log('  ⚠️ 取不到年份: $name'
+                '（搜尋命中「${pick.name}」但 getTrack 沒回日期）');
+          }
+          if (year != null && yearRe.hasMatch(year)) {
+            cache[key] = {
+              ...(cache[key] is Map
+                  ? cache[key] as Map
+                  : <String, dynamic>{}),
+              'y': year,
+            };
+            try {
+              await CoverCache.save(cache);
+            } catch (_) {}
+          }
+        } catch (_) {
+          fail++;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 1200));
+      }
+
+      if (year == null || !yearRe.hasMatch(year)) {
+        fail++;
+        continue;
+      }
+      // 寫 ID3（保留封面）；album 一併帶上（getTrack 回得到就帶）
+      final wrote = await _applyMetadata(path, title, artist, null, year, null);
+      if (!wrote) {
+        log('  ⚠️ 寫入 ID3 失敗: $name（ffmpeg 寫不進去）');
+      }
+      if (wrote) {
+        ok++;
+        if (ok % 20 == 0) {
+          log('  進度 $done/$total（補 $ok／略 $skip／失敗 $fail）');
+          await Future<void>.delayed(Duration.zero);
+        }
+      } else {
+        fail++;
+      }
+    }
+    log('🎉 年份補齊：$ok/$total（略過 $skip、失敗 $fail）');
+    return ok;
   }
 
   Future<List<String>> _scanMissingMetadata() async {
@@ -241,60 +389,68 @@ class MetadataEnricher {
     String? coverUrl,
   ) async {
     try {
-      final ext = filePath.toLowerCase().split('.').last;
-      final tmpPath = '${filePath}_tmp.$ext';
+      // 組參數：先決定 map/codec，再加 metadata，最後才放輸出路徑。
+      // 舊寫法用 removeLast() 想移除「還沒加進去的輸出路徑」→ 命令結構壞掉，
+      // ffmpeg 報 "Output same as Input"，每次寫入都失敗。
+      final hadArt = await _hasArtwork(filePath);
+      final tmpPath = '$filePath.meta_tmp.mp3';
 
-      final cmd = <String>['ffmpeg', '-y', '-i', filePath, '-c', 'copy'];
-      if (title != null && title.isNotEmpty) cmd.addAll(['-metadata', 'title=$title']);
-      // artist 轉中文：Spotify embed 路徑給英文（Bestards / Claire Kuo…），
-      // ArtistNames 對照表有的才轉，查不到原樣保留（不臆測日本/歐美藝人）。
+      final args = <String>['-y', '-i', filePath];
+      if (hadArt) {
+        // 有封面：音訊+視訊都帶過去（只 map 0:a 會把封面洗掉）
+        args.addAll([
+          '-map', '0:a', '-map', '0:v',
+          '-c:a', 'copy', '-c:v', 'mjpeg', '-id3v2_version', '3',
+          '-metadata:s:v', 'title=Album cover',
+          '-metadata:s:v', 'comment=Cover (front)',
+        ]);
+      } else {
+        args.addAll(['-map', '0:a', '-c:a', 'copy']);
+      }
+      if (title != null && title.isNotEmpty) {
+        args.addAll(['-metadata', 'title=$title']);
+      }
+      // artist 轉中文：Spotify 英文名（Bestards / Claire Kuo…）對照表有才轉，
+      // 查不到原樣保留（不臆測日本/歐美藝人）。
       final artistOut = (artist != null && artist.isNotEmpty)
           ? ArtistNames.toDisplayList(artist)
           : artist;
       if (artistOut != null && artistOut.isNotEmpty) {
-        cmd.addAll(['-metadata', 'artist=$artistOut']);
+        args.addAll(['-metadata', 'artist=$artistOut']);
       }
-      if (album != null && album.isNotEmpty) cmd.addAll(['-metadata', 'album=$album']);
-      // 年份必須是 4 位數：任何其他值（空/怪字串）寧可不寫，
-      // 寫壞會讓播放器顯示 1970/0000，比沒日期更糟。
+      if (album != null && album.isNotEmpty) {
+        args.addAll(['-metadata', 'album=$album']);
+      }
+      // 年份必須 4 位數：其他值寧可不寫（空 date 會讓播放器顯示 1970）
       final y = year?.trim() ?? '';
       if (RegExp(r'^(1\d{3}|2\d{3})$').hasMatch(y)) {
-        cmd.addAll(['-metadata', 'date=$y']);
+        args.addAll(['-metadata', 'date=$y']);
       }
-      // 有封面就一併帶過去：舊寫法只 map 0:a → 跑一次 metadata 就把封面洗掉。
-      final hadArt = await _hasArtwork(filePath);
-      if (hadArt) {
-        final tmp2 = '$filePath.mtag.mp3';
-        cmd.removeLast(); // 移除 tmpPath
-        cmd.addAll(['-i', filePath, '-map', '0:a', '-map', '0:v',
-          '-c:a', 'copy', '-c:v', 'mjpeg', '-id3v2_version', '3',
-          '-metadata:s:v', 'title=Album cover',
-          '-metadata:s:v', 'comment=Cover (front)', tmp2]);
-        final r2 = await Process.run(cmd[0], cmd.sublist(1), runInShell: false);
-        if (r2.exitCode != 0 || !await File(tmp2).exists()) {
-          if (await File(tmp2).exists()) await File(tmp2).delete();
-          return false;
-        }
-        await File(filePath).delete();
-        await File(tmp2).rename(filePath);
-        log('  ✅ 已更新 metadata: ${File(filePath).uri.pathSegments.last}');
-        return true;
-      }
-      cmd.add(tmpPath);
+      args.add(tmpPath);
 
-      // runInShell: false：中文 artist 經 cmd.exe 會被引號/特殊符號吃掉。
-      final result = await Process.run(cmd[0], cmd.sublist(1), runInShell: false);
+      // runInShell: false：中文 artist 經 cmd.exe 會被引號吃掉
+      final r = await Process.run(_ffmpegPath(), args,
+          runInShell: false, stdoutEncoding: null);
 
-      if (result.exitCode == 0) {
-        await File(filePath).delete();
-        await File(tmpPath).rename(filePath);
-        log('  ✅ 已更新 metadata: ${File(filePath).uri.pathSegments.last}');
-        return true;
-      } else {
+      if (r.exitCode != 0 || !await File(tmpPath).exists()) {
+        final lines = (r.stderr is String
+                ? r.stderr as String
+                : utf8.decode(r.stderr as List<int>, allowMalformed: true))
+            .split('\n')
+            .where((l) => l.trim().isNotEmpty)
+            .toList();
+        // 真錯誤在最後（開頭是 ffmpeg 版權 banner）
+        final tail = lines.length <= 4
+            ? lines.join(' | ')
+            : lines.sublist(lines.length - 4).join(' | ');
+        log('  ⚠️ ffmpeg 失敗 exit=${r.exitCode}: $tail');
         if (await File(tmpPath).exists()) await File(tmpPath).delete();
-        log('  ⚠️ 寫入 metadata 失敗: ${File(filePath).uri.pathSegments.last}');
         return false;
       }
+      await File(filePath).delete();
+      await File(tmpPath).rename(filePath);
+      log('  ✅ 已更新 metadata: ${File(filePath).uri.pathSegments.last}');
+      return true;
     } catch (e) {
       log('  ⚠️ Metadata 寫入錯誤: $e');
       return false;
@@ -304,7 +460,7 @@ class MetadataEnricher {
   /// 有沒有內嵌封面（ffprobe 找 image stream）。
   Future<bool> _hasArtwork(String path) async {
     try {
-      final r = await Process.run('ffprobe', [
+      final r = await Process.run(_ffprobePath(), [
         '-v', 'quiet', '-print_format', 'json', '-show_streams', path,
       ], runInShell: false);
       final j = jsonDecode(r.stdout as String) as Map<String, dynamic>;

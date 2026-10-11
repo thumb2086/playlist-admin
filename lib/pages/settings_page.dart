@@ -7,6 +7,7 @@ import 'package:share_plus/share_plus.dart';
 import '../app.dart';
 import '../models/config_model.dart';
 import '../services/config_service.dart';
+import '../services/cover_cache.dart';
 import '../services/i18n.dart';
 import '../services/log_manager.dart';
 import '../services/sync_server.dart';
@@ -109,12 +110,24 @@ class _SettingsPageState extends State<SettingsPage> {
           _Field(t('settings.library_path'), _basePathCtrl, 'C:\\Users\\CPXru\\Music\\playlist-admin'),
           _Field(t('settings.thread_count'), _workersCtrl, '4'),
           _Field(t('settings.ffmpeg_path'), _ffmpegCtrl, 'bin/ffmpeg.exe'),
-          // Language
+          // Language（同時決定 Spotify 回傳的 artist/專輯名語言：
+          // 選繁中 → Spotify 回「周杰倫」；選 English → 回「Jay Chou」）
           _DropdownLabel(t('settings.language')),
           _Dropdown(
             value: I18N.instance.currentLang,
             items: const [DropdownMenuItem(value: 'zh-TW', child: Text('繁體中文')), DropdownMenuItem(value: 'en', child: Text('English'))],
-            onChanged: (v) { I18N.instance.setLanguage(v); c.language = v; ConfigService.instance.save(); },
+            onChanged: (v) {
+              I18N.instance.setLanguage(v);
+              c.language = v;
+              ConfigService.instance.save();
+              // 語言變了 → Spotify 的 artist 名也變，清掉快取避免顯示舊譯名
+              CoverCache.invalidate();
+              setState(() {});
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                content: Text('語言已切換，重新抓取的 Spotify 資料會用新語言'),
+                duration: Duration(seconds: 2),
+              ));
+            },
           ),
           const SizedBox(height: 8),
           // Theme

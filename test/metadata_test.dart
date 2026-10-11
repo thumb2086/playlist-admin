@@ -6,6 +6,41 @@ import 'package:playlist_admin/services/spotify_gql_client.dart';
 /// metadata repair regression tests (pure functions, no file writes).
 void main() {
   group('albumYear', () {
+    test('nested GQL shape {date:{year,isoString,precision}} -> year', () {
+      // 實測 getTrack 回應形狀（只有 getTrack 查詢會回，searchTracks 不回）
+      expect(
+        SpotifyTrackItem.albumYear({
+          'date': {
+            'isoString': '2003-07-29T00:00:00Z',
+            'precision': 'DAY',
+            'year': 2003,
+          }
+        }),
+        '2003',
+      );
+      expect(
+        SpotifyTrackItem.albumYear({
+          'date': {'isoString': '1999-12-31T00:00:00Z'}
+        }),
+        '1999',
+      );
+    });
+
+    test('yearFromResponse 深層掃描（getTrack 巢狀位置）', () {
+      final resp = {
+        'data': {
+          'trackUnion': {
+            'albumOfTrack': {
+              'name': '葉惠美',
+              'date': {'year': 2003, 'isoString': '2003-07-29T00:00:00Z'},
+            }
+          }
+        }
+      };
+      expect(SpotifyTrackItem.yearFromResponse(resp), '2003');
+      expect(SpotifyTrackItem.yearFromResponse({'data': {}}), isNull);
+    });
+
     test('ISO date string -> 4 digit year', () {
       expect(SpotifyTrackItem.albumYear({'date': '2011-07-08'}), '2011');
       expect(SpotifyTrackItem.albumYear({'date': '2003'}), '2003');

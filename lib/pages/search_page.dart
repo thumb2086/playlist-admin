@@ -44,6 +44,24 @@ class _SearchPageState extends State<SearchPage> {
     super.dispose();
   }
 
+  /// 重登 Spotify：token 約 40 分鐘過期，sp_dc 也會被 Spotify 淘汰。
+  /// 舊版只在「未登入」時顯示登入鈕 → 已登入但 token 過期時無路可走。
+  Future<void> _relogin() async {
+    await showSpotifyLogin(context);
+    await SpotifySession.instance.load();
+    if (!mounted) return;
+    setState(() {
+      _tracks = [];
+      _error = '';
+    });
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(SpotifySession.instance.isLoggedIn
+          ? 'Spotify 已重新登入'
+          : '未取得授權（sp_dc 可能已被 Spotify 淘汰，需完整登入流程）'),
+      duration: const Duration(seconds: 3),
+    ));
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -164,23 +182,49 @@ class _SearchPageState extends State<SearchPage> {
             ),
           )
         else ...[
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-            decoration: BoxDecoration(
-              color: AppColors.surfaceLight,
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: TextField(
-              controller: _searchCtrl,
-              autofocus: false,
-              decoration: const InputDecoration(
-                hintText: '搜尋歌曲、藝人、專輯…',
-                border: InputBorder.none,
-                icon: Icon(Icons.search_rounded, color: AppColors.textMuted, size: 18),
+          Row(children: [
+            Expanded(
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+                decoration: BoxDecoration(
+                  color: AppColors.surfaceLight,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: TextField(
+                  controller: _searchCtrl,
+                  autofocus: false,
+                  decoration: const InputDecoration(
+                    hintText: '搜尋歌曲、藝人、專輯…',
+                    border: InputBorder.none,
+                    icon: Icon(Icons.search_rounded,
+                        color: AppColors.textMuted, size: 18),
+                  ),
+                  style: const TextStyle(fontSize: 13),
+                ),
               ),
-              style: const TextStyle(fontSize: 13),
             ),
-          ),
+            // 重登入口：token 約 40 分鐘過期，sp_dc 也會被 Spotify 淘汰。
+            // 舊版只有「未登入」時才有鈕 → 過期後使用者只能重開 app。
+            const SizedBox(width: 8),
+            Tooltip(
+              message: SpotifySession.instance.lastError ?? '重登 Spotify',
+              child: OutlinedButton.icon(
+                onPressed: _relogin,
+                icon: const Icon(Icons.refresh_rounded, size: 16),
+                label: const Text('重登', style: TextStyle(fontSize: 12)),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor:
+                      SpotifySession.instance.lastError != null
+                          ? AppColors.error
+                          : AppColors.text,
+                  side: const BorderSide(color: AppColors.border),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                ),
+              ),
+            ),
+          ]),
           const SizedBox(height: 12),
           if (_searching)
             const Expanded(child: Center(child: CircularProgressIndicator()))
