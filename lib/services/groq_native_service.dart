@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
 import 'package:logger/logger.dart';
 import 'config_service.dart';
+import 'upload_budget.dart';
 
 final _log = Logger(printer: PrettyPrinter(methodCount: 0));
 
@@ -217,6 +218,9 @@ class GroqNativeService {
           ..fields['model'] = model
           ..fields['response_format'] = 'verbose_json'
           ..files.add(file);
+        // 上傳流量預算守門：預算用盡直接擋下（呼叫端當「跳過」而非失敗）。
+        // 放在真正送出前，重試也會再記一次（瞞報等於沒上限）。
+        UploadBudget.charge(file.length);
 
         final streamedResponse = await client.send(request).timeout(const Duration(seconds: 300));
         final body = await streamedResponse.stream.bytesToString();

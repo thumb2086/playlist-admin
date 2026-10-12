@@ -261,7 +261,14 @@ class PodcastService {
         ['tools\\flutter_download_bridge.py', 'youtube-subs', query, outputPath, podcastName],
         runInShell: false, // query 可能含 &（集名）：不可經 cmd
         workingDirectory: ConfigService.instance.config.basePath,
-        environment: {'PYTHONIOENCODING': 'utf-8'},
+        environment: {
+          'PYTHONIOENCODING': 'utf-8',
+          // bridge 要知道 base_path 才能寫共用流量計數檔，
+          // 也要拿到上傳預算上限（否則 YouTube 字幕下載不算進預算）。
+          'BASE_PATH': ConfigService.instance.config.basePath,
+          'PA_UPLOAD_BUDGET_MB':
+              Platform.environment['PA_UPLOAD_BUDGET_MB'] ?? '',
+        },
       );
       var result = PodcastSubtitleResult.failed;
       final outDone = proc.stdout.transform(utf8.decoder).transform(const LineSplitter()).forEach((line) {

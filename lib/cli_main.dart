@@ -7,6 +7,7 @@ import 'services/favorites_service.dart';
 import 'services/library_organizer.dart';
 import 'services/artwork_embedder.dart';
 import 'services/metadata_enricher.dart';
+import 'services/upload_budget.dart';
 import 'services/spotify_session.dart';
 import 'services/stream_server.dart';
 import 'pipeline/pipeline_orchestrator.dart';
@@ -101,6 +102,23 @@ Downloaded: ${cfg.lastUpdated.length}''');
           '已嵌 ${stats['embedded']}，已有圖跳過 ${stats['skipped']}，'
           '無封面 ${stats['noCover']}，失敗 ${stats['failed']}，'
           '補 album/date ${stats['tagged'] ?? 0}');
+      break;
+
+    case 'budget':
+      if (args.length >= 2 && args[1] == 'reset') {
+        // 每天（或重開機後）設一次「今日基準」，之後的判定都以此為準
+        UploadBudget.markTodayBaseline();
+        print('今日流量基準已設定（從現在起算）');
+        print('  ${UploadBudget.todayText()}');
+      } else if (args.length >= 2 && args[1] == 'today') {
+        print(UploadBudget.todayText());
+      } else {
+        print(UploadBudget.describe());
+        print('  ${UploadBudget.todayText()}');
+        if (!UploadBudget.hasLimit) {
+          print('  （未設 PA_UPLOAD_BUDGET_MB → 不限）');
+        }
+      }
       break;
 
     case 'metadata':

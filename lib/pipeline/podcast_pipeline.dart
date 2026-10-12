@@ -7,6 +7,7 @@ import '../services/config_service.dart';
 import '../services/podcast_service.dart';
 import '../services/groq_service.dart';
 import '../services/groq_native_service.dart';
+import '../services/upload_budget.dart';
 import '../services/chinese_converter.dart';
 import '../services/rag_service.dart';
 import '../version.dart';
@@ -264,15 +265,21 @@ class PodcastPipeline {
     final total = tasks.length;
     final groqQueue = <_PodTask>[];
     int groqActive = 0;
+    // 上傳流量預算用盡旗標：一旦被 charge 擋下，整批提早結束不再排新任務。
+    var budgetHit = false;
     final groqLimit = ConfigService.instance.config.groqConcurrency.clamp(1, 8);
 
     Future<void> tryGroq() async {
-      while (groqActive < groqLimit && groqQueue.isNotEmpty && !state.isCancelled) {
+      while (groqActive < groqLimit &&
+          groqQueue.isNotEmpty &&
+          !state.isCancelled &&
+          !budgetHit) {
         final t = groqQueue.removeAt(0);
         groqActive++;
         // fire and forget: continue processing queue while this runs.
         // whenComplete 保證 throw 路徑也扣回計數，否則底部 while 轉不停。
-        unawaited(_runGroq(t, podcastName, podDir, ext, cache, onLog, state).whenComplete(() {
+        unawaited(_runGroq(t, podcastName, podDir, ext, cache, onLog, state,
+            onBudgetHit: () => budgetHit = true).whenComplete(() {
           groqActive--;
           _saveCacheAsync(cache);
           tryGroq(); // kick next
@@ -305,6 +312,12 @@ class PodcastPipeline {
       final done = (i + batch.length).clamp(0, total);
       onProgress(done * 100 ~/ total, 100, stepIndex);
       onLog('  進度: $done/$total');
+      // 上傳流量預算用盡：立刻停止排程，剩餘集數留待下批（不再打任何 API）。
+      if (budgetHit) {
+        onLog('  ⏹ 上傳流量預算用盡（${UploadBudget.describe()}），'
+            '本節目剩餘集數留待下批');
+        break;
+      }
     }
 
     // Wait for remaining Groq
@@ -630,10 +643,15 @@ class PodcastPipeline {
   }
 
   Future<void> _runGroq(
-    _PodTask t, String podcastName, String podDir, String ext,
-    Map<String, Map<String, dynamic>> cache, void Function(String) onLog,
-    PipelineState state,
-  ) async {
+    _PodTask t,
+    String podcastName,
+    String podDir,
+    String ext,
+    Map<String, Map<String, dynamic>> cache,
+    void Function(String) onLog,
+    PipelineState state, {
+    void Function()? onBudgetHit,
+  }) async {
     if (state.isCancelled) return;
     final name = PodcastService.normalizeFileName(t.episode.title);
     final audioPath = '$podDir\\$name.$ext';
@@ -661,6 +679,13 @@ class PodcastPipeline {
       await File(txtPath).writeAsString(converted, flush: true);
       cache[t.key] = {'srt': false, 'txt': true, 'yt_status': 'not_found', 'status': 'ok'};
       onLog('      ✅ ($strippedLen 字)');
+    } on UploadBudgetExceeded catch (e) {
+      // 流量預算用盡：這集留待下批（status 保持未完成），不是錯誤、不重試。
+      onLog('      ⏸ $e');
+      onLog('      ${UploadBudget.describe()}');
+      onBudgetHit?.call();
+      cache[t.key] =
+          {'srt': false, 'txt': false, 'yt_status': '', 'status': ''};
     } catch (e) {
       onLog('      ❌ $e');
       // Record failure so the episode is retried on next run instead of

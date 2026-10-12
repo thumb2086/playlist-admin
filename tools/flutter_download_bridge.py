@@ -590,6 +590,59 @@ def _pick_best_video(unique, podcast_name, youtube_dl, episode_title=''):
     return unique[0], 'fallback'
 
 
+def _usage_file():
+    """與 Dart 端 UploadBudget 共用同一個用量檔（base_path/cache/groq/）。"""
+    base = os.environ.get('BASE_PATH') or ''
+    if not base:
+        for cand in (os.environ.get('PA_ROOT'),):
+            if cand:
+                base = cand
+                break
+    if not base:
+        return ''
+    d = os.path.join(base, 'cache', 'groq')
+    try:
+        os.makedirs(d, exist_ok=True)
+        return os.path.join(d, 'upload_usage.json')
+    except OSError:
+        return ''
+
+
+def _charge_usage(nbytes, kind='up'):
+    """記一筆流量（download=YouTube 字幕/音檔、up=Groq 上傳）。
+    超過 PA_UPLOAD_BUDGET_MB 就丟例外，讓呼叫端當「跳過」而不是失敗。"""
+    if nbytes <= 0:
+        return
+    path = _usage_file()
+    if not path:
+        return
+    try:
+        with open(path, 'r', encoding='utf-8') as fh:
+            j = json.load(fh)
+    except (OSError, ValueError):
+        j = {}
+    used = int(j.get('bytes', 0)) + int(nbytes)
+    limit_mb = int(os.environ.get('PA_UPLOAD_BUDGET_MB', '0') or 0)
+    limit = limit_mb * 1024 * 1024 if limit_mb > 0 else 0
+    if limit and used > limit:
+        emit_json({'type': 'log', 'message':
+                   '流量預算用盡（%.0f MB / %.0f MB），略過'
+                   % (used / 1048576.0, limit / 1048576.0)})
+        emit_json({'type': 'budget_exceeded',
+                   'message': '流量預算用盡'})
+        raise RuntimeError('budget exceeded')
+    j['bytes'] = used
+    j['limit_mb'] = limit_mb
+    j.setdefault('breakdown', {})
+    j['breakdown'][kind] = j['breakdown'].get(kind, 0) + int(nbytes)
+    j['updated'] = time.strftime('%Y-%m-%dT%H:%M:%S')
+    try:
+        with open(path, 'w', encoding='utf-8') as fh:
+            json.dump(j, fh)
+    except OSError:
+        pass
+
+
 def cmd_youtube_subs(args):
     """Search YouTube and download Chinese subtitles for a podcast episode"""
     query = _clean_query(args[0])
@@ -707,6 +760,16 @@ def cmd_youtube_subs(args):
                 break
 
         if srt_found and os.path.exists(srt_found):
+            # 流量記帳：YouTube 字幕下載也算（否則只擋 Groq 上傳，
+            # 實際總量會是上傳的 2 倍以上，會炸掉每日 12GB 上限）。
+            try:
+                _charge_usage(os.path.getsize(srt_found), 'sub')
+            except RuntimeError:
+                try:
+                    os.remove(srt_found)
+                except OSError:
+                    pass
+                return
             # Duration guard：字幕時間跨度 vs 同目錄音檔時長。
             # 錯集字幕通常更長（別集整集字幕），超過 15% 直接銷毀走 not_found
             # （Groq 轉寫真音檔），不讓它污染逐字稿與 RAG。
