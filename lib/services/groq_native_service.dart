@@ -78,8 +78,23 @@ class GroqNativeService {
   }
 
   // ── 常量 ──────────────────────────────────────────────
-  /// Groq 免費方案音檔大小上限（bytes）
-  static const int _maxFileSize = 20 * 1024 * 1024; // 20 MB
+  /// 每段音訊的大小上限。
+  ///
+  /// 上游不同上限不同：官方 Groq 收 20MB，但經自家 Vercel router 轉發時
+  /// Functions body 上限只有 ~4.5MB → 20MB 段全部 413 FUNCTION_PAYLOAD_TOO_LARGE，
+  /// 回空字串被誤判「逐字稿過短」。所以改成可設定，預設保守 4MB。
+  /// 環境變數 `PA_TRANSCRIBE_MAX_MB` 可覆寫。
+  static int get _maxFileSize {
+    final mb = int.tryParse(
+            Platform.environment['PA_TRANSCRIBE_MAX_MB'] ?? '') ??
+        0;
+    if (mb > 0) return mb * 1024 * 1024;
+    return _defaultMaxFileSize;
+  }
+
+  static const int _defaultMaxFileSize = 4 * 1024 * 1024; // 4 MB（router 安全值）
+  /// 目前生效的分段大小（診斷/測試用）。
+  static int get maxFileSizeBytes => _maxFileSize;
   /// 分段秒數（5 分鐘）
   static const int _chunkDurationSec = 300;
   /// 二次分段秒數（60 秒，處理 5 分鐘段仍過大的情況）
@@ -89,6 +104,8 @@ class GroqNativeService {
 
   // ── HTTP 狀態碼分類 ──────────────────────────────────
   static const _retryableStatuses = {0, 429, 500, 502, 503};
+  /// 413 = 上游 body 太大：重試沒用，要用更小的段
+  static const _payloadTooLarge = 413;
 
   // ── 代理 (Proxy) 支援 ────────────────────────────────
   String? _cachedProxy;
@@ -244,7 +261,14 @@ class GroqNativeService {
 
         // 不可重試的錯誤（400, 401, 413 等）：typed exception，
         // catch 端直接 rethrow，不做字串比對。
-        throw _GroqFatalException(sc, body);
+        // 413 特別註明是「段太大」——舊版回空字串被當成
+        // 「逐字稿過短」而無聲跳過，浪費整份音檔的流量。
+        throw _GroqFatalException(
+          sc,
+          sc == _payloadTooLarge
+              ? '上游拒收（413 段太大）：請調小 PA_TRANSCRIBE_MAX_MB'
+              : body,
+        );
       } on TimeoutException {
         final delay = Duration(seconds: 3 + attempt * 3);
         _log.w('[Groq] 逾時，第 ${attempt + 1}/$totalAttempts 次重試');
@@ -303,6 +327,7 @@ class GroqNativeService {
 
     // 4 並行轉錄
     final texts = List<String>.filled(chunks.length, '');
+    final errors = <String>[];
     int done = 0;
 
     Future<void> transcribeOne(int i) async {
@@ -313,7 +338,10 @@ class GroqNativeService {
           texts[i] = text;
         }
       } catch (e) {
+        // 舊版在這裡 swallow 掉錯誤 → 上游 413（段太大）時全部回空字串，
+        // 上層看起來像「逐字稿過短」，白燒整份音檔的流量還查不到原因。
         _log.w('  [chunk ${i + 1}] 轉錄失敗: $e');
+        if (errors.length < 5) errors.add('${i + 1}: $e');
       }
       done++;
       final pct = 0.1 + (0.9 * (done / chunks.length));
@@ -344,6 +372,16 @@ class GroqNativeService {
       final d = File(chunks.first).parent;
       if (d.path.contains('groq_chunk_')) d.deleteSync(recursive: true);
     } catch (_) {}
+
+    // 全段失敗 → 拋出真因（以前回空字串，上層誤判「逐字稿過短」）
+    final nonEmpty = texts.where((t) => t.trim().isNotEmpty).length;
+    if (errors.isNotEmpty && nonEmpty == 0) {
+      throw Exception('分段轉錄全部失敗（${errors.length}/${chunks.length} 段）：'
+          '${errors.join(' / ')}');
+    }
+    if (errors.isNotEmpty) {
+      _log.w('  ${errors.length}/${chunks.length} 段失敗（其餘已取得）');
+    }
 
     onChunk?.call('轉錄完成', 1.0);
     return texts.where((t) => t.isNotEmpty).join('\n');

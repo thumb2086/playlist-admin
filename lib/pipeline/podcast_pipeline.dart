@@ -666,11 +666,15 @@ class PodcastPipeline {
       );
       // Garbage guard: a transcript with almost no content means the audio
       // was bad/empty or ASR failed — do NOT mark done, retry next run.
+      // 記 'error' 不是 'no_sub'：0 字通常代表「轉寫失敗」（例如上游 413
+      // 段太大），記 no_sub 會被當成「這集本來就沒字幕」而永久跳過，
+      // 等於每集都白燒一次音檔流量。
       final strippedLen = text.replaceAll(RegExp(r'\s+'), '').length;
       if (strippedLen < 50) {
         try { if (await File(txtPath).exists()) await File(txtPath).delete(); } catch (_) {}
-        cache[t.key] = {'srt': false, 'txt': false, 'yt_status': '', 'status': 'no_sub'};
-        onLog('      ⚠️ 逐字稿內容過短 ($strippedLen 字)，已跳過待下次重試');
+        cache[t.key] = {'srt': false, 'txt': false, 'yt_status': '', 'status': 'error'};
+        onLog('      ⚠️ 逐字稿空/過短 ($strippedLen 字)：轉寫失敗，標記重試'
+            '（檢查上游大小限制，如 413）');
         return;
       }
       // Convert simplified Chinese to traditional.
