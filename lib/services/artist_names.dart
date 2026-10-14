@@ -115,7 +115,7 @@ class ArtistNames {
     '王若琳': 'Silence Wang',
     '郭品韶': 'Amber Kuo',
     '家家': 'Jia Jia',
-    '蔡依林（Jolin）': 'Jolin',
+    // Spotify 上蔡依林的 artist 名是「Jolin」（不是 Jolin Tsai），單獨收一筆。
     '林俊傑': 'JJ Lin',
     '任賢齊': 'Richie Jen',
     '梁靜茹': 'Fish Leong',
@@ -130,6 +130,13 @@ class ArtistNames {
     '江美琪': 'Peggy Hsu',
   };
 
+/// 英文別名 → 中文（同一個中文名在 Spotify 上有多個英文名時用）。
+  /// 例：蔡依林在 Spotify 的 artist 名是「Jolin」不是「Jolin Tsai」。
+  static const enAliases = <String, String>{
+    'Jolin': '蔡依林',
+    'Claire Kuo': '郭靜',
+  };
+
   static final Map<String, String> _norm2zh = _build();
 
   static Map<String, String> _build() {
@@ -140,6 +147,11 @@ class ArtistNames {
       // 英文正規化 → 中文（顯示用）；中文正規化 → 中文（統一全形/別名）
       m[_norm(en)] = zhClean;
       m[_norm(zhClean)] = zhClean;
+    });
+    // 別名優先級低於主表（主表的 zh2en 是既有共識）
+    enAliases.forEach((en, zh) {
+      final k = _norm(en);
+      m.putIfAbsent(k, () => zh);
     });
     return m;
   }

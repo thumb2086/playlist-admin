@@ -78,12 +78,10 @@ class GroqNativeService {
   }
 
   // ── 常量 ──────────────────────────────────────────────
-  /// 每段音訊的大小上限。
+  /// 每段音訊的大小上限（官方 Groq 免費方案 20MB）。
   ///
-  /// 上游不同上限不同：官方 Groq 收 20MB，但經自家 Vercel router 轉發時
-  /// Functions body 上限只有 ~4.5MB → 20MB 段全部 413 FUNCTION_PAYLOAD_TOO_LARGE，
-  /// 回空字串被誤判「逐字稿過短」。所以改成可設定，預設保守 4MB。
-  /// 環境變數 `PA_TRANSCRIBE_MAX_MB` 可覆寫。
+  /// 環境變數 `PA_TRANSCRIBE_MAX_MB` 可覆寫——若經過中轉（router／proxy）
+  /// 而中轉有較小的 body 上限，用它調小；直連官方不需要設定。
   static int get _maxFileSize {
     final mb = int.tryParse(
             Platform.environment['PA_TRANSCRIBE_MAX_MB'] ?? '') ??
@@ -92,7 +90,7 @@ class GroqNativeService {
     return _defaultMaxFileSize;
   }
 
-  static const int _defaultMaxFileSize = 4 * 1024 * 1024; // 4 MB（router 安全值）
+  static const int _defaultMaxFileSize = 20 * 1024 * 1024; // 20 MB
   /// 目前生效的分段大小（診斷/測試用）。
   static int get maxFileSizeBytes => _maxFileSize;
   /// 分段秒數（5 分鐘）
@@ -104,7 +102,7 @@ class GroqNativeService {
 
   // ── HTTP 狀態碼分類 ──────────────────────────────────
   static const _retryableStatuses = {0, 429, 500, 502, 503};
-  /// 413 = 上游 body 太大：重試沒用，要用更小的段
+  /// 413 = 上游（多半是中轉）拒收 body 太大：提示改小 PA_TRANSCRIBE_MAX_MB
   static const _payloadTooLarge = 413;
 
   // ── 代理 (Proxy) 支援 ────────────────────────────────
