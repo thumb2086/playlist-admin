@@ -78,10 +78,13 @@ class GroqNativeService {
   }
 
   // ── 常量 ──────────────────────────────────────────────
-  /// 每段音訊的大小上限（官方 Groq 免費方案 20MB）。
+  /// 每段音訊的大小上限。
   ///
-  /// 環境變數 `PA_TRANSCRIBE_MAX_MB` 可覆寫——若經過中轉（router／proxy）
-  /// 而中轉有較小的 body 上限，用它調小；直連官方不需要設定。
+  /// 實測 `stt.twonline.dpdns.org` 的單請求上限就是 20MB：20.2MB / 20.5MB
+  /// 直傳成功，34MB 明確回 413，110MB / 130MB 是連線被中途切斷
+  /// （SocketException "Write failed"）。所以分段是必須的，沒法靠直傳省。
+  ///
+  /// 環境變數 `PA_TRANSCRIBE_MAX_MB` 可覆寫。
   static int get _maxFileSize {
     final mb = int.tryParse(
             Platform.environment['PA_TRANSCRIBE_MAX_MB'] ?? '') ??
@@ -97,6 +100,34 @@ class GroqNativeService {
   static const int _chunkDurationSec = 300;
   /// 二次分段秒數（60 秒，處理 5 分鐘段仍過大的情況）
   static const int _subChunkDurationSec = 60;
+
+  /// 分段音訊的編碼參數（Whisper 官方建議的輸入格式：16kHz mono）。
+  ///
+  /// 這裡用 MP3 而不是 FLAC 是量測後的決定——舊版轉 FLAC
+  /// (`-compression_level 0`) 會讓檔案**變大**：本機音檔平均 127kbps
+  /// （YouTube 音訊），轉出來反而是原檔的 158%~234%（20.5MB → 48MB）。
+  /// FLAC level0 是「快而不壓」，對語音等於沒壓縮力。
+  ///
+  /// 改成 `libmp3lame 32k` 後實測壓到原檔的 16.7%~25.3%：
+  /// 130.1MB → 21.7MB、34MB → 8.6MB、20.5MB → 5.2MB。
+  /// 逐字稿重抓的總上傳量因此從 19.68GB 降到約 2.4GB（-88%）。
+  ///
+  /// 32kbps 是取捨點：Whisper 對 16kHz mono 語音轉錄綽綽有餘，再往下
+  /// （24k/16k）能再省 1GB，但會犧牲準確率，不划算。
+  /// 可用環境變數 `PA_TRANSCRIBE_KBPS` 覆寫。
+  static List<String> get _encodeArgs {
+    final kbps = int.tryParse(
+            Platform.environment['PA_TRANSCRIBE_KBPS'] ?? '') ??
+        _defaultTranscribeKbps;
+    return [
+      '-ar', '16000',
+      '-ac', '1',
+      '-c:a', 'libmp3lame',
+      '-b:a', '${kbps > 0 ? kbps : _defaultTranscribeKbps}k',
+    ];
+  }
+
+  static const int _defaultTranscribeKbps = 32;
   /// 最大重試次數（每個 key 嘗試一次，外加 2 次額外重試）
   static const int _maxRetries = 2;
 
@@ -446,7 +477,7 @@ static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
     return 0;
   }
 
-  /// 以 ffmpeg 切割音檔為多個 FLAC 分段。
+  /// 以 ffmpeg 切割音檔為多個 MP3 分段（16kHz mono / libmp3lame，見 [_encodeArgs]）。
   /// 回傳分段檔案路徑列表。
   Future<List<String>> _splitAudio(String filePath) async {
     final duration = await _getDuration(filePath);
@@ -462,15 +493,12 @@ static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
     final chunks = <String>[];
 
     for (int s = 0; s < duration.ceil(); s += _chunkDurationSec) {
-      final outPath = '${tempDir.path}\\chunk_${prefix}_${chunks.length}.flac';
+      final outPath = '${tempDir.path}\\chunk_${prefix}_${chunks.length}.mp3';
       final result = await Process.run(_ffmpeg, [
         '-y', '-i', filePath,
         '-ss', '$s',
         '-t', '$_chunkDurationSec',
-        '-ar', '16000',
-        '-ac', '1',
-        '-c:a', 'flac',
-        '-compression_level', '0',
+        ..._encodeArgs,
         outPath,
       ]);
 
@@ -507,15 +535,12 @@ static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
   ) async {
     final subChunks = <String>[];
     for (int ss = 0; ss < totalSec; ss += _subChunkDurationSec) {
-      final outPath = '$tempDir\\chunk_${prefix}_${subChunks.length}.flac';
+      final outPath = '$tempDir\\chunk_${prefix}_${subChunks.length}.mp3';
       final result = await Process.run(_ffmpeg, [
         '-y', '-i', filePath,
         '-ss', '${startSec + ss}',
         '-t', '$_subChunkDurationSec',
-        '-ar', '16000',
-        '-ac', '1',
-        '-c:a', 'flac',
-        '-compression_level', '0',
+        ..._encodeArgs,
         outPath,
       ]);
 
