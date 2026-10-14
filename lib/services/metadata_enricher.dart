@@ -284,12 +284,26 @@ class MetadataEnricher {
       if (!low.endsWith('.mp3') && !low.endsWith('.m4a') && !low.endsWith('.flac')) continue;
 
       final meta = await MetadataReader.read(e.path);
-      if (meta.title == null || meta.title!.isEmpty || meta.artist == null || meta.artist!.isEmpty) {
-        missing.add(e.path);
-      }
+      // 判定「缺什麼」不只是 title/artist：album 與 date 缺也要補。
+      // 舊邏輯只看 title/artist → 「未分類」裡那批有 title/artist（從檔名來的）
+      // 但 album/date 全空的檔案永遠不會被處理，RAG 就顯示「未知的專輯」。
+      final t = (meta.title ?? '').trim();
+      final a = (meta.artist ?? '').trim();
+      final al = (meta.album ?? '').trim();
+      final badTitle = t.isEmpty || t == _unknownTitle;
+      final badArtist = a.isEmpty || a == _unknownArtist;
+      final badAlbum = al.isEmpty || al == _unknownAlbum;
+      // date 不在 TrackMetadata（ffprobe 沒讀），靠 year 流程補，
+      // 這裡只挑 title/artist/album 缺任一者。
+      if (badTitle || badArtist || badAlbum) missing.add(e.path);
     }
     return missing;
   }
+
+  /// 佔位值（補 metadata 時可能寫進去的「未知的…」不算有效資料）。
+  static const _unknownTitle = '未知的標題';
+  static const _unknownArtist = '未知的演出者';
+  static const _unknownAlbum = '未知的專輯';
 
   Future<bool> _enrichFile(String filePath, Map<String, Map<String, dynamic>> cacheIndex) async {
     final stem = File(filePath).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '');
@@ -300,6 +314,12 @@ class MetadataEnricher {
     String? album;
     String? year;
     String? coverUrl;
+
+// 佔位值視為「沒有」，要能被 cache / 檔名覆蓋。
+    bool bad(String? v, String ph) =>
+        v == null || v.trim().isEmpty || v.trim() == ph;
+    if (bad(title, _unknownTitle)) title = null;
+    if (bad(artist, _unknownArtist)) artist = null;
 
     // 1. Try Spotify cache (in-memory index, no IO here)
     final cached = _lookupSpotifyCache(stem, cacheIndex);
@@ -336,9 +356,13 @@ class MetadataEnricher {
       }
     }
 
-    if (title == null || title.isEmpty) {
+if (title == null || title.isEmpty) {
       title = fileName;
     }
+    // album / artist 仍缺或還是佔位值 → 留空不要寫回去
+    // （寫進去 RAG 又會顯示「未知的專輯」）
+    if (album != null && album.trim() == _unknownAlbum) album = null;
+    if (artist != null && artist.trim() == _unknownArtist) artist = null;
 
     // Apply metadata via ffmpeg
     return _applyMetadata(filePath, title, artist, album, year, coverUrl);
@@ -403,6 +427,33 @@ class MetadataEnricher {
   static String fuzzyKey(String s) =>
       s.toLowerCase().replaceAll(_fuzzyStrip, '');
 
+  /// 組 `-metadata k=v` 參數（帶封面失敗時的退回路徑也用同一份）。
+  ///
+  /// 規則：
+  /// - artist 過 ArtistNames 轉中文（對照表有才轉，不臆測日本/歐美藝人）
+  /// - date 必須 4 位數：其他值寧可不寫（空 date 會讓播放器顯示 1970）
+  static List<String> _tagArgs(
+      String? title, String? artist, String? album, String? year) {
+    final out = <String>[];
+    if (title != null && title.isNotEmpty) {
+      out.addAll(['-metadata', 'title=$title']);
+    }
+    final artistOut = (artist != null && artist.isNotEmpty)
+        ? ArtistNames.toDisplayList(artist)
+        : artist;
+    if (artistOut != null && artistOut.isNotEmpty) {
+      out.addAll(['-metadata', 'artist=$artistOut']);
+    }
+    if (album != null && album.isNotEmpty) {
+      out.addAll(['-metadata', 'album=$album']);
+    }
+    final y = year?.trim() ?? '';
+    if (RegExp(r'^(1\d{3}|2\d{3})$').hasMatch(y)) {
+      out.addAll(['-metadata', 'date=$y']);
+    }
+    return out;
+  }
+
   Future<bool> _applyMetadata(
     String filePath,
     String? title,
@@ -420,35 +471,19 @@ class MetadataEnricher {
 
       final args = <String>['-y', '-i', filePath];
       if (hadArt) {
-        // 有封面：音訊+視訊都帶過去（只 map 0:a 會把封面洗掉）
+        // 有封面：音訊+視訊都帶過去（只 map 0:a 會把封面洗掉）。
+        // `-c:v copy` 而非 mjpeg：有些封面 stream 解碼會失敗
+        // （exit=69 "Terminating thread ... Invalid data"），copy 直接搬位元組不碰編碼。
         args.addAll([
           '-map', '0:a', '-map', '0:v',
-          '-c:a', 'copy', '-c:v', 'mjpeg', '-id3v2_version', '3',
+          '-c:a', 'copy', '-c:v', 'copy', '-id3v2_version', '3',
           '-metadata:s:v', 'title=Album cover',
           '-metadata:s:v', 'comment=Cover (front)',
         ]);
       } else {
         args.addAll(['-map', '0:a', '-c:a', 'copy']);
       }
-      if (title != null && title.isNotEmpty) {
-        args.addAll(['-metadata', 'title=$title']);
-      }
-      // artist 轉中文：Spotify 英文名（Bestards / Claire Kuo…）對照表有才轉，
-      // 查不到原樣保留（不臆測日本/歐美藝人）。
-      final artistOut = (artist != null && artist.isNotEmpty)
-          ? ArtistNames.toDisplayList(artist)
-          : artist;
-      if (artistOut != null && artistOut.isNotEmpty) {
-        args.addAll(['-metadata', 'artist=$artistOut']);
-      }
-      if (album != null && album.isNotEmpty) {
-        args.addAll(['-metadata', 'album=$album']);
-      }
-      // 年份必須 4 位數：其他值寧可不寫（空 date 會讓播放器顯示 1970）
-      final y = year?.trim() ?? '';
-      if (RegExp(r'^(1\d{3}|2\d{3})$').hasMatch(y)) {
-        args.addAll(['-metadata', 'date=$y']);
-      }
+      args.addAll(_tagArgs(title, artist, album, year));
       args.add(tmpPath);
 
       // runInShell: false：中文 artist 經 cmd.exe 會被引號吃掉
@@ -456,6 +491,29 @@ class MetadataEnricher {
           runInShell: false, stdoutEncoding: null);
 
       if (r.exitCode != 0 || !await File(tmpPath).exists()) {
+        // 帶封面失敗最常見是「dimensions not set」（PNG 封面或缺尺寸資訊的
+        // JPEG），音訊本身沒事 → 退回只寫音訊：metadata 優先於封面。
+        if (hadArt) {
+          final out2 = File('$filePath.meta_tmp2.mp3');
+          final retry = await Process.run(
+            _ffmpegPath(),
+            [
+              '-y', '-i', filePath, '-map', '0:a', '-c:a', 'copy',
+              ..._tagArgs(title, artist, album, year),
+              out2.path,
+            ],
+            runInShell: false,
+            stdoutEncoding: null,
+          );
+          if (retry.exitCode == 0 && await out2.exists()) {
+            await File(filePath).delete();
+            await out2.rename(filePath);
+            log('  ✅ 已更新 metadata（封面保留失敗，僅寫標籤）: '
+                '${File(filePath).uri.pathSegments.last}');
+            return true;
+          }
+          if (await out2.exists()) await out2.delete();
+        }
         final lines = (r.stderr is String
                 ? r.stderr as String
                 : utf8.decode(r.stderr as List<int>, allowMalformed: true))
