@@ -687,6 +687,11 @@ if (title == null || title.isEmpty) {
           if (retry.exitCode == 0 && await out2.exists()) {
             await File(filePath).delete();
             await out2.rename(filePath);
+            // 第一階段（帶封面）的暫存也要清，否則 .meta_tmp.mp3 殘留在
+            // 音樂庫裡會被當成正常 mp3 掃進來（實測累積 59 個）。
+            try {
+              if (await File(tmpPath).exists()) await File(tmpPath).delete();
+            } catch (_) {}
             log('  ✅ 已更新 metadata（封面保留失敗，僅寫標籤）: '
                 '${File(filePath).uri.pathSegments.last}');
             return true;
