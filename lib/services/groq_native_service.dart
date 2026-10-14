@@ -300,6 +300,11 @@ static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
         // 不可重試：直接 rethrow，不做 status code 字串比對
         //（舊寫法 '0' 恆真，會把 400 也當 transient 空轉）。
         rethrow;
+      } on UploadBudgetExceeded {
+        // 流量預算用盡是「永久停止」不是暫時錯誤：
+        // 不可重試，且要往上拋讓整個檔案的所有段都停（否則每一段都
+        // 各自重試，白燒流量——實測 1.97GB 就是這樣跑掉的）。
+        rethrow;
       } finally {
         // cached client stays alive; do not close
       }
@@ -346,14 +351,21 @@ static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
     final texts = List<String>.filled(chunks.length, '');
     final errors = <String>[];
     int done = 0;
+    // 流量預算用盡 → 整個檔案立刻停，不再送後續分段
+    var budgetHit = false;
 
     Future<void> transcribeOne(int i) async {
+      if (budgetHit) return;
       _log.i('  [chunk ${i + 1}/${chunks.length}] ${chunks[i]}');
       try {
         final text = await transcribe(chunks[i], model: model, language: language);
         if (text.trim().isNotEmpty) {
           texts[i] = text;
         }
+      } on UploadBudgetExceeded catch (e) {
+        // 預算用盡：不記為分段錯誤，直接中止整個檔案（否則每段都白燒）
+        budgetHit = true;
+        _log.w('  流量預算用盡，中止剩餘分段: $e');
       } catch (e) {
         // 舊版在這裡 swallow 掉錯誤 → 上游 413（段太大）時全部回空字串，
         // 上層看起來像「逐字稿過短」，白燒整份音檔的流量還查不到原因。

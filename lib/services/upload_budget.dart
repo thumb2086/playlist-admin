@@ -51,32 +51,28 @@ class WindowsNetUsage {
   static String? get _usagePath => UploadBudget._usagePathPublic;
 
   /// 自上次呼叫以來全機流量（bytes）。取不到回 -1。
+  /// 本次執行已用的流量（bytes）。
+  ///
+  /// 基準 = **這個行程第一次詢問時的當前值** → 預算值就是「本次執行
+  /// 的上限」，符合直覺，且不需要人工程序先跑 `budget reset`
+  /// （舊版把基準寫進檔案跨行程重用，結果拿「開機累計」去比 1GB 上限，
+  ///  數字早就爆了守門卻形同虛設 —— 2026-10-14 白跑 1.97GB）。
   static int consumedSinceBaseline() {
     final (rx, tx) = totals();
     if (rx < 0) return -1;
     final total = rx + tx;
-    try {
-      final f = File(_usagePath ?? '');
-      if (_baselineTotal == null) {
-        final prev = f.existsSync()
-            ? jsonDecode(f.readAsStringSync())
-                as Map<String, dynamic>
-            : null;
-        final b = prev?['net_baseline'] as int?;
-        _baselineTotal = b ?? total;
-        if (b == null) {
-          f.writeAsStringSync(jsonEncode({
-            'net_baseline': _baselineTotal,
-            'updated': DateTime.now().toIso8601String(),
-          }));
-        }
-        return 0;
-      }
-      final d = total - _baselineTotal!;
-      return d < 0 ? 0 : d; // 重開機/介面重置 → 歸零
-    } catch (_) {
-      return -1;
+    if (_baselineTotal == null) {
+      _baselineTotal = total;
+      try {
+        File(_usagePath ?? '').writeAsStringSync(jsonEncode({
+          'net_baseline': _baselineTotal,
+          'baseline_at': DateTime.now().toIso8601String(),
+        }));
+      } catch (_) {}
+      return 0;
     }
+    final d = total - _baselineTotal!;
+    return d < 0 ? 0 : d; // 重開機/介面重置 → 歸零
   }
 
   static void setBaseline(int total) {
