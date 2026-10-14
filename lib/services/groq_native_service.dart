@@ -196,8 +196,26 @@ class GroqNativeService {
     } catch (_) {}
   }
 
+  /// STT 端點（語音轉文字）。
+  ///
+  /// 目前統一打 STT 專用端點：認證 header 是 `X-API-Key`（不是 Bearer）。
+  /// 模型名、multipart 格式、回應格式、計費皆與原本相同。
+  /// 覆寫方式：環境變數 `PA_STT_BASE_URL`。
+  static const defaultSttBaseUrl = 'https://stt.twonline.dpdns.org';
+
+  static String sttBaseUrl() {
+    final v = Platform.environment['PA_STT_BASE_URL']?.trim() ?? '';
+    if (v.isNotEmpty) return v.replaceAll(RegExp(r'/+$'), '');
+    return defaultSttBaseUrl;
+  }
+
+  /// STT 轉錄路徑。實測：`/v1/audio/transcriptions` 回 405（GET 不允許＝路徑存在），
+/// 其他候選都 404 → 確認要帶 `/v1` 前綴（與原 apiUrl 一致）。
+static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
+
   /// Groq 端點：groqBaseUrl 有值 → 自建 router（OpenAI 相容 /v1/*，
   /// 上游 key 由 router 輪替、本端 key 退居驗證）；留空 → 官方。
+  /// 註：STT 轉錄已改走 [transcribeUrl]，這支保留給其他 OpenAI 相容呼叫。
   static String apiUrl(String path, String baseUrl) {
     final b = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
     if (b.isNotEmpty) return '$b/v1$path';
@@ -224,12 +242,13 @@ class GroqNativeService {
       try {
         client = _createClient();
         final file = await http.MultipartFile.fromPath('file', filePath);
+        // STT 端點認證用 X-API-Key（不是 Bearer）。
+        // 模型名 / multipart 欄位 / 回應格式都不變。
         final request = http.MultipartRequest(
           'POST',
-          Uri.parse(apiUrl('/audio/transcriptions',
-              ConfigService.instance.config.groqBaseUrl)),
+          Uri.parse(transcribeUrl()),
         )
-          ..headers['Authorization'] = 'Bearer $key'
+          ..headers['X-API-Key'] = key
           ..fields['model'] = model
           ..fields['response_format'] = 'verbose_json'
           ..files.add(file);
