@@ -124,6 +124,185 @@ class MetadataEnricher {
     return changed;
   }
 
+  /// 全庫 Spotify 校正：title/artist/album/year 全部以 Spotify 為準重寫。
+  ///
+  /// 解決兩類問題：
+  /// 1. album 被填成曲名（早期 fallback 寫的假專輯）
+  /// 2. album/date 缺（spotify_cache 沒這首歌，或當時是外來音檔）
+  ///
+  /// 每首 searchTracks（找 trackId）→ getTrack（拿專輯與年份）共 2 個請求，
+  /// 4 路並行 + 延遲。曲名必須與搜尋結果相符才套用，避免貼錯歌。
+  /// [onlyProblems] true = 只處理有問題的（album 空 / album==title / 無 year），
+  /// false = 全庫重寫（最慢但最乾淨）。
+  Future<int> correctFromSpotify({
+    bool onlyProblems = true,
+    int limit = 0,
+    void Function(int done, int total, String file)? onProgress,
+  }) async {
+    log('🎵 Spotify 全庫校正（onlyProblems=$onlyProblems）…');
+    try {
+      await SpotifySession.instance.load();
+    } catch (_) {}
+    if (!SpotifySession.instance.isLoggedIn) {
+      log('⚠️ Spotify 未登入：先在 app 重登（搜尋頁有「重登」鈕）');
+      return 0;
+    }
+    final gql = SpotifyGqlClient();
+    final yearRe = RegExp(r'^(1\d{3}|2\d{3})$');
+
+    final files = <String>[];
+    try {
+      final dir = Directory(libraryPath);
+      if (await dir.exists()) {
+        await for (final e
+            in dir.list(recursive: true, followLinks: false)) {
+          if (e is File && e.path.toLowerCase().endsWith('.mp3')) {
+            files.add(e.path);
+          }
+        }
+      }
+    } catch (_) {}
+    files.sort();
+
+    // 先篩出真正要處理的（讀 ID3 只為判斷，不寫）
+    final targets = <String>[];
+    for (final p in files) {
+      if (onlyProblems) {
+        final t = tagsOf(p);
+        final title = t['title'] ?? '';
+        final album = t['album'] ?? '';
+        final date = t['date'] ?? '';
+        final badAlbum = album.trim().isEmpty ||
+            album.trim() == _unknownAlbum ||
+            // 假專輯：album 就是曲名（或曲名前綴）
+            album.trim() == title.trim();
+        final badDate = date.trim().isEmpty ||
+            !yearRe.hasMatch(date.trim()) ||
+            date.trim() == '1970';
+        if (!badAlbum && !badDate) continue;
+      }
+      targets.add(p);
+    }
+    final total = limit > 0 && limit < targets.length ? limit : targets.length;
+    if (total == 0) {
+      log('✅ 沒有需要校正的檔案');
+      return 0;
+    }
+    log('  需校正 $total / ${files.length}');
+
+    // 並行查詢 → 收集結果，最後序列寫檔（ffmpeg 同時跑太多會 IO 打架）
+    final picked = <String, Map<String, String?>>{};
+    var cursor = 0;
+    var hits = 0, miss = 0;
+    Future<void> worker() async {
+      while (cursor < total) {
+        final path = targets[cursor++];
+        final name = fileNameFor(path);
+        final parts = name.split(' - ');
+        final title = parts.first.trim();
+        final artist =
+            parts.length > 1 ? parts.sublist(1).join(' - ').trim() : '';
+        final q = artist.isEmpty ? title : '$title $artist';
+        if (q.isEmpty) {
+          miss++;
+          continue;
+        }
+        try {
+          final s = await gql.searchTracks(q, limit: 1);
+          final tracks = SpotifyTrackItem.parseSearchTracks(s);
+          if (tracks.isEmpty) {
+            miss++;
+            continue;
+          }
+          final pick = tracks.first;
+          // 曲名必須相符（全等或一方包含另一方），否則寧可不套
+          final pn = CoverCache.norm(pick.name);
+          final ln = CoverCache.norm(title);
+          if (ln.isEmpty ||
+              (pn != ln && !pn.contains(ln) && !ln.contains(pn))) {
+            miss++;
+            continue;
+          }
+          // 歌手要對得上（任一段有交集即可，協演/Feat. 常只列部分）
+          final pa = pick.artists.isEmpty
+              ? ''
+              : CoverCache.norm(pick.artists.join(''));
+          final la = artist.isEmpty ? '' : CoverCache.norm(artist);
+          if (pa.isNotEmpty &&
+              la.isNotEmpty &&
+              !pa.contains(la) &&
+              !la.contains(pa)) {
+            miss++;
+            continue;
+          }
+          // getTrack 才有日期（searchTracks 的 albumOfTrack 沒有 date 欄位）
+          String? year;
+          try {
+            final t = await gql.getTrack(pick.id);
+            year = SpotifyTrackItem.yearFromResponse(t,
+                expectAlbumName: pick.album);
+          } catch (_) {}
+          picked[path] = {
+            'title': pick.name,
+            'artist': pick.artists.join(', '),
+            'album': pick.album,
+            'year': year ?? '',
+          };
+          hits++;
+        } catch (_) {
+          miss++;
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        onProgress?.call(cursor, total, name);
+      }
+    }
+
+    await Future.wait(List.generate(4, (_) => worker()));
+    log('  Spotify 命中 $hits / 未匹配 $miss');
+
+    // 寫 ID3
+    var wrote = 0, writeFail = 0;
+    for (final e in picked.entries) {
+      final v = e.value;
+      final okw = await _applyMetadata(
+          e.key, v['title'], v['artist'], v['album'], v['year'], null);
+      if (okw) {
+        wrote++;
+      } else {
+        writeFail++;
+      }
+      if ((wrote + writeFail) % 50 == 0) {
+        log('  寫入進度 ${wrote + writeFail}/$picked.length（成功 $wrote）');
+        await Future<void>.delayed(Duration.zero);
+      }
+    }
+    log('🎉 Spotify 校正完成：寫入 $wrote / 查詢命中 $hits'
+        '（寫入失敗 $writeFail、未匹配 $miss）');
+    return wrote;
+  }
+
+  /// 讀 ID3（純讀，失敗回空 map）——校正前的篩選用。
+  static Map<String, String> tagsOf(String path) {
+    try {
+      final r = Process.runSync(_ffprobePath(), [
+        '-v', 'quiet', '-print_format', 'json', '-show_format', path,
+      ], stdoutEncoding: null);
+      final d = jsonDecode((r.stdout is String
+              ? r.stdout as String
+              : utf8.decode(r.stdout as List<int>, allowMalformed: true))) as
+          Map<String, dynamic>;
+      final tags = (d['format'] as Map?)?['tags'] as Map? ?? {};
+      return {
+        'title': (tags['title'] ?? '').toString(),
+        'artist': (tags['artist'] ?? '').toString(),
+        'album': (tags['album'] ?? '').toString(),
+        'date': (tags['date'] ?? '').toString(),
+      };
+    } catch (_) {
+      return {'title': '', 'artist': '', 'album': '', 'date': ''};
+    }
+  }
+
   /// 補年份：唯一會回 albumOfTrack.date 的查詢是 getTrack
   ///（searchTracks / fetchPlaylist 的 albumOfTrack 只有 coverArt/id/name/uri）。
   /// 流程：本機檔名 → searchTracks 取 trackId → getTrack 取 year → 寫 ID3。
