@@ -5,6 +5,7 @@ import 'models/config_model.dart';
 import 'services/config_service.dart';
 import 'services/favorites_service.dart';
 import 'services/library_organizer.dart';
+import 'services/library_doctor.dart';
 import 'services/artwork_embedder.dart';
 import 'services/metadata_enricher.dart';
 import 'services/upload_budget.dart';
@@ -31,6 +32,7 @@ Usage:
   dart cli_main.dart play <歌曲名>               播放（本機庫優先，找不到走串流）
   dart cli_main.dart organize                    歌單外歌曲移入「未分類」資料夾（歌單原位）
   dart cli_main.dart artwork backfill           全庫 mp3 內嵌封面（有圖跳過，可重跑）
+  dart cli_main.dart doctor                     音訊庫健康檢查（覆蓋率/損毀/品質/語言/STT額度）
   dart cli_main.dart favorite list              List favorite songs
   dart cli_main.dart favorite toggle <song>     Toggle favorite (我的最愛) by filename or path
 ''');
@@ -102,6 +104,27 @@ Downloaded: ${cfg.lastUpdated.length}''');
           '已嵌 ${stats['embedded']}，已有圖跳過 ${stats['skipped']}，'
           '無封面 ${stats['noCover']}，失敗 ${stats['failed']}，'
           '補 album/date ${stats['tagged'] ?? 0}');
+      break;
+
+    case 'doctor':
+      // 全庫健康檢查：覆蓋率 / 音訊完整性 / 逐字稿品質 / 語言一致性 / STT 額度。
+      // 這五項都是「pipeline 回報成功但資料其實是壞的」案例的獨立驗證標準。
+      final verbose = args.contains('--verbose') || args.contains('-v');
+      final fast = args.contains('--fast');
+      print('檢查音訊庫（${fast ? "快速模式，只看大小不看可解碼長度" : "完整模式"}）...');
+      final t0 = DateTime.now();
+      final report = await LibraryDoctor.run(
+        podcastsDir: '${cfg.basePath}${Platform.pathSeparator}podcasts',
+        skipAudioProbe: fast,
+        onProgress: (d, t) => print('  [$d/$t]'),
+      );
+      print('');
+      print(LibraryDoctor.format(report, verbose: verbose));
+      print('耗時 ${(DateTime.now().difference(t0).inSeconds)} 秒');
+      if (!args.contains('--no-stt')) {
+        print('');
+        print('STT 中轉額度：${await LibraryDoctor.probeStt()}');
+      }
       break;
 
     case 'budget':
