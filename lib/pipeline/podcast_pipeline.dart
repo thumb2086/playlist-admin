@@ -207,14 +207,14 @@ class PodcastPipeline {
       var srtPath = await _findSrtAsync(podDir, name);
       final txtPath = '$podDir\\$name.txt';
       var hasSrt = srtPath != null;
-      var hasTxt = File(txtPath).existsSync();
+      var hasTxt = _hasUsableTxt(txtPath);
       // Canonical match: strip all formatting, compare content characters.
       // Skip for stale-cache keys — we know their files are truly gone.
       if (!hasSrt && !hasTxt && !staleKeys.contains(key)) {
         final canonical = _canonicalize(ep.title);
         final match = canonicalToStem[canonical];
         if (match != null) {
-          hasTxt = File('$podDir\\$match.txt').existsSync();
+          hasTxt = _hasUsableTxt('$podDir\\$match.txt');
           hasSrt = File('$podDir\\$match.srt').existsSync() || await _findSrtAsync(podDir, match) != null;
           if (hasSrt) srtPath = await _findSrtAsync(podDir, match);
         }
@@ -224,7 +224,7 @@ class PodcastPipeline {
         final fuzzy = _fuzzyFindFile(canonicalToStem.values.toSet(), name, ep.title);
         if (fuzzy != null) {
           hasSrt = fuzzy.endsWith('.srt');
-          hasTxt = File('$podDir\\$fuzzy.txt').existsSync();
+          hasTxt = _hasUsableTxt('$podDir\\$fuzzy.txt');
           if (hasSrt) srtPath = '$podDir\\$fuzzy.srt';
         }
       }
@@ -547,6 +547,21 @@ class PodcastPipeline {
     return s.toLowerCase()
         .replaceAll(RegExp(r'[^a-z0-9\u4e00-\u9fff\u3400-\u4dbf]'), '')
         .trim();
+  }
+
+  /// 逐字稿存在**且有實質內容**才算數。
+  ///
+  /// 只用 existsSync() 會讓 107~196 bytes 的空殼被當成已完成而永遠跳過
+  /// （2026-10-15 實測：最後 5 集卡在這，其中 2 集還被 cache 標成
+  /// status:ok，RSS 迴圈說「已處理」、本地補掃說「在 RSS 裡」→ 死結）。
+  /// 門檻與 [_sweepLocalOnly] 一致（200 bytes）。
+  static bool _hasUsableTxt(String path) {
+    try {
+      final f = File(path);
+      return f.existsSync() && f.lengthSync() > 200;
+    } catch (_) {
+      return false;
+    }
   }
 
   /// 掃出「本地有音檔但缺逐字稿、且這輪 RSS 裡沒有」的集數。
