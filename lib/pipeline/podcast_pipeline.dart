@@ -231,12 +231,12 @@ class PodcastPipeline {
       if (hasSrt || hasTxt) {
         // Backfill missing txt right here (fast, local).
         if (hasSrt && !hasTxt) {
-          await _srtToTxt(srtPath!, txtPath);
-          // _srtToTxt deletes garbage subtitles (<50 chars): re-detect so the
-          // episode is queued for a retry instead of being marked done.
+          await _srtToTxt(srtPath!, txtPath, audioPath: _firstAudio(podDir, name));
+          // _srtToTxt 會丟棄品質不合格的字幕（過短／被自動翻譯成英文）：
+          // 重新偵測，讓這集被排進去改走 Groq 轉錄，而不是標成已完成。
           srtPath = await _findSrtAsync(podDir, name);
           hasSrt = srtPath != null;
-          hasTxt = File(txtPath).existsSync();
+          hasTxt = _hasUsableTxt(txtPath);
         }
         cache[key] = {
           'srt': hasSrt,
@@ -625,7 +625,7 @@ class PodcastPipeline {
     return i;
   }
 
-  Future<void> _srtToTxt(String srtPath, String txtPath) async {
+  Future<void> _srtToTxt(String srtPath, String txtPath, {String? audioPath}) async {
     if (!await File(srtPath).exists()) return;
     try {
       final content = await File(srtPath).readAsString(encoding: utf8);
@@ -646,16 +646,41 @@ class PodcastPipeline {
       // Convert simplified Chinese to traditional.
       final converted = ChineseConverter.instance.isLoaded
           ? ChineseConverter.instance.toTraditional(text) : text;
-      await File(txtPath).writeAsString(converted, flush: true);
-      // Guard: a transcript with almost no content means the SRT was garbage
-      // (failed subtitle grab, e.g. only "[Music]"/"you"). Keeping it lets
-      // the RAG index treat it as "done" forever with zero-value data —
-      // delete it instead so the episode is retried on a later run.
+
+      // Guard: 字幕品質檢查。舊版只有「<50 字」一道門檻，結果兩種壞資料
+      // 都通過（2026-10-15 全庫稽核抓到 41 集）：
+      //   a) YouTube 自動**翻譯**字幕 → 中文節目變英文全文（博音 EP130
+      //      47KB 全英文、泛泛泛科學 合成生物學 EP60 全英文）
+      //   b) YouTube **殘缺**字幕 → 只剩開頭結尾（博音 EP45 141 字、
+      //      泛泛泛科學 失眠 EP79 304 字）
+      // 兩種都該丟掉字幕、改走 Groq 轉錄，而不是寫進 RAG 當成完成。
       final strippedLen = text.replaceAll(RegExp(r'\s+'), '').length;
-      if (strippedLen < 50) {
+      final cjkLen = RegExp(r'[\u4e00-\u9fff]').allMatches(text).length;
+      final durSec =
+          audioPath == null ? 0 : await _audioDurationSec(audioPath);
+
+      var bad = strippedLen < 50;
+      // ignore: unused_local_variable
+      String why = '內容過少';
+      // 中文節目的逐字稿應該以中文為主；全英文就是被自動翻譯了。
+      if (!bad && durSec > 0 && cjkLen == 0 && strippedLen >= 50) {
+        bad = true;
+        why = '字幕疑似被自動翻譯成英文（中文節目卻沒有任何中文）';
+      }
+      // 長度合理性：中文語速最慢 1 字/秒。
+      if (!bad && durSec > 0 && cjkLen < durSec) {
+        bad = true;
+        why = '字幕只覆蓋音訊開頭（$cjkLen 字 / 音訊 ${durSec.round()} 秒）';
+      }
+
+      if (bad) {
+        // 字幕品質不合格（過短／被自動翻譯成英文）：丟棄改走 Groq 轉錄。
         try { await File(txtPath).delete(); } catch (_) {}
         try { await File(srtPath).delete(); } catch (_) {}
+        return;
       }
+
+      await File(txtPath).writeAsString(converted, flush: true);
     } catch (_) {}
   }
 
@@ -750,7 +775,16 @@ class PodcastPipeline {
     return true; // need Groq
   }
 
-  /// 用 ffprobe 取得音檔時長（秒）；取不到回 0。
+  /// 找出這集對應的本機音檔路徑（字幕品質檢查需要時長）。
+static String? _firstAudio(String podDir, String stem) {
+  for (final ext in const ['.mp3', '.wav', '.m4a']) {
+    final p = '$podDir\\$stem$ext';
+    if (File(p).existsSync()) return p;
+  }
+  return null;
+}
+
+/// 用 ffprobe 取得音檔時長（秒）；取不到回 0。
   ///
   /// 逐字稿長度合理性檢查需要它：中文語速最慢 1 字/秒，
   /// N 秒的音訊至少該有 N 個字，不然就是轉寫只回了一小段。
