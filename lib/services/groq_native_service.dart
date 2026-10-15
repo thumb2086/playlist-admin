@@ -1,4 +1,4 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
@@ -27,6 +27,18 @@ class _GroqFatalException implements Exception {
 class _PartialChunkFailure implements Exception {
   final String message;
   _PartialChunkFailure(this.message);
+  @override
+  String toString() => message;
+}
+
+/// 音檔本身損毀（MP3 檔頭宣稱的時長大於實際可解碼的資料）。
+///
+/// 呼叫端應該**刪掉這個音檔重新下載**，而不是留著反覆重試。
+/// 2026-10-15 實測：科技浪 EP27 檔頭寫 49.1 分鐘、實際只有 2.9 分鐘
+/// （下載中斷留下無效位元組），結果只轉出 923 字卻被當成成功。
+class CorruptAudioException implements Exception {
+  final String message;
+  CorruptAudioException(this.message);
   @override
   String toString() => message;
 }
@@ -637,6 +649,7 @@ static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
     final tempDir = Directory.systemTemp.createTempSync('groq_chunk_');
 
     final chunks = <String>[];
+    int unreadableSegments = 0;
 
     for (int s = 0; s < duration.ceil(); s += _chunkDurationSec) {
       // 檔名索引用獨立的 segIdx，不能用 chunks.length：
@@ -656,6 +669,19 @@ static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
 
       if (result.exitCode != 0 || !await File(outPath).exists()) {
         _log.w('ffmpeg 分段失敗 (ss=$s): ${result.stderr}');
+        unreadableSegments++;
+        continue;
+      }
+      final size0 = await File(outPath).length();
+      if (size0 < 1024) {
+        // ffmpeg 成功但產出空檔 → 這個位置已經沒有可解碼的音訊。
+        // 通常代表音檔本身損毀：MP3 檔頭宣稱的時長大於實際資料
+        // （下載中斷會留下大量無效位元組）。
+        // 2026-10-15 實測：科技浪 EP27 檔頭寫 49.1 分，實際只有 2.9 分，
+        // 結果只轉出 923 字卻被當成成功。
+        _log.w('  ss=$s 產出空檔（${size0}B），音檔很可能已損毀');
+        try { await File(outPath).delete(); } catch (_) {}
+        unreadableSegments++;
         continue;
       }
 
@@ -676,6 +702,20 @@ static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
     if (chunks.isEmpty) {
       try { tempDir.deleteSync(recursive: true); } catch (_) {}
       return [filePath];
+    }
+
+    // 音檔本身損毀 → 直接拋出，不要拿「剩下的幾段」去轉錄。
+    // 判斷依據是 ffmpeg 產不出有效音訊：MP3 檔頭的時長只是頭部宣告，
+    // 下載中斷的檔案會留下大量無效位元組，解碼到那裡就沒東西了。
+    // 2026-10-15 實測：科技浪 EP27 檔頭寫 49.1 分鐘、實際只有 2.9 分鐘，
+    // 只轉出 923 字卻被當成成功寫入。全庫掃描發現 83 個這種檔。
+    if (unreadableSegments > 0) {
+      try { tempDir.deleteSync(recursive: true); } catch (_) {}
+      throw CorruptAudioException(
+        '音檔損毀：宣稱 ${(duration / 60).round()} 分鐘，'
+        '但 ${chunks.length} 段中有 $unreadableSegments 段無法解碼'
+        '（ffmpeg 產出空檔，通常是下載中斷留下的無效資料）',
+      );
     }
 
     return chunks;
@@ -783,3 +823,4 @@ static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
     throw lastError ?? Exception('Groq chat 失敗：所有 key 和重試已用盡');
   }
 }
+

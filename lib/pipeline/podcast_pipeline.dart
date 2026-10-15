@@ -802,6 +802,17 @@ class PodcastPipeline {
     try {
       final text = await GroqService.instance.transcribeFile(
         filePath: audioPath, model: GroqService.instance.defaultModel, language: 'zh',
+        onCorruptAudio: () async {
+          // 音檔本身損毀（MP3 檔頭寫的時長大於實際資料，下載中斷會造成）：
+          // 留著只會永遠重複失敗，直接刪掉讓下一輪從 RSS 重新下載。
+          // 2026-10-15 實測：18 集因為這樣卡住，其中科技浪 EP27 檔頭寫
+          // 49.1 分鐘但實際只有 2.9 分鐘，轉出 923 字就被當成成功。
+          onLog('      🗑 音檔損毀，刪除以便重新下載');
+          try { await File(audioPath).delete(); } catch (_) {}
+          // 逐字稿一併清掉，避免殘留舊的半截內容。
+          try { if (await File(txtPath).exists()) await File(txtPath).delete(); } catch (_) {}
+          cache[t.key] = {'srt': false, 'txt': false, 'yt_status': '', 'status': ''};
+        },
       );
       // Garbage guard: a transcript with almost no content means the audio
       // was bad/empty or ASR failed — do NOT mark done, retry next run.

@@ -57,9 +57,14 @@ class GroqService {
   }
 
   /// Native Groq transcription — auto-chunks files > 20MB, no Python bridge needed.
+  ///
+  /// [onCorruptAudio] 在音檔本身損毀時被呼叫（ffmpeg 產出空檔代表
+  /// MP3 檔頭寫的時長大於實際可解碼的資料，通常是下載中斷）。
+  /// 呼叫端應該在這裡刪掉音檔，讓下一輪重新下載——留著只會無限重試。
   Future<String> transcribeFile({
     required String filePath, required String model, String? language,
     void Function(String chunk, double pct)? onChunk,
+    Future<void> Function()? onCorruptAudio,
   }) async {
     _recordCall();
     if (_keysCsv.isEmpty) throw Exception('請先設定 Groq API Key');
@@ -69,10 +74,16 @@ class GroqService {
     svc.setApiKey(_keysCsv);
 
     onChunk?.call('正在上傳音檔…', 0.1);
-    final text = await svc.transcribeAutoChunk(
-      filePath, model: model, language: language,
-      onChunk: (msg, pct) => onChunk?.call(msg, pct),
-    );
+    final String text;
+    try {
+      text = await svc.transcribeAutoChunk(
+        filePath, model: model, language: language,
+        onChunk: (msg, pct) => onChunk?.call(msg, pct),
+      );
+    } on CorruptAudioException {
+      await onCorruptAudio?.call();
+      rethrow;
+    }
     onChunk?.call('轉錄完成', 1.0);
     return text;
   }
