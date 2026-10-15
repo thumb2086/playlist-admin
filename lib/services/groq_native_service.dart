@@ -20,6 +20,17 @@ class _GroqFatalException implements Exception {
   String toString() => 'Groq 失敗 $status: $body';
 }
 
+/// 分段轉錄**部分**失敗（整集不算成功）。
+///
+/// 單獨一個型別，是為了讓呼叫端能區分「永久性失敗」與「下輪重試就好」：
+/// 整集要留到下一輪，**不能把半截內容寫進檔案**。
+class _PartialChunkFailure implements Exception {
+  final String message;
+  _PartialChunkFailure(this.message);
+  @override
+  String toString() => message;
+}
+
 /// Groq REST API 原生 Dart 客戶端（取代 Python bridge）。
 /// 直接呼叫 api.groq.com，不需要 Python/yt-dlp。
 ///
@@ -481,6 +492,7 @@ static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
 
     final texts = List<String>.filled(chunks.length, '');
     final errors = <String>[];
+    final failedChunks = <int>[];
     int done = 0;
     // 流量預算用盡 → 整個檔案立刻停，不再送後續分段
     var budgetHit = false;
@@ -488,21 +500,36 @@ static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
     Future<void> transcribeOne(int i) async {
       if (budgetHit) return;
       _log.i('  [chunk ${i + 1}/${chunks.length}] ${chunks[i]}');
-      try {
-        final text = await transcribe(chunks[i], model: model, language: language);
-        if (text.trim().isNotEmpty) {
-          texts[i] = text;
+      // 分段失敗重試：transcribe() 內部已有 key 輪替 + 指數退避，
+      // 但那是「整包嘗試」都失敗才回來；瞬時性的連線中斷再給一次機會。
+      Exception? last;
+      for (var round = 0; round < 2; round++) {
+        try {
+          final text = await transcribe(chunks[i], model: model, language: language);
+          if (text.trim().isNotEmpty) {
+            texts[i] = text;
+            return;
+          }
+          last = Exception('回傳空字串');
+          break; // 空字串重試沒意義
+        } on UploadBudgetExceeded catch (e) {
+          // 預算用盡：不記為分段錯誤，直接中止整個檔案（否則每段都白燒）
+          budgetHit = true;
+          _log.w('  流量預算用盡，中止剩餘分段: $e');
+          return;
+        } catch (e) {
+          last = e is Exception ? e : Exception('$e');
+          if (round == 0) {
+            _log.w('  [chunk ${i + 1}] 第 1 次失敗，重試中: $e');
+            await Future<void>.delayed(const Duration(seconds: 5));
+          }
         }
-      } on UploadBudgetExceeded catch (e) {
-        // 預算用盡：不記為分段錯誤，直接中止整個檔案（否則每段都白燒）
-        budgetHit = true;
-        _log.w('  流量預算用盡，中止剩餘分段: $e');
-      } catch (e) {
-        // 舊版在這裡 swallow 掉錯誤 → 上游 413（段太大）時全部回空字串，
-        // 上層看起來像「逐字稿過短」，白燒整份音檔的流量還查不到原因。
-        _log.w('  [chunk ${i + 1}] 轉錄失敗: $e');
-        if (errors.length < 5) errors.add('${i + 1}: $e');
       }
+      // 記錄失敗（原本只寫進 _log，CLI 完全看不到，導致「部分逐字稿」
+      // 被當成成功寫入而無人察覺）
+      _log.w('  [chunk ${i + 1}] 轉錄失敗: $last');
+      if (errors.length < 5) errors.add('${i + 1}: $last');
+      failedChunks.add(i);
       done++;
       final pct = 0.1 + (0.9 * (done / chunks.length));
       onChunk?.call('轉錄中 $done/${chunks.length} 段…', pct);
@@ -547,8 +574,19 @@ static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
       throw Exception('分段轉錄全部失敗（${errors.length}/${chunks.length} 段）：'
           '${errors.join(' / ')}');
     }
-    if (errors.isNotEmpty) {
-      _log.w('  ${errors.length}/${chunks.length} 段失敗（其餘已取得）');
+    // **部分分段失敗 → 也視為整集失敗**。
+    //
+    // 舊版只 warn 就回傳剩餘的段落，上層會把「只有第 1 段」的半截逐字稿
+    // 當成成功寫入（2026-10-15 實測：59 分鐘的集數只轉出 923 字，
+    // 開頭是「科技浪Hello大家好歡迎收聽」——只拿到第一段，後面全沒）。
+    // 半截逐字稿進 RAG 比沒有更糟：會讓人以為整集都談過那些內容。
+    // 寧可這集標記失敗、下一輪重試，也不要寫入不完整的內容。
+    if (failedChunks.isNotEmpty) {
+      throw _PartialChunkFailure(
+        '${failedChunks.length}/${chunks.length} 段轉錄失敗'
+        '（第 ${failedChunks.take(5).map((i) => i + 1).join('、')} 段）：'
+        '${errors.take(2).join(' / ')}',
+      );
     }
 
     onChunk?.call('轉錄完成', 1.0);
