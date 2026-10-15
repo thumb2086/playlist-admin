@@ -96,9 +96,26 @@ class GroqNativeService {
   static const int _defaultMaxFileSize = 20 * 1024 * 1024; // 20 MB
   /// 目前生效的分段大小（診斷/測試用）。
   static int get maxFileSizeBytes => _maxFileSize;
-  /// 分段秒數（5 分鐘）
-  static const int _chunkDurationSec = 300;
-  /// 二次分段秒數（60 秒，處理 5 分鐘段仍過大的情況）
+  /// 分段秒數（5 分鐘）。
+  ///
+  /// 刻意維持「短段」而不是「塞滿 20MB」：上游 Groq 限流是
+  /// **20 RPM/key × 24 把 = 480 RPM**（2026-10-15 實測額度）。
+  /// 限流算請求數不算流量，所以在 RPM 固定的前提下，**段越短吞吐越高**
+  ///（每請求固定佔用一個 slot 的時間，段長決定 slot 週期）。
+  /// 32kbps 下 5 分鐘段 = 1.14MB，只用掉端點 20MB 上限的 6%，
+  /// 但換到的是 4 倍的請求並發密度——這才是瓶頸所在。
+  ///
+  /// 用環境變數 `PA_TRANSCRIBE_CHUNK_SEC` 可覆寫。
+  static int get _chunkDurationSec {
+    final v = int.tryParse(
+            Platform.environment['PA_TRANSCRIBE_CHUNK_SEC'] ?? '') ??
+        0;
+    return v > 0 ? v : _defaultChunkDurationSec;
+  }
+
+  static const int _defaultChunkDurationSec = 300; // 5 分鐘
+
+  /// 二次分段秒數（處理主分段仍過大的情況）。
   static const int _subChunkDurationSec = 60;
 
   /// 分段音訊的編碼參數（Whisper 官方建議的輸入格式：16kHz mono）。
@@ -128,6 +145,9 @@ class GroqNativeService {
   }
 
   static const int _defaultTranscribeKbps = 32;
+
+  /// 每集的分段併發（環境變數 `PA_CHUNK_CONCURRENCY` 可覆寫）。
+  static const int _defaultChunkConcurrency = 4;
   /// 最大重試次數（每個 key 嘗試一次，外加 2 次額外重試）
   static const int _maxRetries = 2;
 
@@ -287,7 +307,12 @@ static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
         // 放在真正送出前，重試也會再記一次（瞞報等於沒上限）。
         UploadBudget.charge(file.length);
 
-        final streamedResponse = await client.send(request).timeout(const Duration(seconds: 300));
+        // 逾時要跟著分段長度放大：5 分鐘段 300 秒剛好，20 分鐘段就得
+        // 等更久（Whisper 轉錄時間約略隨音訊長度成長）。用 60 秒 +
+        // 每分段秒數 ×1.5，5 分鐘段→765秒、20 分鐘段→1860秒。
+        final timeoutSec = 60 + (_chunkDurationSec * 1.5).round();
+        final streamedResponse =
+            await client.send(request).timeout(Duration(seconds: timeoutSec));
         final body = await streamedResponse.stream.bytesToString();
         final sc = streamedResponse.statusCode;
         lastBody = body;
@@ -376,9 +401,8 @@ static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
     final chunks = await _splitAudio(filePath);
     if (chunks.isEmpty) throw Exception('音檔分段失敗：無法產生任何分段');
 
-    onChunk?.call('共 ${chunks.length} 段，4 並行轉錄中…', 0.1);
+    onChunk?.call('共 ${chunks.length} 段，分段併行轉錄中…', 0.1);
 
-    // 4 並行轉錄
     final texts = List<String>.filled(chunks.length, '');
     final errors = <String>[];
     int done = 0;
@@ -408,10 +432,18 @@ static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
       onChunk?.call('轉錄中 $done/${chunks.length} 段…', pct);
     }
 
-    // 真 worker pool：固定 4 並發，共用 index queue。
+    // 真 worker pool：固定並發數，共用 index queue。
     // 原本 strided batching 第一批就 ceil(n/4) 全開，
     // 60s sub-chunk 下可達數十個並發上傳 → 429 風暴 + 記憶體爆。
-    const workers = 4;
+    //
+    // 並發數用環境變數調（PA_CHUNK_CONCURRENCY），因為總併發 =
+    // 集數並行(groq_concurrency) × 這個值，兩者一起調很容易撞到
+    // STT 端點的承受度——要改不用重新編譯。
+    final workers = (int.tryParse(
+                Platform.environment['PA_CHUNK_CONCURRENCY'] ?? '') ??
+            _defaultChunkConcurrency)
+        .clamp(1, 16);
+    _log.i('  [groq] 分段併發 $workers（總併發 ${ConfigService.instance.config.groqConcurrency.clamp(1, 8)} × $workers）');
     int next = 0;
     Future<void> worker() async {
       while (true) {

@@ -261,13 +261,22 @@ class PodcastPipeline {
       onLog('  無新集數 ($alreadyHave 集已處理過)');
       return;
     }
-    onLog('  需處理: ${tasks.length} 集 (×4 並行)');
+    // 上限先算出來，log 要印實際值（舊版硬寫「×4」，但實際是
+    // config 的 groq_concurrency，預設 3 → log 一直在騙人）。
+    // 集數併發上限從 8 放寬到 16：實測 32 併發（8×4）時端點零錯誤
+    // （0 次 DNS/429/連線中斷），瓶頸是端點算力不是頻寬
+    // （100Mbps 線路只用到 8.9Mbps），所以往上加是安全的。
+    final groqLimit = ConfigService.instance.config.groqConcurrency.clamp(1, 16);
+    final chunkConc = int.tryParse(
+            Platform.environment['PA_CHUNK_CONCURRENCY'] ?? '') ??
+        4;
+    onLog('  需處理: ${tasks.length} 集 '
+        '(×$groqLimit 集並行 × $chunkConc 分段 = ${groqLimit * chunkConc} 併發)');
     final total = tasks.length;
     final groqQueue = <_PodTask>[];
     int groqActive = 0;
     // 上傳流量預算用盡旗標：一旦被 charge 擋下，整批提早結束不再排新任務。
     var budgetHit = false;
-    final groqLimit = ConfigService.instance.config.groqConcurrency.clamp(1, 8);
 
     Future<void> tryGroq() async {
       while (groqActive < groqLimit &&
