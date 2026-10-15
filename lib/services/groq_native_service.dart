@@ -151,6 +151,70 @@ class GroqNativeService {
   /// 最大重試次數（每個 key 嘗試一次，外加 2 次額外重試）
   static const int _maxRetries = 2;
 
+  // ── 客戶端限流（token bucket）────────────────────────
+  //
+  // 為什麼需要：上游 STT 服務的實際天花板實測約 100 RPM
+  // （併發 16 → 100 RPM 零錯；併發 32 → 3 次 429）。
+  // 超過就回 429，而 429 會觸發重試 → 請求數暴增 → 限流更嚴重，
+  // 形成死亡螺旋：2026-10-15 實測 34 集成功 / 49 集「0 字」失敗。
+  //
+  // 與其事後重試，不如**事前限流**卡在天花板之下，讓 429 根本不發生。
+  // 預設 85 RPM（約 15% 安全餘裕），可用 PA_STT_RPM 覆寫。
+  static int get _rpmLimit {
+    final v = int.tryParse(Platform.environment['PA_STT_RPM'] ?? '') ?? 0;
+    return v > 0 ? v : _defaultRpmLimit;
+  }
+
+  static const int _defaultRpmLimit = 85;
+
+  static final List<DateTime> _rpmWindow = <DateTime>[];
+  static Completer<void>? _rpmGate;
+  static Timer? _rpmTimer;
+
+  /// 取得一個請求配額；速率已滿就等到有筆滑出 60 秒窗口為止。
+  ///
+  /// Dart 是單執行緒，同步區段天然序列化，所以不需要額外鎖。
+  /// 所有等待者共用一個 gate，喚醒後各自重新搶配額（誰先到誰拿）。
+  static Future<void> _acquireSlot() async {
+    final limit = _rpmLimit;
+    if (limit <= 0) return; // 0 = 不限流
+    while (true) {
+      final now = DateTime.now();
+      while (_rpmWindow.isNotEmpty &&
+          now.difference(_rpmWindow.first) >=
+              const Duration(seconds: 60)) {
+        _rpmWindow.removeAt(0);
+      }
+      if (_rpmWindow.length < limit) {
+        _rpmWindow.add(now);
+        return;
+      }
+      final waitMs = _rpmWindow.first
+              .add(const Duration(seconds: 61))
+              .difference(now)
+              .inMilliseconds
+          .clamp(20, 61000);
+      final gate = _rpmGate ??= Completer<void>();
+      _rpmTimer?.cancel();
+      _rpmTimer = Timer(Duration(milliseconds: waitMs), () {
+        _rpmGate = null;
+        if (!gate.isCompleted) gate.complete();
+      });
+      await gate.future;
+    }
+  }
+
+  /// 429 專用的指數退避（含 jitter）。
+  /// 舊版固定 3+3n 秒，對限流而言退太快 → 重試立刻又撞回去。
+  static Future<void> _rateLimitBackoff(int attempt) async {
+    final base = 5 * (1 << attempt.clamp(0, 4)); // 5,10,20,40,80 秒
+    final jitter = (base * 0.3 * (DateTime.now().millisecond % 100) / 100.0)
+        .round();
+    final wait = Duration(seconds: base + jitter);
+    _log.w('[Groq] 429 限流，退避 ${wait.inSeconds}s（第 ${attempt + 1} 次）');
+    await Future<void>.delayed(wait);
+  }
+
   // ── HTTP 狀態碼分類 ──────────────────────────────────
   static const _retryableStatuses = {0, 429, 500, 502, 503};
   /// 413 = 上游（多半是中轉）拒收 body 太大：提示改小 PA_TRANSCRIBE_MAX_MB
@@ -291,6 +355,8 @@ static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
       final key = _nextKey();
       http.Client? client;
       try {
+        // 客戶端限流：卡在天花板之下，讓 429 根本不發生（見 _rpmLimit 說明）。
+        await _acquireSlot();
         client = _createClient();
         final file = await http.MultipartFile.fromPath('file', filePath);
         // STT 端點認證用 X-API-Key（不是 Bearer）。
@@ -323,7 +389,17 @@ static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
           return data['text'] as String? ?? '';
         }
 
-        // 可重試的錯誤：429 (Rate Limit), 5xx (Server Error), 0 (無回應)
+        // 429 單獨處理：指數退避 + jitter。舊版固定 3+3n 秒，
+        // 對限流而言退太快 → 重試立刻又撞回去，惡化成死亡螺旋
+        // （2026-10-15：34 集成功 / 49 集 0 字失敗）。
+        if (sc == 429) {
+          lastError = Exception('Groq 429 限流: $body');
+          if (attempt + 1 >= totalAttempts) break;
+          await _rateLimitBackoff(attempt);
+          continue;
+        }
+
+        // 可重試的錯誤：5xx (Server Error), 0 (無回應)
         if (_retryableStatuses.contains(sc)) {
           final delay = Duration(seconds: 3 + attempt * 3);
           _log.w('[Groq] HTTP $sc，第 ${attempt + 1}/$totalAttempts 次重試，等待 ${delay.inSeconds}s');
