@@ -95,6 +95,77 @@ class WindowsNetUsage {
       if (f.existsSync()) f.deleteSync();
     } catch (_) {}
   }
+
+  // ── 每日基準（跨行程持久化）──────────────────────────
+  //
+  // 為什麼需要：`_baselineTotal` 是**每個行程**第一次詢問時才記，
+  // 所以每次啟動都從 0 算起——一天跑 9 輪就會用掉 9 倍預算而守門渾然不覺
+  // （2026-10-15 實測：各輪加總 8.3GB，全部「在預算內」）。
+  //
+  // Windows 只給「開機累計」，要算「今天用了多少」必須自己記一個
+  // 每日起點，而且這個起點必須**跨行程存檔**，否則重開就忘記了。
+  static String get _usageFilePath => _usagePath ?? '';
+
+  static String _today() {
+    final n = DateTime.now();
+    return '${n.year}-${n.month.toString().padLeft(2, '0')}-'
+        '${n.day.toString().padLeft(2, '0')}';
+  }
+
+  /// 今日基準；跨日或檔案遺失時自動以當前值重設。
+  static int _dayBaseline() {
+    final (rx, tx) = totals();
+    if (rx < 0) return -1;
+    final total = rx + tx;
+    try {
+      final f = File(_usageFilePath);
+      if (!f.existsSync()) {
+        _writeDayBaseline(total);
+        return total;
+      }
+      final j = jsonDecode(f.readAsStringSync()) as Map<String, dynamic>;
+      final date = j['day_date'] as String?;
+      final base = (j['day_baseline'] as num?)?.toInt();
+      // 換日 → 以當前值為新基準
+      if (date != _today() || base == null) {
+        _writeDayBaseline(total);
+        return total;
+      }
+      return base;
+    } catch (_) {
+      return -1;
+    }
+  }
+
+  static void _writeDayBaseline(int total) {
+    try {
+      final f = File(_usageFilePath);
+      final prev = f.existsSync()
+          ? jsonDecode(f.readAsStringSync()) as Map<String, dynamic>
+          : <String, dynamic>{};
+      prev['day_baseline'] = total;
+      prev['day_date'] = _today();
+      prev['day_set_at'] = DateTime.now().toIso8601String();
+      f.writeAsStringSync(jsonEncode(prev));
+    } catch (_) {}
+  }
+
+  /// 今日流量（bytes）＝ 介面累計 − 今日基準。取不到回 -1。
+  static int dailyUsedBytes() {
+    final base = _dayBaseline();
+    if (base < 0) return -1;
+    final (rx, tx) = totals();
+    if (rx < 0) return -1;
+    final d = rx + tx - base;
+    return d < 0 ? 0 : d;
+  }
+
+  /// 把「今日基準」設成現在（等同 `budget reset` 的每日語意）。
+  static void resetDailyBaseline() {
+    final (rx, tx) = totals();
+    if (rx < 0) return;
+    _writeDayBaseline(rx + tx);
+  }
 }
 
 /// 上傳流量預算守門員（Groq STT）。
@@ -111,10 +182,22 @@ class UploadBudget {
   UploadBudget._();
 
   static const _envKey = 'PA_UPLOAD_BUDGET_MB';
+  static const _dailyEnvKey = 'PA_UPLOAD_DAILY_MB';
   static const _usageFile = 'upload_usage.json';
 
   static int? _limitBytes;
   static int _usedBytes = -1;
+
+  /// 每日上限（bytes）。null = 不限。
+  ///
+  /// 與 [limitBytes]（每次執行的上限）不同：這個**跨行程**累計，
+  /// 換日自動歸零。沒有它的話，一天跑 N 輪就有 N 個獨立預算。
+  static int? get dailyLimitBytes {
+    final mb = int.tryParse(Platform.environment[_dailyEnvKey] ?? '') ?? 0;
+    return mb > 0 ? mb * 1024 * 1024 : null;
+  }
+
+  static bool get hasDailyLimit => dailyLimitBytes != null;
 
   /// 預算上限（bytes）。null = 不限。
   static int? get limitBytes {
@@ -182,7 +265,28 @@ class UploadBudget {
   static void charge(int n, {String kind = 'up'}) {
     if (n <= 0) return;
     final lim = limitBytes;
-    if (lim == null) return;
+    final dlim = dailyLimitBytes;
+    if (lim == null && dlim == null) return;
+
+    // 0) 每日上限優先（跨行程累計，換日自動歸零）
+    if (dlim != null) {
+      final day = WindowsNetUsage.dailyUsedBytes();
+      if (day >= 0 && day > dlim) {
+        throw UploadBudgetExceeded(
+          '今日流量已達上限：${(day / 1073741824.0).toStringAsFixed(2)} GB'
+          ' / ${(dlim / 1073741824.0).toStringAsFixed(2)} GB（每日累計）',
+        );
+      }
+    }
+
+    if (lim == null) {
+      // 只有每日上限 → 記一次畫面用值就結束
+      if (dlim != null) {
+        final run = WindowsNetUsage.consumedSinceBaseline();
+        _saveNet(run >= 0 ? run : 0, dlim);
+      }
+      return;
+    }
 
     // 1) 優先用 Windows 實測流量（真實、可與設定畫面對照）
     final net = WindowsNetUsage.consumedSinceBaseline();
@@ -253,8 +357,11 @@ class UploadBudget {
     if (lim != null) _saveNet(0, lim);
   }
 
-  /// 今日用量（bytes）＝ 介面累計 − 今日基準。
-  static int get todayBytes => WindowsNetUsage.consumedSinceBaseline();
+  /// 今日用量（bytes）＝ 介面累計 − 今日基準（跨行程持久化，換日自動歸零）。
+  static int get todayBytes => WindowsNetUsage.dailyUsedBytes();
+
+  /// 把每日基準設成現在（不必每天人工跑，沒設定時首次執行會自動建立）。
+  static void resetToday() => WindowsNetUsage.resetDailyBaseline();
 
   /// 今日用量（顯示用）。
   static String todayText() {
@@ -264,15 +371,30 @@ class UploadBudget {
   }
 
   static String describe() {
-    final lim = limitBytes;
-    if (lim == null) return '流量：無限制（設 PA_UPLOAD_BUDGET_MB 才會擋）';
-    final net = netUsedBytes;
-    if (net >= 0) {
-      return '流量：${(net / 1048576).toStringAsFixed(0)}'
-          ' / ${(lim / 1048576).toStringAsFixed(0)} MB（Windows 實測）';
+    final parts = <String>[];
+    final dlim = dailyLimitBytes;
+    if (dlim != null) {
+      final d = WindowsNetUsage.dailyUsedBytes();
+      if (d >= 0) {
+        parts.add('今日 ${(d / 1073741824.0).toStringAsFixed(2)}'
+            ' / ${(dlim / 1073741824.0).toStringAsFixed(2)} GB（每日累計）');
+      }
     }
-    return '流量：${(usedBytes / 1048576).toStringAsFixed(0)}'
-        ' / ${(lim / 1048576).toStringAsFixed(0)} MB（估算，取不到 Windows 值）';
+    final lim = limitBytes;
+    if (lim != null) {
+      final net = netUsedBytes;
+      if (net >= 0) {
+        parts.add('本次 ${(net / 1048576).toStringAsFixed(0)}'
+            ' / ${(lim / 1048576).toStringAsFixed(0)} MB');
+      } else {
+        parts.add('本次 ${(usedBytes / 1048576).toStringAsFixed(0)}'
+            ' / ${(lim / 1048576).toStringAsFixed(0)} MB（估算）');
+      }
+    }
+    if (parts.isEmpty) {
+      return '流量：無限制（設 PA_UPLOAD_BUDGET_MB / PA_UPLOAD_DAILY_MB 才會擋）';
+    }
+    return '流量：${parts.join('　')}';
   }
 }
 
