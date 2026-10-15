@@ -400,15 +400,21 @@ class YoutubeService {
           completer.complete(-1);
         }
       });
-      // 180s hard timeout
+      // 逾時從 180s 降到 45s（與 podcast_service 同步）：
+      // 字幕下載本該秒級完成，180 秒代表 yt-dlp 卡住。逾時後會 fallback
+      // 走 Groq 轉錄，快速失敗遠比乾等划算。PA_YT_SUBS_TIMEOUT 可覆寫。
       var timeoutDone = false;
-      // ignore: unused_local_variable
-      final _ = Future.delayed(const Duration(seconds: 180), () {
-        if (!completer.isCompleted && !timeoutDone) {
-          proc.kill();
-          completer.complete(-1);
-        }
-      });
+      final _ = Future.delayed(
+        Duration(
+            seconds: int.tryParse(
+                    Platform.environment['PA_YT_SUBS_TIMEOUT'] ?? '') ??
+                45),
+        () {
+          if (!completer.isCompleted && !timeoutDone) {
+            proc.kill();
+            completer.complete(-1);
+          }
+        });
       exitFuture.then((c) {
         if (!completer.isCompleted) completer.complete(c);
       });

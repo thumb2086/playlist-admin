@@ -295,8 +295,17 @@ class PodcastService {
         }
       });
       var timeoutDone = false;
+      // 逾時從 180s 降到 45s：字幕下載正常是秒級，180 秒代表 yt-dlp 卡在
+      // 搜尋或被 YouTube 限流。實測一次逾時就是白等 3 分鐘，一輪 12 次
+      // 逾時 = 36 分鐘（2026-10-15）。
+      // 逾時後本來就會 fallback 走 STT，而 STT 現在很穩定，所以
+      // 「快速失敗改走 STT」遠比「乾等 180 秒」划算。
+      // 可用 PA_YT_SUBS_TIMEOUT 覆寫。
+      final subTimeoutSec = int.tryParse(
+              Platform.environment['PA_YT_SUBS_TIMEOUT'] ?? '') ??
+          45;
       // ignore: unused_local_variable
-      final _ = Future.delayed(const Duration(seconds: 180), () {
+      final _ = Future.delayed(Duration(seconds: subTimeoutSec), () {
         if (!completer.isCompleted && !timeoutDone) {
           // Windows: runInShell spawns cmd.exe; must kill process tree
           if (Platform.isWindows) {
@@ -304,7 +313,7 @@ class PodcastService {
           } else {
             proc.kill(ProcessSignal.sigterm);
           }
-          onLog('字幕下載逾時 (180s)，下次重試');
+          onLog('字幕下載逾時 (${subTimeoutSec}s)，改走 Groq 轉錄');
           completer.complete(-1);
         }
       });
