@@ -601,7 +601,13 @@ static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
     final chunks = <String>[];
 
     for (int s = 0; s < duration.ceil(); s += _chunkDurationSec) {
-      final outPath = '${tempDir.path}\\chunk_${prefix}_${chunks.length}.mp3';
+      // 檔名索引用獨立的 segIdx，不能用 chunks.length：
+      // 某段 ffmpeg 失敗時 `continue` 不會讓 chunks.length 增加，
+      // 下一段就會寫進**同一個檔名**把前一段覆蓋掉，最後整份音訊
+      // 只剩最後一段的內容（2026-10-15 實測：45 分鐘的集數只轉出
+      // 「最後祝大家有个愉快的一周 拜拜」這種結尾語，150 bytes）。
+      final segIdx = s ~/ _chunkDurationSec;
+      final outPath = '${tempDir.path}\\chunk_${prefix}_$segIdx.mp3';
       final result = await Process.run(_ffmpeg, [
         '-y', '-i', filePath,
         '-ss', '$s',

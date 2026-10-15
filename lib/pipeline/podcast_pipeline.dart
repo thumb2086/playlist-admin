@@ -750,6 +750,37 @@ class PodcastPipeline {
     return true; // need Groq
   }
 
+  /// 用 ffprobe 取得音檔時長（秒）；取不到回 0。
+  ///
+  /// 逐字稿長度合理性檢查需要它：中文語速最慢 1 字/秒，
+  /// N 秒的音訊至少該有 N 個字，不然就是轉寫只回了一小段。
+  static Future<int> _audioDurationSec(String path) async {
+    try {
+      final r = await Process.run(_ffprobePath, [
+        '-v', 'quiet', '-print_format', 'json', '-show_format', path,
+      ]);
+      if (r.exitCode != 0) return 0;
+      final raw = r.stdout is String
+          ? r.stdout as String
+          : utf8.decode((r.stdout as List<int>?) ?? const [],
+              allowMalformed: true);
+      final j = jsonDecode(raw) as Map<String, dynamic>;
+      final d = double.tryParse(
+              ((j['format'] as Map<String, dynamic>?)?['duration'] as String?) ??
+              '') ??
+          0;
+      return d.round();
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  static String get _ffprobePath =>
+      ConfigService.instance.config.resolvedFfmpegPath.toLowerCase()
+              .endsWith('ffmpeg.exe')
+          ? '${ConfigService.instance.config.resolvedFfmpegPath.substring(0, ConfigService.instance.config.resolvedFfmpegPath.length - 10)}ffprobe.exe'
+          : 'ffprobe';
+
   Future<void> _runGroq(
     _PodTask t,
     String podcastName,
@@ -777,12 +808,20 @@ class PodcastPipeline {
       // 記 'error' 不是 'no_sub'：0 字通常代表「轉寫失敗」（例如上游 413
       // 段太大），記 no_sub 會被當成「這集本來就沒字幕」而永久跳過，
       // 等於每集都白燒一次音檔流量。
+      //
+      // 門檻要**依片長**算，不能用固定 50 字。實測（2026-10-15）：40 分鐘
+      // 的集數只轉出「這集錄到這邊，下次再見，掰掰」這種結尾語，
+      // 去掉空白還有 65 個字 → 剛好通過固定 50 字門檻 → 被當成成功。
+      // 中文語速最慢也有 1 字/秒，所以 N 秒的音訊至少要有 N 個字。
       final strippedLen = text.replaceAll(RegExp(r'\s+'), '').length;
-      if (strippedLen < 50) {
+      final durSec = await _audioDurationSec(audioPath);
+      final minChars = durSec > 0 ? durSec : 0;
+      if (strippedLen < 50 || (minChars > 0 && strippedLen < minChars)) {
         try { if (await File(txtPath).exists()) await File(txtPath).delete(); } catch (_) {}
         cache[t.key] = {'srt': false, 'txt': false, 'yt_status': '', 'status': 'error'};
-        onLog('      ⚠️ 逐字稿空/過短 ($strippedLen 字)：轉寫失敗，標記重試'
-            '（檢查上游大小限制，如 413）');
+        onLog('      ⚠️ 逐字稿空/過短 ($strippedLen 字'
+            '${minChars > 0 ? '，音訊 ${durSec.round()} 秒至少應有 $minChars 字' : ''}'
+            ')：轉寫失敗，標記重試');
         return;
       }
       // Convert simplified Chinese to traditional.
