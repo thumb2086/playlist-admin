@@ -517,16 +517,60 @@ class YoutubeService {
     }
   }
 
-  /// Windows 上 yt-dlp 可能是 .bat shim（CreateProcess 不跑腳本）：
-  /// 先 runInShell:false（歌名含 & | ; 不會被 cmd 切斷/注入），
-  /// 啟動失敗才 true 重試一次。
+  /// Windows 上 yt-dlp 可能是 .bat shim（CreateProcess 不跑腳本），
+  /// 而且從 Explorer 啟動的行程繼承的 PATH 常不含 Python\Scripts。
+  ///
+  /// 舊版 bug：catch 裡的重試寫成 `runInShell: false`（跟 try 的一樣），
+  /// 所以「改用 shell 重試」根本沒換 anything —— 只要 PATH 沒有 yt-dlp
+  /// 就一定失敗（2026-10-15 實測 43 首全部下載失敗）。
+  ///
+  /// 現在依序嘗試：裸名 → shell → 常見安裝路徑 → `python -m yt_dlp`。
   static Future<Process> _startYtDlp(List<String> args) async {
+    // 1) 裸名，runInShell:false（歌名含 & | ; 不會被 cmd 切斷/注入）
     try {
       return await Process.start('yt-dlp', args, runInShell: false);
+    } catch (_) {}
+
+    // 2) 走 shell（能撈到 .bat shim 與 PATHEXT 關聯）
+    try {
+      return await Process.start('yt-dlp', args, runInShell: true);
     } catch (_) {
-      _log.w('yt-dlp 直接啟動失敗，改用 shell 重試');
-      return await Process.start('yt-dlp', args, runInShell: false);
+      _log.w('yt-dlp 裸名啟動失敗（PATH 找不到）');
     }
+
+    // 3) 常見安裝路徑（python -m pip 預設位置）
+    final localAppData =
+        Platform.environment['LOCALAPPDATA'] ?? r'C:\Users\$USERNAME\AppData\Local';
+    final candidates = [
+      r'$localAppData\Programs\Python\Python311\Scripts\yt-dlp.exe',
+      r'$localAppData\Programs\Python\Python312\Scripts\yt-dlp.exe',
+      r'$localAppData\Programs\Python\Python313\Scripts\yt-dlp.exe',
+      r'C:\Python311\Scripts\yt-dlp.exe',
+      r'C:\Python312\Scripts\yt-dlp.exe',
+    ];
+    for (final raw in candidates) {
+      final p = raw
+          .replaceAll(r'$localAppData', localAppData)
+          .replaceAll(r'$USERNAME', Platform.environment['USERNAME'] ?? '');
+      if (File(p).existsSync()) {
+        try {
+          _log.i('yt-dlp 用絕對路徑啟動: $p');
+          return await Process.start(p, args, runInShell: false);
+        } catch (_) {}
+      }
+    }
+
+    // 4) 最後手段：python -m yt_dlp
+    for (final py in ['python', 'py']) {
+      try {
+        _log.i('yt-dlp 改用 $py -m yt_dlp');
+        return await Process.start(py, ['-m', 'yt_dlp', ...args],
+            runInShell: false);
+      } catch (_) {}
+    }
+
+    throw ProcessException('yt-dlp', args, 'yt-dlp 找不到（PATH、安裝路徑、'
+        'python -m yt_dlp 都試過）', 127);
   }
 
   // ── 底層下載 ─────────────────────────────────────────

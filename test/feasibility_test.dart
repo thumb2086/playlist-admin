@@ -113,7 +113,10 @@ void main() {
       log.i('✅ 非同步歌詞: ${plain != null ? "${plain.length} chars" : "無"}');
       expect(synced != null || plain != null, true, reason: '至少一種歌詞');
     } else {
-      log.i('回應: ${resp.body.substring(0, 300)}');
+      // 不要對 body 直接 substring(0, 300)：錯誤回應常常只有幾十字
+      // （實測 91 字），會 RangeError 把整個測試 suite 拖掛。
+      final b = resp.body;
+      log.i('回應: ${b.length > 300 ? b.substring(0, 300) : b}');
       fail('LRCLib API 失敗: ${resp.statusCode}');
     }
   }, timeout: const Timeout(Duration(seconds: 15)));

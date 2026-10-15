@@ -257,6 +257,37 @@ class PodcastPipeline {
     }
     await _saveCacheAsync(cache);
 
+    // RSS 集數的 canonical 集合，用來判斷哪些本地檔不在 feed 裡。
+    final rssCanonical = <String>{};
+    for (final ep in episodes) {
+      final c = _canonicalize(ep.title);
+      if (c.isNotEmpty) rssCanonical.add(c);
+      final a = ep.title.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+      if (a.length >= 8) rssCanonical.add(a);
+    }
+
+    // ── 本地補掃 ─────────────────────────────────────
+    // RSS feed 只保留最近的集數，舊集會從 feed 裡消失，但音檔還在本地。
+    // 2026-10-15 實測：游庭皓本地 566 個 mp3、RSS 只有 501 集，
+    // 那 65 個沒有逐字稿的舊集正好就是 feed 滾掉的——只遍歷 RSS 的話
+    // 它們永遠不會被排進任務，log 還會顯示「無新集數」看起來像完成了。
+    final localOnly = _sweepLocalOnly(podDir, rssCanonical);
+    if (localOnly.isNotEmpty) {
+      onLog('  本地補掃：另有 ${localOnly.length} 個音檔不在 RSS '
+          '（feed 只留近期集數），一併補上');
+      for (var i = 0; i < localOnly.length; i++) {
+        final ep = localOnly[i];
+        final key = '$podcastName|${ep.title}';
+        cache[key] = {
+          'srt': false,
+          'txt': false,
+          'yt_status': '',
+          'status': 'pending',
+        };
+        tasks.add(_PodTask(index: episodes.length + i, episode: ep, key: key));
+      }
+    }
+
     if (tasks.isEmpty) {
       onLog('  無新集數 ($alreadyHave 集已處理過)');
       return;
@@ -516,6 +547,59 @@ class PodcastPipeline {
     return s.toLowerCase()
         .replaceAll(RegExp(r'[^a-z0-9\u4e00-\u9fff\u3400-\u4dbf]'), '')
         .trim();
+  }
+
+  /// 掃出「本地有音檔但缺逐字稿、且這輪 RSS 裡沒有」的集數。
+  ///
+  /// RSS feed 通常只保留最近數十集，舊集會從 feed 消失但音檔還在本地。
+  /// 只遍歷 feed 的話，這些集永遠不會被排進任務，而且 log 會印
+  /// 「無新集數」讓人誤以為已完成（2026-10-15 實測：游庭皓本地 566 個
+  /// mp3、feed 只有 501 集，缺的 65 集正好就是 feed 滾掉的那些）。
+  ///
+  /// 判斷「不在 RSS」用 [rssCanonical]：把每個 RSS 集數的標題 canonical
+  /// 化後比對本地檔名，並額外用「去掉非英數」版本比對（處理繁簡/標點差異）。
+  ///
+  /// 回傳用本地音檔路徑當 audioUrl 的 PodcastEpisode——下游轉錄只讀
+  /// audioUrl，不需要真的去下載。
+  List<PodcastEpisode> _sweepLocalOnly(
+      String podDir, Set<String> rssCanonical) {
+    final out = <PodcastEpisode>[];
+    final dir = Directory(podDir);
+    if (!dir.existsSync()) return out;
+
+    final withTxt = <String>{};
+    final audio = <File>[];
+    try {
+      for (final f in dir.listSync()) {
+        if (f is! File) continue;
+        final name = f.uri.pathSegments.last;
+        final low = name.toLowerCase();
+        if (low.endsWith('.txt')) {
+          if (f.lengthSync() > 200) {
+            withTxt.add(name.replaceAll(RegExp(r'\.txt$'), ''));
+          }
+        } else if (low.endsWith('.mp3') ||
+            low.endsWith('.wav') ||
+            low.endsWith('.m4a')) {
+          audio.add(f);
+        }
+      }
+    } catch (_) {
+      return out;
+    }
+
+    for (final f in audio) {
+      final stem = f.uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '');
+      if (stem.length < 5) continue;
+      if (withTxt.contains(stem)) continue;
+      if (rssCanonical.contains(_canonicalize(stem))) continue;
+      final alphaOnly =
+          stem.toLowerCase().replaceAll(RegExp(r'[^a-z0-9]'), '');
+      if (alphaOnly.length >= 8 && rssCanonical.contains(alphaOnly)) continue;
+      out.add(PodcastEpisode(title: stem, audioUrl: f.path));
+    }
+
+    return out;
   }
 
   static int _commonPrefixLen(String a, String b) {
