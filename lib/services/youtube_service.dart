@@ -427,7 +427,7 @@ class YoutubeService {
       if (code != 0) {
         _log.w('yt-dlp 搜尋下載失敗 (exit $code): $lastErr');
         onError?.call(_summarizeYtDlpError(lastErr, code));
-        dlDir.deleteSync(recursive: true);
+        _safeDeleteDir(dlDir);
         return null;
       }
 
@@ -448,7 +448,7 @@ class YoutubeService {
       if (found == null || !await found.exists()) {
         _log.w('yt-dlp 找不到輸出檔案');
         onError?.call(_summarizeYtDlpError(lastErr, code));
-        dlDir.deleteSync(recursive: true);
+        _safeDeleteDir(dlDir);
         return null;
       }
 
@@ -456,7 +456,7 @@ class YoutubeService {
       if (fileSize < 1024) {
         _log.w('yt-dlp 輸出檔案太小 (${fileSize}B)');
         onError?.call('輸出檔案太小 (${fileSize}B)，可能被 YouTube 擋下');
-        dlDir.deleteSync(recursive: true);
+        _safeDeleteDir(dlDir);
         return null;
       }
 
@@ -472,7 +472,7 @@ class YoutubeService {
       onError?.call('yt-dlp 異常: $e');
       return null;
     } finally {
-      try { dlDir.deleteSync(recursive: true); } catch (_) {}
+      try { _safeDeleteDir(dlDir); } catch (_) {}
     }
   }
 
@@ -514,6 +514,23 @@ class YoutubeService {
     } on FileSystemException {
       await src.copy(dest);
       try { await src.delete(); } catch (_) {}
+    }
+  }
+
+  /// 刪除暫存目錄，**失敗不拋**。
+  ///
+  /// yt-dlp 結束後檔案鎖還沒釋放是常見的（Windows 上尤其如此），
+  /// 直接 deleteSync 會丟 PathAccessException，把「音檔沒找到」這種
+  /// 真正的失敗原因蓋掉（2026-10-15 實測）。清理失敗只是留下 temp 垃圾，
+  /// 讓呼叫端看到真正的原因比較重要。
+  static void _safeDeleteDir(Directory dir) {
+    // 同步函式沒有可用的 sleep，所以只重試一次；還是不行就放棄，
+    // 讓 temp 由系統清理。絕對不能把例外往上丟——那會蓋掉真正的失敗原因。
+    for (var attempt = 0; attempt < 2; attempt++) {
+      try {
+        if (dir.existsSync()) dir.deleteSync(recursive: true);
+        return;
+      } catch (_) {}
     }
   }
 
@@ -675,7 +692,7 @@ class YoutubeService {
         final lastErr = errBuf.toString();
         _log.w('yt-dlp 失敗 (exit $code): ${lastErr.length > 300 ? lastErr.substring(lastErr.length - 300) : lastErr}');
         onError?.call(_summarizeYtDlpError(lastErr, code));
-        dlDir.deleteSync(recursive: true);
+        _safeDeleteDir(dlDir);
         return null;
       }
 
@@ -690,14 +707,14 @@ class YoutubeService {
 
       if (found == null || !await found.exists()) {
         _log.w('yt-dlp 找不到輸出檔案');
-        dlDir.deleteSync(recursive: true);
+        _safeDeleteDir(dlDir);
         return null;
       }
 
       final fileSize = await found.length();
       if (fileSize < 1024) {
         _log.w('yt-dlp 輸出檔案太小 (${fileSize}B)，可能下載失敗');
-        dlDir.deleteSync(recursive: true);
+        _safeDeleteDir(dlDir);
         return null;
       }
 
@@ -716,7 +733,7 @@ class YoutubeService {
       onError?.call('yt-dlp 異常: $e');
       return null;
     } finally {
-      try { dlDir.deleteSync(recursive: true); } catch (_) {}
+      try { _safeDeleteDir(dlDir); } catch (_) {}
     }
   }
 
