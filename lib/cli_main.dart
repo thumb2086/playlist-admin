@@ -171,7 +171,22 @@ Downloaded: ${cfg.lastUpdated.length}''');
           }
         }
         if (!ready) {
-          print('Chrome 啟動了但 CDP 沒起來，請確認 Chrome 沒被其他軟體擋。');
+          // Chrome 136+ 會在「預設 profile」下忽略 --remote-debugging-port
+          // （防止 cookie 被 debug 埠竊取的安全封鎖）。我們要的正是預設
+          // profile 裡的登入狀態，所以這條自動化路徑在新版 Chrome 上無解。
+          print('Chrome 啟動了，但除錯埠沒有綁定。');
+          print('');
+          print('原因：Chrome 136 起，若 --remote-debugging-port 搭配「預設');
+          print('使用者資料目錄」會被直接忽略（防止 cookie 被 debug 埠竊取）。');
+          print('我們要的就是預設 profile 裡的登入狀態，所以無法繞過。');
+          print('');
+          print('請改用瀏覽器擴充匯出（約 30 秒）：');
+          print('  1) 安裝「Get cookies.txt LOCALLY」擴充');
+          print('  2) 在 Chrome 開 https://www.youtube.com 並確認已登入');
+          print('  3) 點擴充 → Export → Netscape 格式');
+          print('  4. 存成 ${CookieExport.defaultOutPath()}');
+          print('');
+          print('存完跑 `playlist-admin cookie check` 驗證有沒有登入身分。');
           break;
         }
         print('CDP 已就緒，正在讀取 YouTube cookie…');

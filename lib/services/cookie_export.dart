@@ -14,16 +14,25 @@ import 'dart:io';
 /// ## 為什麼這裡用 DevTools Protocol
 ///
 /// CDP 是 Chrome 自己的除錯介面，**執行在瀏覽器行程內部**，
-/// 所以拿得到 cookie 明文。這條路可以在程式裡完全自動完成，
-/// 不需要使用者裝擴充或手動複製貼上。
+/// 所以拿得到 cookie 明文，不需要使用者裝擴充或手動複製貼上。
 ///
-/// ## 流程
+/// ## ⚠️ 但新版 Chrome 擋掉了
 ///
-/// 1. 檢查/關閉既有 Chrome（cookie 檔被鎖住時 CDP 也拿不到）
-/// 2. 以 `--remote-debugging-port` 啟動 Chrome（使用者的原有設定不動）
-/// 3. 連 CDP → `Storage.getCookies` → 篩 `.youtube.com`
-/// 4. 寫成 Netscape 格式到 yt_cookies.txt
-/// 5. 驗證有沒有登入身份（LOGIN_INFO / SAPISID / SID…）
+/// Chrome 136 起，若 `--remote-debugging-port` 搭配**預設使用者資料目錄**
+/// 會被直接忽略——這是為了防止惡意程式用 debug 埠竊取 cookie。
+/// 實測（2026-10-16，Chrome 153）加上參數後 CDP 永遠沒有綁定 :9222。
+///
+/// 我們要的正是預設 profile 裡的登入狀態，所以這條自動化路徑在新版
+/// Chrome 上無解。現況請改用瀏覽器擴充匯出，再用 [inspect] 驗證：
+///
+/// 1. 安裝「Get cookies.txt LOCALLY」
+/// 2. 開 https://www.youtube.com 並確認已登入
+/// 3. 擴充 → Export → Netscape 格式
+/// 4. 存成 [defaultOutPath]
+/// 5. `playlist-admin cookie check` 驗證
+///
+/// [export] 與 [launchChromeWithDebugPort] 仍保留：舊版 Chrome、
+/// 或其他 Chromium 內核瀏覽器（未套用此限制者）仍可全自動完成。
 class CookieExport {
   CookieExport._();
 
@@ -130,14 +139,21 @@ class CookieExport {
   }
 
   /// 啟動 Chrome 帶除錯埠。
+  ///
+  /// 注意：**不要**加 `--new-window`——Chrome 會把它當成「在既有視窗開新
+  /// 分頁」的開關，於是把整組參數（含 --remote-debugging-port）忽略掉，
+  /// 結果 CDP 永遠不會綁定。實測踩過這個坑。
+  ///
+  /// 也**不能**用 `--user-data-dir` 指到獨立目錄：那樣會拿到一個全新、
+  /// 沒有登入狀態的 profile，等於白做。
   static Future<bool> launchChromeWithDebugPort({String? profile}) async {
     final exe = _chromeExe();
     if (exe == null) return false;
-    final args = [
+    final args = <String>[
       '--remote-debugging-port=$_debugPort',
-      // 用獨立的使用者資料目錄，避免與既有 session 搶 cookie 資料庫
-      // （同一個 profile 不能同時被兩個 Chrome 行程使用）
-      if (profile != null) '--user-data-dir=$profile' else '--new-window',
+      // 有些環境需要明確允許 localhost 的 DevTools 連線
+      '--remote-allow-origins=*',
+      if (profile != null) '--user-data-dir=$profile',
       'https://www.youtube.com',
     ];
     try {
