@@ -74,7 +74,11 @@ class SnapshotManager {
     final all = cache['playlists'] as Map<String, dynamic>;
     for (final entry in playlists.entries) {
       final name = entry.key;
-      final current = entry.value;
+      // 濾掉空白歌名：Spotify 偶爾給沒有標題的項目（實測「Kpop 排行榜
+      // 2026」有 1 首）。留著會一路流到下載階段，讓 yt-dlp 收到
+      // "ytsearch1" 空查詢 → 回 "Unsupported url scheme: ytsearch1"。
+      final raw = entry.value;
+      final current = raw.where((t) => t.trim().isNotEmpty).toSet().toList();
       int count = 0;
       try {
         final old = all[name];

@@ -159,6 +159,14 @@ class PipelineOrchestrator {
       await state.waitIfPaused();
       if (state.isCancelled) return;
 
+      // 歌名是空白 → 送給 yt-dlp 的是 "ytsearch1" 空查詢，
+      // 會回 "Unsupported url scheme: ytsearch1" 這種看不懂的錯。
+      // Spotify 偶爾會給空標題的項目，這裡直接跳過並記錄。
+      if (song.trim().isEmpty) {
+        onLog('  ⏭️ 跳過空白歌名（playlist 內有項目沒有標題）');
+        continue;
+      }
+
       // 連續失敗太多次 → 中止（YouTube bot detection / 封鎖）。
       if (consecutiveFails >= maxConsecutiveFails) {
         onLog('  🛑 連續失敗 $consecutiveFails 次，疑似被 YouTube 封鎖，中止下載');
