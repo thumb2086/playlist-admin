@@ -141,8 +141,16 @@ Downloaded: ${cfg.lastUpdated.length}''');
           } else {
             print('狀態 = 匿名 ❌');
             print('  缺少: ${r.missing.take(6).join(", ")}…');
-            print('  執行 `playlist-admin cookie export` 匯出登入 cookie');
-            print('  （Chrome 127+ 無法用 yt-dlp 讀，必須走 DevTools Protocol）');
+            print('');
+            print('  匯出登入 cookie 的步驟：');
+            print('  1) Chrome 開 https://www.youtube.com，確認右上角已登入');
+            print('     （若顯示「登入」按鈕 → 先登入，否則匯出來的也只是訪客 cookie）');
+            print('  2) 用擴充「Get cookies.txt LOCALLY」匯出 Netscape 格式');
+            print('  3) 存成 ${CookieExport.defaultOutPath()}');
+            print('  4) 重跑 `playlist-admin cookie check` 驗證');
+            print('');
+            print('  註：`cookie export` 在 Chrome 136+ 無法自動完成');
+            print('      （Chrome 會忽略預設 profile 上的 --remote-debugging-port）。');
           }
         }
       } else if (sub == 'export') {
@@ -181,10 +189,11 @@ Downloaded: ${cfg.lastUpdated.length}''');
           print('我們要的就是預設 profile 裡的登入狀態，所以無法繞過。');
           print('');
           print('請改用瀏覽器擴充匯出（約 30 秒）：');
-          print('  1) 安裝「Get cookies.txt LOCALLY」擴充');
-          print('  2) 在 Chrome 開 https://www.youtube.com 並確認已登入');
-          print('  3) 點擴充 → Export → Netscape 格式');
-          print('  4. 存成 ${CookieExport.defaultOutPath()}');
+          print('  1) 在 Chrome 開 https://www.youtube.com');
+          print('     確認右上角已顯示頭像。若顯示「登入」按鈕 → 先登入，');
+          print('     否則匯出來的也只是訪客 cookie，沒有用。');
+          print('  2) 用擴充「Get cookies.txt LOCALLY」→ Export → Netscape');
+          print('  3) 存成 ${CookieExport.defaultOutPath()}');
           print('');
           print('存完跑 `playlist-admin cookie check` 驗證有沒有登入身分。');
           break;
