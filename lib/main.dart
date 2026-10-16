@@ -14,6 +14,7 @@ import 'services/i18n.dart';
 import 'services/log_manager.dart';
 import 'services/spotify_session.dart';
 import 'services/player_controller.dart';
+import 'services/whats_new.dart';
 
 int _foundHwnd = 0;
 
@@ -112,4 +113,10 @@ void main() async {
   }
   I18N.instance.setLanguage(ConfigService.instance.config.language);
   runApp(const PlaylistAdminApp());
+  // 更新後首次啟動：跳一次「這次更新了什麼」。
+  // 必須等第一個 frame，否則在 build 期間 showDialog 會炸。
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    final ctx = navigatorKey.currentContext;
+    if (ctx != null) WhatsNew.show(ctx);
+  });
 }

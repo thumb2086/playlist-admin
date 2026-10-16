@@ -20,10 +20,15 @@ import 'services/update_service.dart';
 import 'services/version_checker.dart';
 import 'widgets/update_dialog.dart';
 import 'widgets/onboarding_dialog.dart';
+
 import 'widgets/queue_panel.dart';
 import 'widgets/player_bar.dart';
 import 'services/player_controller.dart';
 import 'services/sync_server.dart';
+
+/// MaterialApp 的 navigator key：更新說明對話框需要一個「已掛載」的
+/// context 才能 showDialog，main.dart 的 postFrameCallback 靠它觸發。
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 class PlaylistAdminApp extends StatefulWidget {
   const PlaylistAdminApp({super.key});
@@ -53,6 +58,7 @@ class _PlaylistAdminAppState extends State<PlaylistAdminApp> {
     final isDark = ConfigService.instance.config.theme != 'light';
     return MaterialApp(
       title: t('app.title'),
+      navigatorKey: navigatorKey,
       theme: isDark ? buildDarkTheme() : buildLightTheme(),
       darkTheme: buildDarkTheme(),
       themeMode: isDark ? ThemeMode.dark : ThemeMode.light,
