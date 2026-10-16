@@ -525,9 +525,24 @@ class YoutubeService {
       }
     }
 
-    // exit 0 卻沒產出檔案 → 多半是搜尋沒中或該影片無法下載
-    if (exitCode == 0 && lines.isNotEmpty == false) {
-      return 'yt-dlp 正常結束但沒有產出音檔（搜尋可能沒中）';
+    // exit 0 卻沒產出檔案 → 必須分辨「搜尋沒中」與「下載被擋」，兩者處理
+    // 方式完全不同（前者換查詢詞就好，後者只能等或換 IP）。
+    //
+    // 實測（2026-10-16）：403 常常在 exit 0 的情況下發生（yt-dlp 抓完
+    // 串流時才 403），舊版一律說「搜尋可能沒中」→ 誤導排查方向。
+    if (exitCode == 0) {
+      final hay = pool.join(' ').toLowerCase();
+      if (hay.contains('403') || hay.contains('forbidden')) {
+        return 'YouTube 拒絕下載串流 (403)：影片本身可能有限制，或 IP 被暫時'
+            '封鎖；搜尋是找得到的，稍後重試通常就過';
+      }
+      if (hay.contains('premieres') || hay.contains('live stream')) {
+        return '影片尚未發布或正在直播，等發布後再下載';
+      }
+      if (hay.contains('is not available') || hay.contains('no results')) {
+        return 'YouTube 搜尋沒有結果：這首歌可能沒有官方音軌';
+      }
+      return 'yt-dlp 正常結束但沒有產出音檔（搜尋無結果或串流被擋）';
     }
 
     if (lines.isNotEmpty) {
