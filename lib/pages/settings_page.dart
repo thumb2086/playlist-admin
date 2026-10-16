@@ -9,6 +9,7 @@ import '../models/config_model.dart';
 import '../services/config_service.dart';
 import '../services/cover_cache.dart';
 import '../services/i18n.dart';
+import '../services/library_doctor.dart';
 import '../services/log_manager.dart';
 import '../services/sync_server.dart';
 import '../services/update_service.dart';
@@ -261,6 +262,8 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ]),
         const SizedBox(height: 12),
+        _LibraryHealthPanel(basePath: c.basePath),
+        const SizedBox(height: 12),
         _Section('Discord Rich Presence', [
           _Field('Discord Application ID', _discordAppIdCtrl, '到 discord.com/developers 申請'),
           _Toggle('Discord Presence', c.discordPresenceEnabled, (v) {
@@ -290,6 +293,147 @@ class _SettingsPageState extends State<SettingsPage> {
       ]),
     );
   }
+}
+
+/// 音訊庫健康檢查。
+///
+/// 為什麼需要：2026-10-15 修掉 12 個 bug，其中 8 個是 pipeline 回報
+/// 「✅ 成功」但資料其實是壞的（83 個音檔損毀、分段覆蓋只剩結尾語、
+/// 字幕被自動翻譯成英文…）。「檔案存在」不等於「資料正確」，
+/// 所以把獨立標準做成按鈕，讓使用者隨時能驗，不用開終端機跑腳本。
+class _LibraryHealthPanel extends StatefulWidget {
+  final String basePath;
+  const _LibraryHealthPanel({required this.basePath});
+
+  @override
+  State<_LibraryHealthPanel> createState() => _LibraryHealthPanelState();
+}
+
+class _LibraryHealthPanelState extends State<_LibraryHealthPanel> {
+  bool _running = false;
+  bool _fast = true;
+  String _progress = '';
+  DoctorReport? _report;
+  String? _stt;
+
+  String get _podDir =>
+      '${widget.basePath}${Platform.pathSeparator}podcasts';
+
+  Future<void> _run() async {
+    if (_running) return;
+    setState(() {
+      _running = true;
+      _progress = '0 / 0';
+      _stt = null;
+    });
+    final r = await LibraryDoctor.run(
+      podcastsDir: _podDir,
+      skipAudioProbe: _fast,
+      onProgress: (d, t) {
+        if (mounted) setState(() => _progress = '$d / $t');
+      },
+    );
+    if (!mounted) return;
+    final stt = await LibraryDoctor.probeStt();
+    if (!mounted) return;
+    setState(() {
+      _report = r;
+      _stt = stt;
+      _running = false;
+    });
+    if (!r.isHealthy) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('檢查完成：${r.needsWork} 個項目需要處理'),
+          backgroundColor: AppColors.accent,
+        ));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final r = _report;
+    return _Section('音訊庫健康檢查', [
+      Row(children: [
+        Expanded(
+          child: Text(
+            '檢查逐字稿覆蓋率、音檔完整性、內容品質與語言一致性',
+            style: TextStyle(
+                color: AppColors.textSecondary, fontSize: 11),
+          ),
+        ),
+        Tooltip(
+          message: '快速模式跳過 ffprobe（約 1 秒）',
+          child: Checkbox(
+            value: _fast,
+            onChanged: _running
+                ? null
+                : (v) => setState(() => _fast = v ?? true),
+          ),
+        ),
+        Text('快速', style: TextStyle(fontSize: 11)),
+        const SizedBox(width: 8),
+        ElevatedButton.icon(
+          onPressed: _running ? null : _run,
+          icon: Icon(_running ? Icons.hourglass_empty : Icons.health_and_safety,
+              size: 18),
+          label: Text(_running ? '檢查中...' : '檢查'),
+          style: ElevatedButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          ),
+        ),
+      ]),
+      if (_running) ...[
+        const SizedBox(height: 8),
+        LinearProgressIndicator(value: null),
+        const SizedBox(height: 4),
+        Text(_progress,
+            style:
+                const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+      ],
+      if (r != null && !_running) ...[
+        const SizedBox(height: 10),
+        _row('音檔總數', '${r.totalAudio}'),
+        _row('有逐字稿', '${r.withTranscript}  '
+            '(${(r.totalAudio == 0 ? 0 : 100.0 * r.withTranscript / r.totalAudio).toStringAsFixed(2)}%)'),
+        _row('缺逐字稿', '${r.missingTranscript}',
+            bad: r.missingTranscript > 0),
+        _row('損毀音檔', '${r.corruptAudio}', bad: r.corruptAudio > 0),
+        _row('疑似截斷', '${r.truncatedTranscript}',
+            bad: r.truncatedTranscript > 0),
+        _row('疑似被翻譯', '${r.wrongLanguage}', bad: r.wrongLanguage > 0),
+        if (_stt != null) _row('STT 額度', _stt!,
+            bad: _stt!.startsWith('不可用')),
+        const SizedBox(height: 6),
+        Text(
+          r.isHealthy ? '✅ 全部通過' : '⚠️  ${r.needsWork} 個項目需要處理'
+              '（跑 playlist 補逐字稿即可修復）',
+          style: TextStyle(
+            fontSize: 12,
+            color: r.isHealthy ? AppColors.accent : Colors.orange,
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ],
+    ]);
+  }
+
+  Widget _row(String label, String value, {bool bad = false}) => Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(children: [
+          SizedBox(width: 110,
+              child: Text(label,
+                  style: TextStyle(
+                      fontSize: 12, color: AppColors.textSecondary))),
+          Text(value,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: bad ? FontWeight.w700 : FontWeight.normal,
+                color: bad ? Colors.orange : AppColors.text,
+              )),
+        ]),
+      );
 }
 
 class _DropdownLabel extends StatelessWidget {

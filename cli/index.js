@@ -32,6 +32,8 @@ Usage:
   playlist-admin skill list              List bundled opencode skills
   playlist-admin skill install [name] [--dir X] Install skill(s) to opencode (~/.config/opencode/skills)
   playlist-admin skill path [name]       Print installed path of a skill
+  playlist-admin doctor [--fast] [--verbose] [--no-stt]
+                                        音訊庫健康檢查（覆蓋率/損毀/品質/語言/額度）
 `;
 
 function projectRoot() {
@@ -44,9 +46,40 @@ function projectRoot() {
   while (true) {
     if (fs.existsSync(path.join(dir, 'pubspec.yaml'))) return dir;
     const parent = path.dirname(dir);
-    if (parent === dir) return null;
+    if (parent === dir) break;
     dir = parent;
   }
+  // 從 npm 全域包呼叫時 cwd 向上找不到 pubspec.yaml（npm 包不含 Dart 引擎），
+  // 這時要找 GUI 的安裝目錄——它才是真正持有 playlist-admin.exe 的地方。
+  // 沒有這段 fallback 的話，使用者每次都得手動設 PA_ROOT 才能跑任何命令。
+  return installedRoot();
+}
+
+/// GUI 安裝目錄候選（依序找第一個真的持有 exe 的）。
+///
+/// 安裝版（Inno Setup）的 exe 在**目錄根層**，開發版在 build/windows/...，
+/// 兩種都要認，否則只有開發者能從 npm 呼叫 CLI。
+function installedRoot() {
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  const localAppData = process.env.LOCALAPPDATA || '';
+  const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
+  const programFilesX86 =
+    process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+  const dirs = [];
+  if (localAppData) {
+    dirs.push(path.join(localAppData, 'Programs', 'playlist-admin'));
+    dirs.push(path.join(localAppData, 'playlist-admin'));
+  }
+  if (home) {
+    dirs.push(path.join(home, 'playlist-admin'));
+    dirs.push(path.join(home, 'Desktop', 'playlist-admin'));
+  }
+  dirs.push(path.join(programFiles, 'playlist-admin'));
+  dirs.push(path.join(programFilesX86, 'playlist-admin'));
+  for (const d of dirs) {
+    if (exePath(d)) return d;
+  }
+  return null;
 }
 
 /// npm 包自身目錄（全域 npm i -g 時，cwd 向上找不到 pubspec，
@@ -60,7 +93,11 @@ function packageRoot() {
 }
 
 function exePath(root) {
+  if (!root) return null;
   const candidates = [
+    // 安裝版（Inno Setup 打包）：exe 直接在安裝目錄根層
+    path.join(root, 'playlist-admin.exe'),
+    // 開發版：flutter build windows --release 的輸出
     path.join(root, 'build', 'windows', 'x64', 'runner', 'Release', 'playlist-admin.exe'),
     path.join(root, 'build', 'windows', 'x64', 'runner', 'Debug', 'playlist-admin.exe'),
     path.join(root, 'build', 'windows', 'arm64', 'runner', 'Release', 'playlist-admin.exe'),
