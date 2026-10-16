@@ -196,6 +196,7 @@ class YoutubeService {
           '-g',
           '-f', 'bestaudio/best',
           '--socket-timeout', '20',
+          '--no-update',
           if (ck != null) ...['--cookies', ck],
           'https://www.youtube.com/watch?v=$videoId',
         ];
@@ -348,6 +349,10 @@ class YoutubeService {
       '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
       '--add-header', 'Accept-Language:zh-TW,zh;q=0.9,en;q=0.5',
       '--print', 'after_move:filepath',  // 輸出最終檔案路徑
+      // 關掉更新檢查：它會在 stderr 最後留一行
+      // "To suppress this warning, add --no-update"，剛好蓋掉真正的錯誤訊息
+      // （2026-10-16 實測：403 Forbidden 被這句警告取代）。
+      '--no-update',
     ];
 
     // 加入餅乾（如果有的話）
@@ -483,20 +488,48 @@ class YoutubeService {
         .map((l) => l.replaceAll(RegExp(r'^\s*\[.*?\]\\s*'), '').trim())
         .where((l) => l.isNotEmpty)
         .toList();
+
+    // 先把「無害的雜訊」剔掉。yt-dlp 最後一行常常是
+    // "To suppress this warning, add --no-update to your command/config"
+    // ——那是更新檢查提示，不是失敗原因。舊版取最後一行當錯誤訊息，
+    // 結果真正的 "HTTP Error 403: Forbidden" 被蓋掉，
+    // 使用者只看到一句無意義的警告（2026-10-16 實測）。
+    const noise = <String>[
+      'to suppress this warning',
+      '--no-update',
+      'latest version',
+      'you can use',
+    ];
+    final meaningful = lines
+        .where((l) => !noise.any((n) => l.toLowerCase().contains(n)))
+        .toList();
+    final pool = meaningful.isNotEmpty ? meaningful : lines;
+
     // 優先找關鍵字：bot 驗證 / cookies / format / 403 / timeout。
-    for (final l in lines.reversed) {
+    for (final l in pool.reversed) {
       final low = l.toLowerCase();
       if (low.contains('not a bot') || low.contains('sign in to confirm')) {
         return 'YouTube 要求登入驗證 (bot check)：請更新 yt_cookies.txt（需登入 YouTube 後匯出）';
       }
       if (low.contains('cookies')) return l.length > 200 ? l.substring(0, 200) : l;
       if (low.contains('requested format')) return 'requested format 不可用，已跳過';
-      if (low.contains('403') || low.contains('forbidden')) return 'YouTube 403 拒絕：疑似 IP 被擋或 cookies 失效';
+      if (low.contains('403') || low.contains('forbidden')) {
+        return 'YouTube 403 拒絕：疑似 IP 被擋或 cookies 失效';
+      }
+      if (low.contains('unable to download')) {
+        return '無法下載：${l.length > 160 ? l.substring(0, 160) : l}';
+      }
       if (low.contains('timeout') || low.contains('timed out')) return '連線逾時：請重試';
       if (low.contains('unavailable') || low.contains('private') || low.contains('deleted')) {
         return l.length > 200 ? l.substring(0, 200) : l;
       }
     }
+
+    // exit 0 卻沒產出檔案 → 多半是搜尋沒中或該影片無法下載
+    if (exitCode == 0 && lines.isNotEmpty == false) {
+      return 'yt-dlp 正常結束但沒有產出音檔（搜尋可能沒中）';
+    }
+
     if (lines.isNotEmpty) {
       final last = lines.last;
       final short = last.length > 200 ? last.substring(last.length - 200) : last;
