@@ -87,6 +87,17 @@ class PipelineOrchestrator {
     await _stepRag((_) {});
   }
 
+
+  /// 歌名正規化：把 Windows 檔名非法字元換成底線，與下載時落盤的規則一致。
+  ///
+  /// 下載時 `song.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')`，
+  /// 但「已有」比對原本用 `toLowerCase()` 而沒做這個替換 →
+  /// `24/7 Shining - AKB48 Team TP` 落盤成 `24_7 Shining - AKB48 Team TP`，
+  /// 比對永遠失敗 → 每次 pipeline 重複下載同一批（實測連跑三輪
+  /// 都「6 成功」，音檔庫數量卻一直停在 4971）。
+  static String _normSong(String s) =>
+      s.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim().toLowerCase();
+
   Future<void> _stepDownload(void Function(double) progress) async {
     final musicDir = Directory(config.musicPath);
     await musicDir.create(recursive: true);
@@ -133,11 +144,12 @@ class PipelineOrchestrator {
       await for (final f in musicDir.list(recursive: true, followLinks: false)) {
         if (f is File) {
           final stem = File(f.path).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '');
-          existing.add(stem.toLowerCase());
+          existing.add(_normSong(stem));
         }
       }
     }
-    final missing = allSongs.where((s) => !existing.contains(s.toLowerCase())).toList();
+    final missing =
+        allSongs.where((s) => !existing.contains(_normSong(s))).toList();
     onLog('已有 ${existing.length} 首，需下載 ${missing.length} 首');
 
     if (missing.isEmpty) {
