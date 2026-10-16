@@ -136,6 +136,17 @@ Downloaded: ${cfg.lastUpdated.length}''');
           print('cookie 檔  = ${r.path}');
           print('cookie 數  = ${r.total}');
           print('登入 cookie = ${r.auth} / 11');
+          if (r.generatedByYtDlp) {
+            print('');
+            print('⚠️  這個檔是 yt-dlp 寫的 → **不可能有登入 cookie**');
+            print('');
+            print('   Chrome 127+ 用 App-Bound Encryption，yt-dlp 解不開加密');
+            print('   區塊，只能匯出 PREF / YSC / VISITOR_* 這類未加密 cookie；');
+            print('   SID / SAPISID / LOGIN_INFO 全部讀不到。');
+            print('');
+            print('   檔案格式正常、也有內容，卻靜靜地少了登入身分 ——');
+            print('   所以「明明有登入卻匯出不到」。');
+          }
           if (r.auth >= 3) {
             print('狀態 = 已登入 ✅（額度較高，不容易被 IP 降權）');
           } else {
@@ -146,6 +157,7 @@ Downloaded: ${cfg.lastUpdated.length}''');
             print('  1) Chrome 開 https://www.youtube.com，確認右上角已登入');
             print('     （若顯示「登入」按鈕 → 先登入，否則匯出來的也只是訪客 cookie）');
             print('  2) 用擴充「Get cookies.txt LOCALLY」匯出 Netscape 格式');
+            print('     ⚠️ 不要用 yt-dlp --cookies-from-browser（讀不到加密 cookie）');
             print('  3) 存成 ${CookieExport.defaultOutPath()}');
             print('  4) 重跑 `playlist-admin cookie check` 驗證');
             print('');
