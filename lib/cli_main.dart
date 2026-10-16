@@ -7,6 +7,7 @@ import 'services/config_service.dart';
 import 'services/favorites_service.dart';
 import 'services/library_organizer.dart';
 import 'services/library_doctor.dart';
+import 'services/cookie_export.dart';
 import 'services/artwork_embedder.dart';
 import 'services/metadata_enricher.dart';
 import 'services/upload_budget.dart';
@@ -119,6 +120,66 @@ Downloaded: ${cfg.lastUpdated.length}''');
           '已嵌 ${stats['embedded']}，已有圖跳過 ${stats['skipped']}，'
           '無封面 ${stats['noCover']}，失敗 ${stats['failed']}，'
           '補 album/date ${stats['tagged'] ?? 0}');
+      break;
+
+    case 'cookie':
+      // YouTube 登入 cookie 的檢查與匯出。
+      // Chrome 127+ 的 App-Bound Encryption 讓 yt-dlp --cookies-from-browser
+      // 讀不到 cookie（實測 DPAPI 解密失敗），所以走 DevTools Protocol。
+      final sub = args.length >= 2 ? args[1] : 'check';
+      if (sub == 'check') {
+        final r = CookieExport.inspect();
+        if (r.path == null) {
+          print('找不到 yt_cookies.txt');
+          print('  預期位置: ${CookieExport.defaultOutPath()}');
+        } else {
+          print('cookie 檔  = ${r.path}');
+          print('cookie 數  = ${r.total}');
+          print('登入 cookie = ${r.auth} / 11');
+          if (r.auth >= 3) {
+            print('狀態 = 已登入 ✅（額度較高，不容易被 IP 降權）');
+          } else {
+            print('狀態 = 匿名 ❌');
+            print('  缺少: ${r.missing.take(6).join(", ")}…');
+            print('  執行 `playlist-admin cookie export` 匯出登入 cookie');
+            print('  （Chrome 127+ 無法用 yt-dlp 讀，必須走 DevTools Protocol）');
+          }
+        }
+      } else if (sub == 'export') {
+        if (await CookieExport.chromeRunning() && !await CookieExport.cdpAlive()) {
+          print('偵測到 Chrome 正在執行。');
+          print('');
+          print('請先關閉 Chrome（或用下列指令）：');
+          print('  taskkill /IM chrome.exe /F');
+          print('');
+          print('關好後重跑: playlist-admin cookie export');
+          break;
+        }
+        print('啟動 Chrome（除錯埠 :9222）…');
+        final launched = await CookieExport.launchChromeWithDebugPort();
+        if (!launched) {
+          print('找不到 Chrome 執行檔，請手動啟動 Chrome 後重跑。');
+          break;
+        }
+        // 等 CDP 起來
+        var ready = false;
+        for (var i = 0; i < 20; i++) {
+          await Future<void>.delayed(const Duration(seconds: 1));
+          if (await CookieExport.cdpAlive()) {
+            ready = true;
+            break;
+          }
+        }
+        if (!ready) {
+          print('Chrome 啟動了但 CDP 沒起來，請確認 Chrome 沒被其他軟體擋。');
+          break;
+        }
+        print('CDP 已就緒，正在讀取 YouTube cookie…');
+        final (ok, msg) = await CookieExport.export();
+        print(msg);
+      } else {
+        print('用法: playlist-admin cookie [check|export]');
+      }
       break;
 
     case 'doctor':
