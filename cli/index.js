@@ -11,10 +11,16 @@ import { fileURLToPath } from 'node:url';
 
 const HELP = `playlist-admin CLI
 
-  Runs the same engine as the GUI app (shared Dart code). Requires a built
-  release: flutter build windows --release
+  Runs the same engine as the GUI app (shared Dart code).
 
 Usage:
+  playlist-admin -v | --version | version   Show CLI + GUI 版本，並檢查有沒有新版
+  playlist-admin -h | --help | help         顯示這份說明
+  playlist-admin update| upgrade             更新 CLI（npm）並提示 GUI 更新方式
+  playlist-admin where                      顯示根目錄 / exe / 資料夾位置
+  playlist-admin doctor [--fast] [--verbose] [--no-stt]
+                                         音訊庫健康檢查（覆蓋率/損毀/品質/語言/額度）
+
   playlist-admin pipeline [--step N]     Run full pipeline (or from step N)
   playlist-admin podcast                 Run podcast pipeline
   playlist-admin status                  Show status
@@ -32,8 +38,6 @@ Usage:
   playlist-admin skill list              List bundled opencode skills
   playlist-admin skill install [name] [--dir X] Install skill(s) to opencode (~/.config/opencode/skills)
   playlist-admin skill path [name]       Print installed path of a skill
-  playlist-admin doctor [--fast] [--verbose] [--no-stt]
-                                        音訊庫健康檢查（覆蓋率/損毀/品質/語言/額度）
 `;
 
 function projectRoot() {
@@ -280,10 +284,84 @@ function runSkill(args) {
   process.exit(1);
 }
 
+/// npm 包自身的版本（package.json）。CI 由 git tag 填入。
+function packageVersion() {
+  try {
+    const pkg = path.join(packageRoot() || '', 'package.json');
+    return JSON.parse(fs.readFileSync(pkg, 'utf8')).version || '?';
+  } catch {
+    return '?';
+  }
+}
+
+/// GUI 引擎（playlist-admin.exe）的版本。
+/// exe 的 Windows VersionInfo 沒被 CI 改（仍是 pubspec 的 3.0.0-beta.1），
+/// 所以直接問引擎自己——它知道 build 時注入的 APP_VERSION。
+function guiVersion(exe) {
+  if (!exe || !fs.existsSync(exe)) return null;
+  const r = spawnSync(exe, [], {
+    env: { ...process.env, PA_CLI_ARGS: '["version"]' },
+    encoding: 'utf8',
+    windowsHide: true,
+    timeout: 30000,
+  });
+  const out = (r.stdout || '').trim();
+  const m = out.match(/Engine\s+(\S+)/);
+  if (m) return m[1];
+  // 引擎起不來就退回修改時間，至少讓使用者看得出新舊
+  try {
+    const mt = fs.statSync(exe).mtime.toISOString().slice(0, 16).replace('T', ' ');
+    return `(exe 最後修改 ${mt})`;
+  } catch {
+    return null;
+  }
+}
+
+function cmdVersion() {
+  const cli = packageVersion();
+  const root = installedRoot() || projectRoot();
+  const exe = exePath(root);
+  const gv = guiVersion(exe);
+  console.log(`CLI ${cli}`);
+  console.log(gv ? `GUI ${gv}  (${exe})` : 'GUI （找不到安裝中的 GUI）');
+  if (gv && !gv.startsWith('(') && gv !== cli) {
+    console.log('⚠️  CLI 與 GUI 版本不一致 → 先更新 GUI 再用 CLI');
+  }
+  const latest = runQuiet('npm', ['view', 'playlist-admin', 'version']);
+  if (latest && latest !== cli) {
+    console.log(`最新 ${latest}  →  npm i -g playlist-admin@latest`);
+  }
+}
+
+function runQuiet(cmd, cmdArgs) {
+  try {
+    const r = spawnSync(cmd, cmdArgs, { encoding: 'utf8', windowsHide: true });
+    return (r.stdout || '').trim().split('\n').pop();
+  } catch {
+    return null;
+  }
+}
+
 async function main() {
   const args = process.argv.slice(2);
   if (args.length === 0) {
     console.log(HELP);
+    return;
+  }
+  // 標準旗標
+  if (args[0] === '-h' || args[0] === '--help' || args[0] === 'help') {
+    console.log(HELP);
+    return;
+  }
+  if (args[0] === '-v' || args[0] === '--version' || args[0] === 'version') {
+    cmdVersion();
+    return;
+  }
+  if (args[0] === '--doctor') {
+    args[0] = 'doctor';
+  }
+  if (args[0] === 'update' || args[0] === 'upgrade') {
+    cmdUpdate();
     return;
   }
   if (args[0] === 'rag') {
@@ -296,6 +374,13 @@ async function main() {
   }
   if (args[0] === 'skill') {
     runSkill(args.slice(1));
+    return;
+  }
+  if (args[0] === 'where' || args[0] === 'doctor-env') {
+    const root = installedRoot() || projectRoot();
+    console.log(`根目錄: ${root || '(找不到)'}`);
+    console.log(`exe    : ${exePath(root) || '(找不到)'}`);
+    console.log(`資料   : ${path.join(root || '?', 'data')}`);
     return;
   }
 
@@ -312,6 +397,24 @@ async function main() {
     process.exit(1);
   }
   forward(exe, args);
+}
+
+/// 更新 CLI 與 GUI。
+function cmdUpdate() {
+  console.log('更新 CLI (npm)...');
+  const r = spawnSync('npm', ['install', '-g', 'playlist-admin@latest'], {
+    stdio: 'inherit',
+    windowsHide: true,
+  });
+  if (r.status !== 0) {
+    console.error('npm 更新失敗，試試用系統管理員權限重跑');
+    process.exit(1);
+  }
+  console.log('');
+  console.log('更新 GUI...');
+  console.log('GUI 是獨立安裝檔，請下載最新的 Setup 執行檔：');
+  console.log('  https://github.com/thumb2086/playlist-admin/releases/latest');
+  console.log('（或直接在 app 設定頁按「檢查更新」）');
 }
 
 main().catch((e) => {

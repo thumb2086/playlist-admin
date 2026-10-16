@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:media_kit/media_kit.dart';
 import 'models/config_model.dart';
+import 'version.dart';
 import 'services/config_service.dart';
 import 'services/favorites_service.dart';
 import 'services/library_organizer.dart';
@@ -40,6 +41,20 @@ Usage:
   }
 
   final cmd = args[0];
+
+  // 版本／環境資訊：讓 wrapper（cli/index.js）與使用者都能查。
+  if (cmd == 'version' || cmd == '--version' || cmd == '-v') {
+    final v = appVersion.startsWith('v') ? appVersion : 'v$appVersion';
+    print('Engine  $v');
+    print('Path    ${cfg.basePath}');
+    return;
+  }
+  if (cmd == 'where') {
+    print('BasePath ${cfg.basePath}');
+    print('Music    ${cfg.musicPath}');
+    print('Podcasts ${cfg.basePath}${Platform.pathSeparator}podcasts');
+    return;
+  }
 
   switch (cmd) {
     case 'pipeline':
