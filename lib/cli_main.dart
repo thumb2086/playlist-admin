@@ -135,21 +135,25 @@ Downloaded: ${cfg.lastUpdated.length}''');
         } else {
           print('cookie 檔  = ${r.path}');
           print('cookie 數  = ${r.total}');
-          print('登入 cookie = ${r.auth} / 11');
-          if (r.generatedByYtDlp) {
-            print('');
-            print('⚠️  這個檔是 yt-dlp 寫的 → **不可能有登入 cookie**');
-            print('');
-            print('   Chrome 127+ 用 App-Bound Encryption，yt-dlp 解不開加密');
-            print('   區塊，只能匯出 PREF / YSC / VISITOR_* 這類未加密 cookie；');
-            print('   SID / SAPISID / LOGIN_INFO 全部讀不到。');
-            print('');
-            print('   檔案格式正常、也有內容，卻靜靜地少了登入身分 ——');
-            print('   所以「明明有登入卻匯出不到」。');
-          }
+          print('登入 cookie = ${r.auth} / ${CookieExport.authCookieCount}');
           if (r.auth >= 3) {
             print('狀態 = 已登入 ✅（額度較高，不容易被 IP 降權）');
           } else {
+            if (r.generatedByYtDlp) {
+              print('');
+              print('⚠️  這個檔是 yt-dlp 寫的 → **不可能有登入 cookie**');
+              print('');
+              print('   Chrome 127+ 用 App-Bound Encryption，yt-dlp 解不開加密');
+              print('   區塊，只能匯出 PREF / YSC / VISITOR_* 這類未加密 cookie；');
+              print('   SID / SAPISID / LOGIN_INFO 全部讀不到。');
+              print('');
+              print('   檔案格式正常、也有內容，卻靜靜地少了登入身分 ——');
+              print('   所以「明明有登入卻匯出不到」。');
+              print('');
+              print('   解法：`playlist-admin cookie export`（會開專用 Chrome 視窗，');
+              print('   在那裡登入一次即可，之後全自動）。');
+            }
+            print('');
             print('狀態 = 匿名 ❌');
             print('  缺少: ${r.missing.take(6).join(", ")}…');
             print('');
@@ -166,53 +170,19 @@ Downloaded: ${cfg.lastUpdated.length}''');
           }
         }
       } else if (sub == 'export') {
-        if (await CookieExport.chromeRunning() && !await CookieExport.cdpAlive()) {
-          print('偵測到 Chrome 正在執行。');
-          print('');
-          print('請先關閉 Chrome（或用下列指令）：');
-          print('  taskkill /IM chrome.exe /F');
-          print('');
-          print('關好後重跑: playlist-admin cookie export');
-          break;
-        }
-        print('啟動 Chrome（除錯埠 :9222）…');
-        final launched = await CookieExport.launchChromeWithDebugPort();
-        if (!launched) {
-          print('找不到 Chrome 執行檔，請手動啟動 Chrome 後重跑。');
-          break;
-        }
-        // 等 CDP 起來
-        var ready = false;
-        for (var i = 0; i < 20; i++) {
-          await Future<void>.delayed(const Duration(seconds: 1));
-          if (await CookieExport.cdpAlive()) {
-            ready = true;
-            break;
-          }
-        }
-        if (!ready) {
-          // Chrome 136+ 會在「預設 profile」下忽略 --remote-debugging-port
-          // （防止 cookie 被 debug 埠竊取的安全封鎖）。我們要的正是預設
-          // profile 裡的登入狀態，所以這條自動化路徑在新版 Chrome 上無解。
-          print('Chrome 啟動了，但除錯埠沒有綁定。');
-          print('');
-          print('原因：Chrome 136 起，若 --remote-debugging-port 搭配「預設');
-          print('使用者資料目錄」會被直接忽略（防止 cookie 被 debug 埠竊取）。');
-          print('我們要的就是預設 profile 裡的登入狀態，所以無法繞過。');
-          print('');
-          print('請改用瀏覽器擴充匯出（約 30 秒）：');
-          print('  1) 在 Chrome 開 https://www.youtube.com');
-          print('     確認右上角已顯示頭像。若顯示「登入」按鈕 → 先登入，');
-          print('     否則匯出來的也只是訪客 cookie，沒有用。');
-          print('  2) 用擴充「Get cookies.txt LOCALLY」→ Export → Netscape');
-          print('  3) 存成 ${CookieExport.defaultOutPath()}');
-          print('');
-          print('存完跑 `playlist-admin cookie check` 驗證有沒有登入身分。');
-          break;
-        }
-        print('CDP 已就緒，正在讀取 YouTube cookie…');
-        final (ok, msg) = await CookieExport.export();
+        // 專用 profile + DevTools Protocol：
+        //   身分留在瀏覽器裡，程式只透過它自己的介面請它交出 cookie。
+        //   不碰使用者的主 profile，也不 taskkill 使用者的 Chrome
+        //   （2026-10-17 實測：動主 profile 會打斷使用者的登入工作階段）。
+        print('這會開一個「專用」的 Chrome 視窗，不影響你平常的瀏覽器。');
+        print('');
+        final (ok, msg) = await CookieExport.interactiveExport(
+          basePath: cfg.basePath,
+          onStatus: print,
+        );
+        print('');
         print(msg);
+        if (!ok) exit(1);
       } else {
         print('用法: playlist-admin cookie [check|export]');
       }

@@ -339,13 +339,18 @@ class YoutubeService {
       '--no-playlist',
       '--no-overwrites',
       '--no-check-certificates',
-      '--extractor-args', 'youtube:player_client=mweb',
+      // 不要強制 player_client=mweb：該客戶端的 https 格式需要 GVS PO Token，
+      // 沒有 token 時 yt-dlp 會把格式全部跳過（只印一行 WARNING），
+      // 結果是「exit 0 卻沒有產出檔案」。
+      // 2026-10-17 實測：「假性愛 - 薇薇」因此完全抓不到，同樣參數去掉
+      // 這行就成功。讓 yt-dlp 自己挑可用的 client 比指定沒 token 的可靠。
       '-o', '$dlTemp.%(ext)s',
       '--retries', '3',
       '--fragment-retries', '10',
       '--socket-timeout', '60',
       '--skip-unavailable-fragments',
-      '--ignore-errors',
+      // 刻意不加 --ignore-errors：它會把下載失敗也當成功（exit 0），
+      // 造成「沒有檔案」卻看不出真正原因。
       '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
       '--add-header', 'Accept-Language:zh-TW,zh;q=0.9,en;q=0.5',
       '--print', 'after_move:filepath',  // 輸出最終檔案路徑
@@ -362,8 +367,28 @@ class YoutubeService {
     }
 
     try {
+      // 搜尋無結果時換查詢詞。YouTube 的搜尋對中文關鍵字很挑，
+      // 實測（2026-10-17）：
+      //   「假性愛」      -> 0 個結果
+      //   「假性愛 薇薇」 -> 0 個結果
+      //   「假性愛 歌詞」 -> 5 個結果，第一筆就是目標
+      // 先用便宜的 flat-playlist 探詢確認，再決定要不要換詞
+      // （比直接下載失敗後才換詞省時間，也不影響原本能工作的流程）。
+      var effectiveQuery = query;
+      try {
+        if (!await _searchHasResult(baseArgs, query)) {
+          for (final v in _searchVariants(query)) {
+            if (await _searchHasResult(baseArgs, v)) {
+              _log.i('搜尋「$query」無結果，改用「$v」');
+              effectiveQuery = v;
+              break;
+            }
+          }
+        }
+      } catch (_) {}
+
       // 用 ytsearch1: 讓 yt-dlp 搜尋+下載一步到位
-      final proc = await _startYtDlp([...baseArgs, 'ytsearch1:$query']);
+      final proc = await _startYtDlp([...baseArgs, 'ytsearch1:$effectiveQuery']);
 
       String lastErr = '';
       String? finalPath;
@@ -479,6 +504,45 @@ class YoutubeService {
     } finally {
       try { _safeDeleteDir(dlDir); } catch (_) {}
     }
+  }
+
+  /// 用扁平清單模式快速確認搜尋有沒有結果（不下載，很便宜）。
+  static Future<bool> _searchHasResult(
+      List<String> baseArgs, String query) async {
+    try {
+      final proc = await _startYtDlp([
+        ...baseArgs,
+        '--flat-playlist',
+        '--print', '%(id)s',
+        '--no-update',
+        'ytsearch1:$query',
+      ]);
+      final out = StringBuffer();
+      proc.stdout
+          .transform(const SystemEncoding().decoder)
+          .transform(const LineSplitter())
+          .listen(out.write);
+      final code = await proc.exitCode.timeout(const Duration(seconds: 30));
+      if (code != 0) return false;
+      return out.toString().trim().isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// 搜尋無結果時的替代查詢詞。
+  ///
+  /// 依序：去掉歌手後綴 → 加「歌詞」→ 加 official。
+  static List<String> _searchVariants(String query) {
+    final title =
+        query.contains(' - ') ? query.split(' - ').first.trim() : query.trim();
+    final out = <String>[];
+    if (title.isNotEmpty && title != query) out.add(title);
+    if (title.isNotEmpty) {
+      out.add('$title 歌詞');
+      out.add('$title official');
+    }
+    return out;
   }
 
   /// 把 yt-dlp 冗長 stderr 濃縮成 UI 可讀的一行原因。
@@ -681,13 +745,12 @@ class YoutubeService {
       '--no-playlist',
       '--no-overwrites',
       '--no-check-certificates',
-      '--extractor-args', 'youtube:player_client=mweb',
+      // 同上：mweb client 需要 GVS PO Token，沒有時格式全被跳過
       '-o', '$dlTemp.%(ext)s',
       '--retries', '3',
       '--fragment-retries', '10',
       '--socket-timeout', '60',
       '--skip-unavailable-fragments',
-      '--ignore-errors',
       '--add-header', 'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
       '--add-header', 'Accept-Language:zh-TW,zh;q=0.9,en;q=0.5',
     ];
