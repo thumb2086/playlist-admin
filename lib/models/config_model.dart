@@ -9,6 +9,7 @@ class AppConfig {
   int maxThreads;
   bool debugMode;
   bool enableMetadataEnrichment;
+  bool enablePipelineLyricsDownload;
   String ffmpegPath;
   String lyricsFolderName;
   bool autoUpdateCheck;
@@ -50,6 +51,7 @@ class AppConfig {
     this.maxThreads = 4,
     this.debugMode = false,
     this.enableMetadataEnrichment = false,
+    this.enablePipelineLyricsDownload = false,
     this.ffmpegPath = 'bin/ffmpeg.exe',
     this.lyricsFolderName = 'Lyrics',
     this.autoUpdateCheck = true,
@@ -167,6 +169,7 @@ class AppConfig {
         maxThreads: json['max_threads'] as int? ?? 4,
         debugMode: json['debug_mode'] as bool? ?? false,
         enableMetadataEnrichment: json['enable_metadata_enrichment'] as bool? ?? false,
+        enablePipelineLyricsDownload: json['enable_pipeline_lyrics_download'] as bool? ?? false,
         ffmpegPath: json['ffmpeg_path'] as String? ?? 'bin/ffmpeg.exe',
         lyricsFolderName: json['lyrics_folder_name'] as String? ?? 'Lyrics',
         autoUpdateCheck: json['auto_update_check'] as bool? ?? true,
@@ -210,6 +213,7 @@ class AppConfig {
         'max_threads': maxThreads,
         'debug_mode': debugMode,
         'enable_metadata_enrichment': enableMetadataEnrichment,
+        'enable_pipeline_lyrics_download': enablePipelineLyricsDownload,
         'ffmpeg_path': ffmpegPath,
         'lyrics_folder_name': lyricsFolderName,
         'auto_update_check': autoUpdateCheck,

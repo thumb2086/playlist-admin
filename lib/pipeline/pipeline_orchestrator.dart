@@ -9,6 +9,7 @@ import '../services/file_renamer.dart';
 import '../services/playlist_parser.dart';
 import '../services/artwork_embedder.dart';
 import '../services/lufs_service.dart';
+import '../services/lyrics_service.dart';
 import '../services/rag_service.dart';
 import '../services/youtube_service.dart';
 import '../version.dart';
@@ -38,6 +39,7 @@ class PipelineOrchestrator {
       ('Build playlist M3U8 files', 10.0, _stepBuildM3u8),
       ('Organize unsorted songs', 10.0, _stepUnsorted),
       ('Enrich metadata', 10.0, _stepMetadata),
+      ('Download lyrics', 10.0, _stepLyrics),
       ('Measure LUFS', 10.0, _stepMeasureLufs),
     ];
     if (config.podcastRagInMusic) {
@@ -499,6 +501,95 @@ class PipelineOrchestrator {
     } catch (e) {
       onLog('LUFS 異常: $e');
     }
+    progress(100);
+  }
+
+  /// Download lyrics for all songs in library (uses LRCLib).
+  Future<void> _stepLyrics(void Function(double) progress) async {
+    if (!config.enablePipelineLyricsDownload) {
+      onLog('Lyrics download disabled (enable_pipeline_lyrics_download=false), skipping');
+      progress(100);
+      return;
+    }
+    onLog('Downloading lyrics for library tracks...');
+    final lyricsDir = Directory('${config.basePath}${Platform.pathSeparator}${config.lyricsFolderName ?? "Lyrics"}');
+    if (!lyricsDir.existsSync()) lyricsDir.createSync(recursive: true);
+
+    final libDir = Directory(config.libraryPath);
+    if (!libDir.existsSync()) {
+      onLog('Library path does not exist: ${config.libraryPath}');
+      progress(100);
+      return;
+    }
+
+    final files = <File>[];
+    await for (final e in libDir.list(recursive: true, followLinks: false)) {
+      if (e is File && (e.path.toLowerCase().endsWith('.mp3') || e.path.toLowerCase().endsWith('.flac') || e.path.toLowerCase().endsWith('.m4a'))) {
+        files.add(e);
+      }
+    }
+
+    if (files.isEmpty) {
+      onLog('No music files found');
+      progress(100);
+      return;
+    }
+
+    onLog('Library has ${files.length} music files. Starting lyrics download...');
+    int success = 0, skipped = 0, failed = 0;
+    for (int i = 0; i < files.length; i++) {
+      if (state.isCancelled) return;
+      await state.waitIfPaused();
+      if (state.isCancelled) return;
+
+      final file = files[i];
+      final stem = file.uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '');
+      final lrcPath = '${lyricsDir.path}${Platform.pathSeparator}$stem.lrc';
+
+      // Already exists? skip
+      if (File(lrcPath).existsSync()) {
+        skipped++;
+        progress((i / files.length * 100).toDouble());
+        continue;
+      }
+
+      // Parse artist - track from filename
+      String artist = '', track = '', album = '';
+      final parts = stem.split(' - ');
+      if (parts.length >= 2) {
+        artist = parts[0].trim();
+        track = parts[1].trim();
+      } else {
+        artist = stem;
+        track = '';
+      }
+
+      try {
+        final result = await LyricsService.instance.fetch(
+          artist, track,
+          album: album.isNotEmpty ? album : null,
+        ).timeout(const Duration(seconds: 15));
+
+        if (result != null && result.hasSynced) {
+          await File(lrcPath).writeAsString(result.syncedLyrics!, flush: true);
+          success++;
+        } else if (result != null && result.hasPlain) {
+          await File(lrcPath).writeAsString(result.plainLyrics!, flush: true);
+          success++;
+        } else {
+          failed++;
+        }
+      } catch (e) {
+        failed++;
+      }
+
+      // Polite delay to avoid LRCLib rate limit
+      await Future.delayed(const Duration(milliseconds: 200));
+      progress((i / files.length * 100).toDouble());
+    }
+
+    onLog('Lyrics download complete: success $success, skipped $skipped, failed $failed');
+    onLog('Lyrics saved to: ${lyricsDir.path}');
     progress(100);
   }
 

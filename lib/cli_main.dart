@@ -9,6 +9,7 @@ import 'services/library_organizer.dart';
 import 'services/library_doctor.dart';
 import 'services/cookie_export.dart';
 import 'services/artwork_embedder.dart';
+import 'services/lyrics_service.dart';
 import 'services/metadata_enricher.dart';
 import 'services/upload_budget.dart';
 import 'services/spotify_session.dart';
@@ -224,6 +225,87 @@ Downloaded: ${cfg.lastUpdated.length}''');
           print('  （未設 PA_UPLOAD_BUDGET_MB → 不限）');
         }
       }
+      break;
+
+    case 'lyrics':
+      if (args.length < 2 || args[1] != 'download') {
+        print('Usage: dart cli_main.dart lyrics download [--limit N]');
+        return;
+      }
+      final limit = _getFlag(args, '--limit');
+      print('批次下载全庫歌詞〈LRCLib〉 → 存 .lrc 到 lyrics/ 资料夾');
+      if (limit > 0) print('限制: $limit 首');
+      final lyricsDir = Directory('${cfg.basePath}${Platform.pathSeparator}${cfg.lyricsFolderName ?? 'Lyrics'}');
+      if (!lyricsDir.existsSync()) lyricsDir.createSync(recursive: true);
+
+      final libDir = Directory(cfg.libraryPath);
+      if (!libDir.existsSync()) {
+        print('庫路径不存在: ${cfg.libraryPath}');
+        return;
+      }
+
+      final files = <File>[];
+      await for (final e in libDir.list(recursive: true, followLinks: false)) {
+        if (e is File && (e.path.toLowerCase().endsWith('.mp3') || e.path.toLowerCase().endsWith('.flac') || e.path.toLowerCase().endsWith('.m4a'))) {
+          files.add(e);
+        }
+      }
+
+      if (files.isEmpty) {
+        print('庫中无音乐案');
+        return;
+      }
+
+      print('全庫 ${files.length} 首音乐案。开始下载歌詞...');
+      if (limit > 0) print('限制: $limit 首');
+
+      int success = 0, skipped = 0, failed = 0;
+      for (int i = 0; i < files.length; i++) {
+        if (limit > 0 && i >= limit) break;
+
+        final file = files[i];
+        final stem = file.uri.pathSegments.last.replaceAll(RegExp(r'\\.\\w+$'), '');
+        final lrcPath = '${lyricsDir.path}${Platform.pathSeparator}$stem.lrc'; 
+
+        if (File(lrcPath).existsSync()) {
+          skipped++;
+          continue;
+        }
+
+        String artist = '', track = '', album = '';
+        final parts = stem.split(' - ');
+        if (parts.length >= 2) {
+          artist = parts[0].trim();
+          track = parts[1].trim();
+        } else {
+          artist = stem;
+          track = '';
+        }
+
+        try {
+          final result = await LyricsService.instance.fetch(
+            artist, track,
+            album: album.isNotEmpty ? album : null,
+          ).timeout(const Duration(seconds: 15)); 
+
+          if (result != null && result.hasSynced) {
+            await File(lrcPath).writeAsString(result.syncedLyrics!, flush: true);
+            success++;
+          } else if (result != null && result.hasPlain) {
+            await File(lrcPath).writeAsString(result.plainLyrics!, flush: true);
+            success++;
+          } else {
+            failed++;
+          }
+        } catch (e) {
+          failed++;
+        }
+
+        await Future.delayed(const Duration(milliseconds: 200));
+      }
+
+      print('完成: 成功 $success, 跳过 $skipped, 失败 $failed');
+      print('歌詞存放: ${lyricsDir.path}');
       break;
 
     case 'metadata':
