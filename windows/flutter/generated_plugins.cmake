@@ -5,6 +5,8 @@
 list(APPEND FLUTTER_PLUGIN_LIST
   audioplayers_windows
   media_kit_libs_windows_audio
+  share_plus
+  url_launcher_windows
   webview_windows
 )
 

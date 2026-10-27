@@ -1,7 +1,7 @@
 {
   "name": "playlist-admin",
-  "version": "2.15.31",
-  "description": "playlist-admin CLI - pipeline, podcast, music + podcast RAG + study RAG (PDF 試題/課本)",
+  "version": "2.15.89",
+  "description": "playlist-admin CLI - pipeline, podcast, music + podcast RAG + study RAG (PDF \u8a66\u984c/\u8ab2\u672c)",
   "type": "module",
   "bin": {
     "playlist-admin": "./cli/index.js"
