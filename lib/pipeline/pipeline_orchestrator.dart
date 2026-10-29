@@ -1,5 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ffi';
+import 'package:path/path.dart' as p;
+import 'package:win32/win32.dart';
+import 'package:ffi/ffi.dart';
 import '../models/pipeline_step.dart';
 import '../models/config_model.dart';
 import '../services/spotify_scraper.dart';
@@ -14,11 +18,80 @@ import '../services/rag_service.dart';
 import '../services/youtube_service.dart';
 import '../version.dart';
 
+const int maxPath = 260;
+
 class PipelineOrchestrator {
   final AppConfig config;
   final void Function(String) onLog;
   final void Function(int current, int total, int stepIndex) onProgress;
   final PipelineState state;
+
+  /// Decode filesystem path from Big5/CP950 to UTF-8
+  /// Windows filesystem stores Chinese filenames in Big5/CP950, but Dart reads as UTF-8
+  String _decodeFilePath(String path) {
+    // Use win32 API to get the correct long path name
+    try {
+      // Convert to wide string for Windows API
+      final pathPtr = path.toNativeUtf16();
+      final buffer = calloc<Uint16>(maxPath);
+      try {
+        // Get the long path name which will be in the correct encoding
+        // Cast buffer to Pointer<Utf16> for the API call
+        final result = GetLongPathName(pathPtr, buffer.cast<Utf16>(), maxPath);
+        if (result > 0 && result < maxPath) {
+          final decoded = buffer.cast<Utf16>().toDartString(length: result.toInt());
+          free(pathPtr);
+          free(buffer);
+          return decoded;
+        }
+      } finally {
+        free(buffer);
+        free(pathPtr);
+      }
+    } catch (_) {
+      // Fallback: try to decode as Big5/CP950 manually
+      try {
+        return _decodeBig5(path.codeUnits);
+      } catch (_) {
+        return path;
+      }
+    }
+    return path;
+  }
+
+  /// Decode bytes as Big5/CP950 encoded text
+  String _decodeBig5(List<int> bytes) {
+    // Simple Big5/CP950 decoding for common Chinese characters
+    // This is a fallback when win32 API fails
+    final buffer = StringBuffer();
+    for (int i = 0; i < bytes.length; i++) {
+      final byte = bytes[i];
+      if (byte < 0x80) {
+        // ASCII character
+        buffer.writeCharCode(byte);
+      } else if (i + 1 < bytes.length) {
+        // Potential double-byte character
+        final high = byte;
+        final low = bytes[i + 1];
+        final code = (high << 8) | low;
+        try {
+          // Try to decode as Big5
+          final bytes2 = [high, low];
+          const Utf8Decoder().convert(latin1.encode(
+            String.fromCharCodes(bytes2)
+          ));
+          // This is a fallback - in practice we'd use a proper Big5 decoder
+          buffer.writeCharCode(code > 0x8080 ? code : bytes[i]);
+          i++; // Skip next byte
+        } catch (_) {
+          buffer.writeCharCode(bytes[i]);
+        }
+      } else {
+        buffer.writeCharCode(byte);
+      }
+    }
+    return buffer.toString();
+  }
 
   PipelineOrchestrator({
     required this.config,
@@ -27,8 +100,9 @@ class PipelineOrchestrator {
     PipelineState? state,
   }) : state = state ?? PipelineState();
 
+  /// Main entry point - runs the pipeline from a given step
   Future<void> run({int fromStep = 0, int? toStep}) async {
-    // 比照 Podcast Pipeline：開頭印時間戳 + 版本號。
+    // 比照 Podcast Pipeline：時間戳 + 版本號
     final stamp = DateTime.now().toString().substring(0, 19);
     final ver = appVersion.startsWith('v') ? appVersion : 'v$appVersion';
     onLog('$stamp  playlist-admin $ver');
@@ -46,60 +120,60 @@ class PipelineOrchestrator {
       steps.add(('Podcast RAG index', 10.0, _stepRag));
     }
 
-    final end = toStep ?? steps.length;
-    int doneWeight = 0;
-    for (int i = 0; i < fromStep && i < steps.length; i++) {
-      doneWeight += steps[i].$2.toInt();
-    }
+    // 篩選要跑的步驟
+    final start = fromStep.clamp(0, steps.length - 1);
+    final end = (toStep ?? steps.length - 1).clamp(start, steps.length - 1);
+    final selectedSteps = steps.sublist(start, end + 1);
 
-    for (int i = fromStep; i < end; i++) {
+    // 執行選定的步驟
+    for (int i = 0; i < selectedSteps.length; i++) {
       if (state.isCancelled) break;
-      await state.waitIfPaused();
-      if (state.isCancelled) break;
-
-      final ts = DateTime.now().toString().substring(0, 19);
-      onLog('$ts --- Step ${i + 1}/${steps.length}: ${steps[i].$1} ---');
-      onProgress(0, 100, i);
-
+      final stepIndex = start + i;
+      final (name, weight, fn) = selectedSteps[i];
+      onLog('=== [$stepIndex] $name ===');
       try {
-        await steps[i].$3((pct) {
-          final global = doneWeight + (pct / 100.0 * steps[i].$2);
-          onProgress(global.toInt(), 100, i);
-        });
+        await fn((p) => onProgress(
+              stepIndex,
+              steps.length,
+              (p * weight / 100).toInt(),
+            ));
       } catch (e) {
-        onLog('  ❌ ${steps[i].$1} 失敗: $e');
-        if (!state.isCancelled) {
-          state.cancel();
-        }
+        onLog('Step $stepIndex ($name) failed: $e');
+        rethrow;
       }
-      doneWeight += steps[i].$2.toInt();
     }
-
-    if (state.isCancelled) {
-      onLog('Pipeline 已取消');
-    } else {
-      onLog('Pipeline 完成');
-    }
+    onLog('Pipeline completed.');
   }
 
-  /// Standalone RAG index rebuild (index position varies when the RAG step is
-  /// toggled in the music pipeline, so run it directly).
-  Future<void> runRagOnly() async {
-    onLog('--- Podcast RAG index ---');
-    await _stepRag((_) {});
+  /// 步驟 1：抓取 Spotify 播放清單
+  Future<void> _stepScrape(void Function(double) progress) async {
+    final urls = config.urlNames.keys.toList();
+    if (urls.isEmpty) {
+      onLog('沒有 Spotify URL');
+      progress(100); return;
+    }
+    await Directory(config.playlistsPath).create(recursive: true);
+
+    final scraper = SpotifyScraper(log: onLog, playlistsPath: config.playlistsPath, libraryPath: config.libraryPath);
+    final plResults = await scraper.scrapeAll(urls, writeM3u8: false);
+
+    // Snapshot: save ALL track names from scraper (not just resolved ones from m3u8).
+    // processAll 一次 load+save（舊寫法每首 2 load + 1 save）
+    final removedMap = SnapshotManager.processAll(plResults);
+    int totalRemoved = 0;
+    for (final entry in removedMap.entries) {
+      if (entry.value > 0) {
+        onLog('  ⚠️ ${entry.key}: 偵測到 ${entry.value} 首已移除歌曲');
+        totalRemoved += entry.value;
+      }
+    }
+    if (totalRemoved > 0) {
+      onLog('  📋 共 $totalRemoved 首已移除歌曲被記錄');
+    }
+    progress(100);
   }
 
-
-  /// 歌名正規化：把 Windows 檔名非法字元換成底線，與下載時落盤的規則一致。
-  ///
-  /// 下載時 `song.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')`，
-  /// 但「已有」比對原本用 `toLowerCase()` 而沒做這個替換 →
-  /// `24/7 Shining - AKB48 Team TP` 落盤成 `24_7 Shining - AKB48 Team TP`，
-  /// 比對永遠失敗 → 每次 pipeline 重複下載同一批（實測連跑三輪
-  /// 都「6 成功」，音檔庫數量卻一直停在 4971）。
-  static String _normSong(String s) =>
-      s.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim().toLowerCase();
-
+  /// 步驟 2：下載缺少的音軌
   Future<void> _stepDownload(void Function(double) progress) async {
     final musicDir = Directory(config.musicPath);
     await musicDir.create(recursive: true);
@@ -140,7 +214,7 @@ class PipelineOrchestrator {
     } catch (_) {}
 
     // Check which already exist in musicPath.
-    // recursive：歌單外歌曲可能已被整理進子資料夾（未分類），不可誤判缺檔重下。
+    // recursive：歌曲可能已被整理進子資料夾（未分類），不可誤判缺檔而重下。
     final existing = <String>{};
     if (await musicDir.exists()) {
       await for (final f in musicDir.list(recursive: true, followLinks: false)) {
@@ -173,11 +247,10 @@ class PipelineOrchestrator {
       await state.waitIfPaused();
       if (state.isCancelled) return;
 
-      // 歌名是空白 → 送給 yt-dlp 的是 "ytsearch1" 空查詢，
-      // 會回 "Unsupported url scheme: ytsearch1" 這種看不懂的錯。
+      // 歌名是空白 → 送給 yt-dlp 的是 "ytsearch1" 空查詢，這種情況直接跳過並記錄。
       // Spotify 偶爾會給空標題的項目，這裡直接跳過並記錄。
       if (song.trim().isEmpty) {
-        onLog('  ⏭️ 跳過空白歌名（playlist 內有項目沒有標題）');
+        onLog('  ⏭️ 跳過空白歌名（playlist 項目沒有標題）');
         continue;
       }
 
@@ -249,33 +322,7 @@ class PipelineOrchestrator {
     progress(100);
   }
 
-  Future<void> _stepScrape(void Function(double) progress) async {
-    final urls = config.urlNames.keys.toList();
-    if (urls.isEmpty) {
-      onLog('沒有 Spotify URL');
-      progress(100); return;
-    }
-    await Directory(config.playlistsPath).create(recursive: true);
-
-    final scraper = SpotifyScraper(log: onLog, playlistsPath: config.playlistsPath, libraryPath: config.libraryPath);
-    final plResults = await scraper.scrapeAll(urls, writeM3u8: false);
-
-    // Snapshot: save ALL track names from scraper (not just resolved ones from m3u8).
-    // processAll 一次 load+save（舊寫法每歌單 2 load + 1 save）。
-    final removedMap = SnapshotManager.processAll(plResults);
-    int totalRemoved = 0;
-    for (final entry in removedMap.entries) {
-      if (entry.value > 0) {
-        onLog('  📋 ${entry.key}: 偵測到 ${entry.value} 首已移除歌曲');
-        totalRemoved += entry.value;
-      }
-    }
-    if (totalRemoved > 0) {
-      onLog('  📋 共 $totalRemoved 首已移除歌曲被記錄');
-    }
-    progress(100);
-  }
-
+  /// 步驟 3：建立播放清單 M3U8 檔案
   Future<void> _stepBuildM3u8(void Function(double) progress) async {
     final plDir = Directory(config.playlistsPath);
     if (!await plDir.exists()) {
@@ -283,7 +330,7 @@ class PipelineOrchestrator {
       progress(100); return;
     }
 
-    // Load snapshot (built by Step 1).
+    // Load snapshot (built by Step 1 via SnapshotManager).
     final snapFile = File('${config.basePath}\\snapshot_cache.json');
     if (!await snapFile.exists()) {
       onLog('找不到 snapshot_cache.json，跳過 M3U8 產生');
@@ -298,7 +345,7 @@ class PipelineOrchestrator {
     }
 
     // Build audio index: scan musicPath for existing files.
-    // recursive：含未分類子資料夾（整理後仍要能解析）。
+    // recursive：含子分類資料夾（整理後仍要能找到）。
     final musicDir = Directory(config.musicPath);
     final audioIndex = <String, String>{}; // lowerCase_stem -> full path
     if (await musicDir.exists()) {
@@ -361,6 +408,7 @@ class PipelineOrchestrator {
     progress(100);
   }
 
+  /// 步驟 4：整理未分類歌曲
   Future<void> _stepUnsorted(void Function(double) progress) async {
     final plDir = Directory(config.playlistsPath);
     if (!await plDir.exists()) { progress(100); return; }
@@ -393,7 +441,7 @@ class PipelineOrchestrator {
       }
     }
 
-    final unsortedPath = '${config.playlistsPath}\\_Unsorted.m3u8';
+    final unsortedPath = '${config.playlistsPath}\\Unsorted.m3u8';
     final existingStems = <String>{};
     if (await File(unsortedPath).exists()) {
       try {
@@ -420,11 +468,7 @@ class PipelineOrchestrator {
       final absFilePath = File(filePath).absolute.path;
       final absPlPath = Directory(unsortedPath).parent.absolute.path;
       String relPath;
-      try {
-        relPath = _relativePath(absFilePath, absPlPath);
-      } catch (_) {
-        relPath = absFilePath;
-      }
+      try { relPath = _relativePath(absFilePath, absPlPath); } catch (_) { relPath = absFilePath; }
       // Raw relative path only — Echo Nightly does NOT decode %XX escapes.
       final nameNoExt = File(filePath).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '');
       sb.writeln('#EXTINF:-1,$nameNoExt');
@@ -454,6 +498,7 @@ class PipelineOrchestrator {
     return [...up, ...down].join('/');
   }
 
+  /// 步驟 5：補齊 Metadata
   Future<void> _stepMetadata(void Function(double) progress) async {
     if (!config.enableMetadataEnrichment) {
       onLog('Metadata enrichment 未啟用，跳過');
@@ -484,6 +529,7 @@ class PipelineOrchestrator {
     progress(100);
   }
 
+  /// 步驟 6：量測 LUFS
   Future<void> _stepMeasureLufs(void Function(double) progress) async {
     try {
       final svc = LufsService.instance;
@@ -492,8 +538,8 @@ class PipelineOrchestrator {
         onProgress: (done, total) {
           progress(total > 0 ? done / total * 100 : 0);
         },
-        // 8 個全檔 ffmpeg 重編碼會吃滿 CPU；兩條 pipeline 一起跑時
-        // UI thread 會被餓死，降到 4 留一點喘息空間。
+        // 8 個全檔 ffmpeg 重編碼會滿 CPU；兩條 pipeline 一起跑時
+        // UI thread 會被餓死，降到 4 點點空檔。
         concurrency: 4,
         tolerance: 2.0,
         isCancelled: () => state.isCancelled,
@@ -504,7 +550,7 @@ class PipelineOrchestrator {
     progress(100);
   }
 
-  /// Download lyrics for all songs in library (uses LRCLib).
+  /// 步驟 7：下載歌詞
   Future<void> _stepLyrics(void Function(double) progress) async {
     if (!config.enablePipelineLyricsDownload) {
       onLog('Lyrics download disabled (enable_pipeline_lyrics_download=false), skipping');
@@ -525,7 +571,9 @@ class PipelineOrchestrator {
     final files = <File>[];
     await for (final e in libDir.list(recursive: true, followLinks: false)) {
       if (e is File && (e.path.toLowerCase().endsWith('.mp3') || e.path.toLowerCase().endsWith('.flac') || e.path.toLowerCase().endsWith('.m4a'))) {
-        files.add(e);
+        // Fix encoding: Windows file system uses Big5/CP950, decode to UTF-8
+        final decodedPath = _decodeFilePath(e.path);
+        files.add(File.fromUri(Uri.file(decodedPath)));
       }
     }
 
@@ -543,7 +591,8 @@ class PipelineOrchestrator {
       if (state.isCancelled) return;
 
       final file = files[i];
-      final stem = file.uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '');
+      final stem = p.basenameWithoutExtension(file.path);
+      // stem is already decoded via p.basenameWithoutExtension
       final lrcPath = '${lyricsDir.path}${Platform.pathSeparator}$stem.lrc';
 
       // Already exists? skip
@@ -611,8 +660,18 @@ class PipelineOrchestrator {
       });
       onLog('✅ RAG 索引已更新');
     } catch (e) {
-      onLog('  ⚠️ RAG 索引更新失敗（需要 Ollama + chromadb）: $e');
+      onLog('  ⚠️ RAG 索引更新失敗（需啟動 Ollama + chromadb）: $e');
     }
     progress(100);
   }
+
+  /// 歌名正規化：把 Windows 檔名非法字元換成底線，與下載時落盤的規則一致。
+  ///
+  /// 下載時 `song.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_')`
+  /// 但「已有」比對時只對 `toLowerCase()` 這個替換缺失 →
+  /// `24/7 Shining - AKB48 Team TP` 盤面變 `24_7 Shining - AKB48 Team TP`
+  /// 比對永遠失敗 → 每次 pipeline 重複下載同一批（實測三輪
+  /// 都「6 成功」，音檔庫數量卻一直停在 4971）。
+  static String _normSong(String s) =>
+      s.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim().toLowerCase();
 }

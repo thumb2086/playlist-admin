@@ -25,7 +25,7 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   late TextEditingController _basePathCtrl, _workersCtrl, _ffmpegCtrl,
-      _lyricsFolderCtrl, _discordAppIdCtrl, _groqApiKeyCtrl, _groqBaseUrlCtrl;
+      _lyricsFolderCtrl, _discordAppIdCtrl, _groqApiKeyCtrl, _groqBaseUrlCtrl, _jamRelayUrlCtrl;
 
   void _onConfigChanged() { if (mounted) setState(() {}); }
 
@@ -40,6 +40,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _discordAppIdCtrl = TextEditingController(text: c.discordApplicationId);
     _groqApiKeyCtrl = TextEditingController(text: c.groqApiKey);
     _groqBaseUrlCtrl = TextEditingController(text: c.groqBaseUrl);
+    _jamRelayUrlCtrl = TextEditingController(text: c.jamRelayUrl);
     I18N.instance.addListener(_onConfigChanged);
     ConfigService.instance.addListener(_onConfigChanged);
   }
@@ -50,7 +51,7 @@ class _SettingsPageState extends State<SettingsPage> {
     ConfigService.instance.removeListener(_onConfigChanged);
     _basePathCtrl.dispose(); _workersCtrl.dispose(); _ffmpegCtrl.dispose();
     _lyricsFolderCtrl.dispose(); _discordAppIdCtrl.dispose(); _groqApiKeyCtrl.dispose();
-    _groqBaseUrlCtrl.dispose();
+    _groqBaseUrlCtrl.dispose(); _jamRelayUrlCtrl.dispose();
     super.dispose();
   }
 
@@ -63,6 +64,7 @@ class _SettingsPageState extends State<SettingsPage> {
     c.discordApplicationId = _discordAppIdCtrl.text.trim();
     c.groqApiKey = _groqApiKeyCtrl.text.trim();
     c.groqBaseUrl = _groqBaseUrlCtrl.text.trim();
+    c.jamRelayUrl = _jamRelayUrlCtrl.text.trim();
     ConfigService.instance.save();
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t('settings.saved')), duration: const Duration(seconds: 1)));
   }

@@ -436,10 +436,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   /// Register the Spotify playlist URL in config so Pipeline can scrape it.
   void _registerSpotifyUrl() {
     if (widget.spotifyUrl == null || widget.isPodcast) return;
-    final cfg = ConfigService.instance.config;
-    if (cfg.urlNames.containsKey(widget.spotifyUrl)) return;
-    cfg.urlNames[widget.spotifyUrl!] = widget.title;
-    ConfigService.instance.save();
+    ConfigService.registerSpotifyUrl(widget.spotifyUrl!, widget.title);
   }
 
   Future<void> _downloadTrack(int index) async {
@@ -849,7 +846,12 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                   : isDownloading
                       ? const SizedBox(width: 18, height: 18)
                       : _isMobile
-                          ? const SizedBox(width: 18)
+                          ? IconButton(
+                              icon: const Icon(Icons.play_arrow_rounded, size: 18, color: AppColors.accent),
+                              onPressed: () => _playTrack(context, index),
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(minWidth: 32),
+                            )
                           : IconButton(
                               icon: const Icon(Icons.download_rounded, size: 18, color: AppColors.textMuted),
                               onPressed: () => _downloadTrack(index),

@@ -37,6 +37,8 @@ class AppConfig {
   bool receiveBetaUpdates;
   bool syncServerEnabled; // 手機區網同步伺服器（電腦端開關，預設關）
   String lastSyncHost; // 上次同步的電腦「ip:port」（手機經電腦轉播用；空=沒連過）
+  /// Jam Relay WebSocket URL（可在設定頁修改；空=用內建預設）
+  String jamRelayUrl;
   Map<String, String> podcastSubscriptions;
   Map<String, String> podcastHistory;
   Map<String, String> urlNames;
@@ -77,6 +79,7 @@ class AppConfig {
     this.syncServerEnabled = false,
     this.lastSyncHost = '',
     Map<String, String>? podcastSubscriptions,
+        this.jamRelayUrl = '',
     Map<String, String>? podcastHistory,
     Map<String, String>? urlNames,
     Map<String, String>? searchNames,
@@ -198,6 +201,7 @@ class AppConfig {
         receiveBetaUpdates: json['receive_beta_updates'] as bool? ?? false,
         syncServerEnabled: json['sync_server_enabled'] as bool? ?? false,
         lastSyncHost: json['last_sync_host'] as String? ?? '',
+        jamRelayUrl: json['jam_relay_url'] as String? ?? '',
         podcastSubscriptions: (json['podcast_subscriptions'] as Map<String, dynamic>?)?.map((k, v) => MapEntry(k, v as String)) ?? {},
         podcastHistory: (json['podcast_history'] as Map<String, dynamic>?)?.map((k, v) => MapEntry(k, v as String)) ?? {},
         urlNames: (json['url_names'] as Map<String, dynamic>?)?.map((k, v) => MapEntry(k, v as String)) ?? {},
@@ -238,6 +242,7 @@ class AppConfig {
         'receive_beta_updates': receiveBetaUpdates,
         'sync_server_enabled': syncServerEnabled,
         'last_sync_host': lastSyncHost,
+        'jam_relay_url': jamRelayUrl,
         'podcast_subscriptions': podcastSubscriptions,
         'podcast_history': podcastHistory,
         'url_names': urlNames,

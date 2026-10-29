@@ -6,6 +6,7 @@ import '../services/player_controller.dart';
 import '../services/spotify_session.dart';
 import '../services/spotify_gql_client.dart';
 import '../services/youtube_service.dart';
+import '../services/config_service.dart';
 
 /// 「一起聽」— Cloudflare Worker 中繼版。
 /// 房主和成員都連到 Relay，不需輸入 IP，任何網路都能加入。
@@ -14,11 +15,21 @@ class JamService extends ChangeNotifier {
   static final JamService instance = JamService._();
 
   // ---------- Relay ----------
-  static const _relayUrl = 'wss://jam-relay.cpxru83.workers.dev/jam';
+  static const _defaultRelayUrl = 'wss://jam-relay.cpxru83.workers.dev/jam';
 
   /// 測試用 relay 覆寫（flutter_test 指向本地假 relay，平時 null）。
   static String? relayUrlOverride;
-  static String get _relay => relayUrlOverride ?? _relayUrl;
+  
+  /// 從 ConfigService 讀取使用者設定的 relay URL，支援在設定頁修改
+  static String get _relay {
+    if (relayUrlOverride != null) return relayUrlOverride!;
+    try {
+      final cfg = ConfigService.instance.config;
+      final url = cfg.jamRelayUrl;
+      if (url.isNotEmpty) return url;
+    } catch (_) {}
+    return _defaultRelayUrl;
+  }
 
   /// flutter_test 用：test 環境無 libmpv，PlayerController 建不起來。
   /// 開啟後播放器呼叫全變 no-op，協議邏輯照常測試。正式環境恆 false。
@@ -50,6 +61,10 @@ class JamService extends ChangeNotifier {
   bool searching = false;
   String searchError = '';
   final Map<int, Completer<List<Map<String, dynamic>>>> _searchCompleters = {};
+
+  // ---------- 併發控制 ----------
+  final _resolveQueue = _AsyncQueue<_ResolveTask>();
+  final _playLock = _AsyncLock();
 
   // ---------- WebSocket ----------
   WebSocket? _ws;
@@ -103,6 +118,7 @@ class JamService extends ChangeNotifier {
   Future<void> leaveRoom() async {
     _driftTimer?.cancel();
     _driftTimer = null;
+    await _resolveQueue.clear();
     _ws?.close();
     _ws = null;
     _resetState();
@@ -141,7 +157,6 @@ class JamService extends ChangeNotifier {
   // ===================================================================
 
   void _onMessage(dynamic raw) {
-    // relay 壞包不可拋到 listen 區（會斷線）：解析失敗直接丟棄。
     late final Map<String, dynamic> msg;
     try {
       msg = jsonDecode(raw as String) as Map<String, dynamic>;
@@ -217,14 +232,12 @@ class JamService extends ChangeNotifier {
         break;
 
       case 'host_next':
-        // relay 把佇列下一首交給房主解析 audioUrl（relay 不會解析網址）。
         if (isHost && msg['track'] is Map<String, dynamic>) {
           _playAsHost((msg['track'] as Map).cast<String, dynamic>());
         }
         break;
 
       case 'promoted':
-        // 房主斷線 → 我接任（mode 要翻，控制權才會回到本地路徑）。
         if (msg['memberId'] == myId) {
           mode = 'host';
           _pc?.jamFollowMode = false;
@@ -315,7 +328,6 @@ class JamService extends ChangeNotifier {
     _driftTimer?.cancel();
     _driftTimer = Timer.periodic(const Duration(seconds: 4), (_) {
       if (mode == 'idle') return;
-      // 房主推真實進度給 relay：成員按暫停時 relay 才推算得出正確位置。
       if (isHost && playing && current != null) {
         final p = _pc?.position.inMilliseconds ?? 0;
         if (p > 0) {
@@ -351,25 +363,29 @@ class JamService extends ChangeNotifier {
     try { _ws?.add(jsonEncode(msg)); } catch (_) {}
   }
 
-  /// flutter_test 專用：讓測試把任意訊息送進 fake relay（用於協議回歸注入）。
   @visibleForTesting
   void debugSendForTest(Map<String, dynamic> msg) => _send(msg);
 
+  /// 非阻塞播放/暫停切換
   void togglePlay() {
     if (mode == 'idle') return;
-    // 只有房主帶 pos（位置真相）；成員的播放器可能沒同步，帶了會把大家拉走。
+    // 先送 relay（非阻塞）
     _send({
       'type': playing ? 'pause' : 'play',
       if (isHost) 'pos': _pc?.position.inMilliseconds ?? 0,
     });
-    // 本地也立即反應
+    // 本地立即反應（非阻塞）
+    unawaited(_localTogglePlay());
+  }
+
+  Future<void> _localTogglePlay() async {
     final pc = _pc;
     if (pc == null) return;
     if (playing) {
-      pc.pause();
+      await pc.pause();
       playing = false;
     } else {
-      pc.resume();
+      await pc.resume();
       playing = true;
     }
     notifyListeners();
@@ -433,78 +449,78 @@ class JamService extends ChangeNotifier {
     _send({'type': 'remove', 'trackId': trackId});
   }
 
-  /// 房主播放一首歌：audioUrl 空就本機解析 YouTube（30s 上限，失敗不凍結），
-  /// 本地播放 + 廣播 track_change 給成員（relay 會排除送信者，不會重播）。
-  Future<void> _playAsHost(Map<String, dynamic> track) async {
-    var url = (track['audioUrl'] as String?) ?? '';
-    if (url.isEmpty) {
-      final title = (track['title'] ?? '').toString();
-      final artist = (track['artist'] ?? '').toString();
-      if (title.isEmpty) return;
-      try {
-        final r = await YoutubeService.instance
-            .resolveStream('$title $artist')
-            .timeout(const Duration(seconds: 30));
-        url = r?.audioUrl ?? '';
-      } catch (_) {
-        url = '';
-      }
-      if (url.isEmpty) {
-        statusText = '無法解析音訊串流：$title';
-        notifyListeners();
-        return;
-      }
-      track['audioUrl'] = url;
-    }
-    _lastUrl = url;
-    _send({
-      'type': 'track_change',
-      'current': track,
-      'playing': true,
-      'pos': 0,
-      'ts': DateTime.now().millisecondsSinceEpoch,
-    });
-    await _pc?.playJamUrl(url,
-        title: (track['title'] ?? '').toString(),
-        artist: (track['artist'] ?? '').toString(),
-        coverUrl: track['coverUrl'] as String?);
-  }
+  // ===================================================================
+  //  房主端：加歌、解析、播放（併發控制）
+  // ===================================================================
 
-  /// 房主端：搜尋歌曲 → 解析 YouTube URL → 加入佇列；佇列空就直接播。
+  /// 房主加歌：先入佇列回應 UI，背景解析 YouTube
   Future<void> hostAddTrack(Map<String, dynamic> raw) async {
     final title = (raw['name'] ?? '').toString().trim();
     final artist = (raw['artists'] as List? ?? []).join(', ');
     if (title.isEmpty) return;
-
-    // 先搜 YouTube 取音訊 URL（timeout：卡住不可凍住房主 UI）。
-    final query = '$title $artist';
-    YoutubeStreamResult? result;
-    try {
-      result = await YoutubeService.instance.resolveStream(query)
-          .timeout(const Duration(seconds: 30));
-    } catch (_) {
-      result = null;
-    }
 
     final track = <String, dynamic>{
       'id': 't-${DateTime.now().millisecondsSinceEpoch.toRadixString(16)}',
       'title': title,
       'artist': artist,
       'coverUrl': raw['coverUrl'],
-      'audioUrl': result?.audioUrl ?? '',
+      'audioUrl': '',  // 先給空
       'addedBy': myName,
       'votes': 0,
+      '_resolving': true,  // 標記正在解析
     };
 
+    // 1. 先加入佇列、即時回應 UI
     _send({'type': 'add', 'track': track});
+    final wasEmpty = queue.isEmpty && current == null;
 
-    // 佇列是空的、也沒在播 → 這首直接開播。
-    if (queue.isEmpty && current == null) {
-      await _playAsHost(track);
+    // 2. 丟進解析佇列（背景處理）
+    await _resolveQueue.enqueue(_ResolveTask(
+      track: track,
+      priority: wasEmpty ? 0 : 1,  // 佇列原本空 → 最高優先級
+    ));
+  }
+
+  /// 房主播放：解析 audioUrl（若空則 YouTube）→ 播放 + 廣播
+  Future<void> _playAsHost(Map<String, dynamic> track) async {
+    await _playLock.acquire();
+    try {
+      var url = (track['audioUrl'] as String?) ?? '';
+      if (url.isEmpty) {
+        final title = (track['title'] ?? '').toString();
+        final artist = (track['artist'] ?? '').toString();
+        if (title.isEmpty) return;
+        try {
+          final r = await YoutubeService.instance
+              .resolveStream('$title $artist')
+              .timeout(const Duration(seconds: 30));
+          url = r?.audioUrl ?? '';
+        } catch (_) {}
+        if (url.isEmpty) {
+          statusText = '無法解析音訊串流：$title';
+          notifyListeners();
+          return;
+        }
+        track['audioUrl'] = url;
+      }
+      _lastUrl = url;
+      _send({
+        'type': 'track_change',
+        'current': track,
+        'playing': true,
+        'pos': 0,
+        'ts': DateTime.now().millisecondsSinceEpoch,
+      });
+      await _pc?.playJamUrl(url,
+          title: (track['title'] ?? '').toString(),
+          artist: (track['artist'] ?? '').toString(),
+          coverUrl: track['coverUrl'] as String?);
+    } finally {
+      _playLock.release();
     }
   }
 
-  /// 房主：點佇列播放（audioUrl 空的成員加歌會在此解析）。
+  /// 房主：點佇列播放
   Future<void> hostPlayTrack(Map<String, dynamic> track) => _playAsHost(track);
 
   // ===================================================================
@@ -520,14 +536,11 @@ class JamService extends ChangeNotifier {
     notifyListeners();
     try {
       if (!SpotifySession.instance.isLoggedIn) {
-        // Spotify 登入僅桌面版 → 手機成員（或未登入的電腦）走 YouTube 搜尋。
-        // youtube_explode 是純 Dart HTTP、不需 yt-dlp → 手機可用；此處只取
-        // 排隊資料（標題/歌手/封面），解析一律在房主電腦播的當下做。
         final ytResults = await YoutubeService.instance.search(query, limit: 20);
         searchResults = ytResults
             .map((r) => <String, dynamic>{
                   'name': r.title,
-                  'artists': <String>[r.author], // 無歌手資料，用頻道名顯示
+                  'artists': <String>[r.author],
                   'coverUrl': r.thumbnailUrl,
                 })
             .toList();
@@ -550,7 +563,6 @@ class JamService extends ChangeNotifier {
   }
 
   List<Map<String, dynamic>> _parseSearchItems(Map<String, dynamic> data) {
-    // 提取形狀與 search_page 共用 helper（item.data 巢狀 + 三種 artists 形狀）。
     final out = <Map<String, dynamic>>[];
     try {
       final search = (data['data'] as Map?)?['searchV2'] as Map<String, dynamic>?;
@@ -576,5 +588,71 @@ class JamService extends ChangeNotifier {
       }
     } catch (_) {}
     return out;
+  }
+}
+
+/// 解析任務
+class _ResolveTask {
+  final Map<String, dynamic> track;
+  final int priority; // 0 = 最高（佇列空需立即播放）
+  _ResolveTask({required this.track, required this.priority});
+}
+
+/// 非同步佇列（支援優先級、清空）
+class _AsyncQueue<T> {
+  final _queue = <T>[];
+  final _waiters = <Completer<T>? >[];
+  bool _closed = false;
+
+  Future<void> enqueue(T item) async {
+    if (_closed) throw StateError('Queue closed');
+    if (_waiters.isNotEmpty) {
+      _waiters.removeAt(0)!.complete(item);
+    } else {
+      _queue.add(item);
+      _queue.sort((a, b) => 
+          (a as _ResolveTask).priority.compareTo((b as _ResolveTask).priority));
+    }
+  }
+
+  Future<T?> dequeue() async {
+    if (_queue.isNotEmpty) return _queue.removeAt(0);
+    if (_closed) return null;
+    final completer = Completer<T>();
+    _waiters.add(completer);
+    return completer.future;
+  }
+
+  Future<void> clear() async {
+    _closed = true;
+    for (final w in _waiters) {
+      if (w != null && !w.isCompleted) w.complete(null as T);
+    }
+    _waiters.clear();
+    _queue.clear();
+  }
+}
+
+/// 簡易非同步鎖
+class _AsyncLock {
+  final _queue = <Completer<void>>[];
+  bool _locked = false;
+
+  Future<void> acquire() async {
+    if (!_locked) {
+      _locked = true;
+      return;
+    }
+    final completer = Completer<void>();
+    _queue.add(completer);
+    await completer.future;
+  }
+
+  void release() {
+    if (_queue.isNotEmpty) {
+      _queue.removeAt(0).complete();
+    } else {
+      _locked = false;
+    }
   }
 }

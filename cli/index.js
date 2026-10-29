@@ -19,7 +19,7 @@ Usage:
   playlist-admin update| upgrade             更新 CLI（npm）並提示 GUI 更新方式
   playlist-admin where                      顯示根目錄 / exe / 資料夾位置
   playlist-admin doctor [--fast] [--verbose] [--no-stt]
-                                         音訊庫健康檢查（覆蓋率/損毀/品質/語言/額度）
+                                          音訊庫健康檢查（覆蓋率/損毀/品質/語言/額度）
 
   playlist-admin pipeline [--step N]     Run full pipeline (or from step N)
   playlist-admin podcast                 Run podcast pipeline
@@ -38,6 +38,7 @@ Usage:
   playlist-admin skill list              List bundled opencode skills
   playlist-admin skill install [name] [--dir X] Install skill(s) to opencode (~/.config/opencode/skills)
   playlist-admin skill path [name]       Print installed path of a skill
+  playlist-admin tui                     Launch interactive TUI (Text User Interface)
 `;
 
 function projectRoot() {
@@ -381,6 +382,23 @@ async function main() {
     console.log(`根目錄: ${root || '(找不到)'}`);
     console.log(`exe    : ${exePath(root) || '(找不到)'}`);
     console.log(`資料   : ${path.join(root || '?', 'data')}`);
+    return;
+  }
+  if (args[0] === 'tui') {
+    // Launch TUI mode
+    const root = projectRoot();
+    if (!root) {
+      console.error('找不到專案根目錄（pubspec.yaml）。請在專案內執行，或設定 PA_ROOT');
+      process.exit(1);
+    }
+    const exe = exePath(root);
+    if (!exe) {
+      console.error(`找不到 build 好的 exe。
+請先在專案內執行: flutter build windows --release
+或設定 PA_ROOT=<專案根目錄>`);
+      process.exit(1);
+    }
+    forward(exe, ['tui']);
     return;
   }
 

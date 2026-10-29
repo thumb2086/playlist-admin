@@ -28,12 +28,15 @@ dependencies:
   qr_flutter: ^4.1.0
   xml: ^6.6.1
   cached_network_image: ^3.4.1
+  term_glyph: ^1.2.1
+  ansi_styles: ^0.3.2
 
   path: any
   crypto: any
   open_filex: ^4.7.0
   mobile_scanner: ^7.4.2
   share_plus: ^12.0.2
+  charset: ^2.0.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

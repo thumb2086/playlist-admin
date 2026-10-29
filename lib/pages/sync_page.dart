@@ -186,7 +186,6 @@ class _SyncPageState extends State<SyncPage> {
       }
       setState(() => _plsTotal = remote.length);
       var ok = 0;
-      final cfg = ConfigService.instance.config;
       var urlAdded = 0;
       for (final p in remote) {
         if (!mounted) break;
@@ -194,20 +193,15 @@ class _SyncPageState extends State<SyncPage> {
         if (!mounted) break;
         if (good) {
           ok++;
-          // urlNames 補上：音樂庫卡片列表讀它；已有不覆蓋（手機端不改名）。
-          if (p.url.isNotEmpty && !cfg.urlNames.containsKey(p.url)) {
-            cfg.urlNames[p.url] = p.name;
+          // 關鍵修正：同步歌單時同步註冊 Spotify URL（去重、自動存檔）
+          if (p.url.isNotEmpty) {
+            await ConfigService.registerSpotifyUrl(p.url, p.name);
             urlAdded++;
           }
         }
         if (mounted) setState(() => _plsDone = ok);
       }
-      if (urlAdded > 0) {
-        try {
-          await ConfigService.instance.save();
-        } catch (_) {}
-      }
-      _say('歌單同步完成：$ok/${remote.length}（音樂庫多了 $urlAdded 個歌單）');
+      _say('歌單同步完成：$ok/${remote.length}（音樂庫多了 $urlAdded 個歌單/URL）');
     } catch (e) {
       _say('歌單同步失敗：$e');
     } finally {

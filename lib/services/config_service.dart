@@ -112,4 +112,15 @@ class ConfigService extends ChangeNotifier {
     }
     notifyListeners();
   }
+
+  /// 統一的 Spotify URL 註冊（桌面/手機通用，去重、自動存檔）
+  /// 供桌面端 _registerSpotifyUrl、手機端 _syncPlaylists、Pipeline 共用
+  static Future<void> registerSpotifyUrl(String url, String name) async {
+    final cfg = ConfigService.instance.config;
+    final normalized = url.trim();
+    if (normalized.isEmpty) return;
+    if (cfg.urlNames.containsKey(normalized)) return;
+    cfg.urlNames[normalized] = name;
+    await ConfigService.instance.save();
+  }
 }

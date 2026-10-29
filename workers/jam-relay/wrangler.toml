@@ -1,0 +1,23 @@
+name = "jam-relay"
+main = "src/index.js"
+compatibility_date = "2024-01-01"
+
+[env.production]
+name = "jam-relay"
+vars = { ENV = "production" }
+
+[env.staging]
+name = "jam-relay-staging"
+vars = { ENV = "staging" }
+
+[build]
+command = ""
+
+[durable_objects]
+bindings = [
+  { name = "ROOM", class_name = "JamRoom" }
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["JamRoom"]

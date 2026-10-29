@@ -8,6 +8,7 @@ import 'package:win32/win32.dart';
 import 'package:media_kit/media_kit.dart';
 import 'app.dart';
 import 'cli_main.dart' show runCli;
+import 'tui/tui_main.dart' show runTui;
 import 'services/config_service.dart';
 import 'services/groq_service.dart';
 import 'services/i18n.dart';
@@ -70,11 +71,16 @@ List<String> _cliArgs() {
 }
 
 void main() async {
-  // Single binary, two surfaces: pass CLI args to use the headless engine
-  // (playlist-admin pipeline / status / podcast ...), which is
-  // what the `playlist-admin` npm package spawns.
+  // Single binary, three surfaces:
+  // 1. GUI (default, no args)
+  // 2. CLI (PA_CLI_ARGS with commands like pipeline, status, podcast...)
+  // 3. TUI (PA_CLI_ARGS = ["tui"])
   final args = _cliArgs();
   if (args.isNotEmpty) {
+    if (args.first == 'tui') {
+      await runTui();
+      io.exit(0);
+    }
     await runCli(args);
     // The runner keeps a window message loop alive even without runApp —
     // force-exit so the CLI returns to the caller.

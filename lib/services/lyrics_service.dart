@@ -22,48 +22,60 @@ class LyricsService {
   }
 
   /// 取得歌詞。優先同步 LRC，再非同步。
-  Future<LyricsResult?> fetch(String artist, String track, {String? album, int? durationSec}) async {
+    Future<LyricsResult?> fetch(String artist, String track, {String? album, int? durationSec}) async {
     final key = '$artist:$track'.toLowerCase();
     if (_cache.containsKey(key)) return _cache[key];
 
-    try {
-      final params = {
-        'artist_name': artist,
-        'track_name': track,
-      };
-      if (album != null && album.isNotEmpty) params['album_name'] = album;
-      if (durationSec != null && durationSec > 0) params['duration'] = '$durationSec';
+    for (int attempt = 0; attempt <= 3; attempt++) {
+      try {
+        final params = {
+          'artist_name': artist,
+          'track_name': track,
+        };
+        if (album != null && album.isNotEmpty) params['album_name'] = album;
+        if (durationSec != null && durationSec > 0) params['duration'] = '$durationSec';
 
-      final uri = Uri.https('lrclib.net', '/api/get', params);
-      final resp = await http.get(uri).timeout(const Duration(seconds: 10));
+        final uri = Uri.https('lrclib.net', '/api/get', params);
+        final resp = await http.get(uri).timeout(const Duration(seconds: 15));
 
-      if (resp.statusCode != 200) {
-        _log.i('LRCLib 無歌詞: $artist - $track (${resp.statusCode})');
+        if (resp.statusCode == 200) {
+          final data = jsonDecode(resp.body);
+          final result = LyricsResult(
+            artist: data['artistName'] as String? ?? artist,
+            track: data['trackName'] as String? ?? track,
+            album: data['albumName'] as String? ?? album ?? '',
+            syncedLyrics: data['syncedLyrics'] as String?,
+            plainLyrics: data['plainLyrics'] as String?,
+            durationSec: data['duration'] as int? ?? durationSec ?? 0,
+          );
+
+          _cachePut(key, result);
+          _log.i('LRCLib 歌词: $artist - $track '
+              '(LRC: ${result.syncedLyrics != null ? "${result.syncedLyrics!.length}c" : "??"}'
+              ', plain: ${result.plainLyrics != null ? "${result.plainLyrics!.length}c" : "??"})');
+          return result;
+        } else if (resp.statusCode == 503) {
+          // Server overloaded, retry with exponential backoff
+          if (attempt < 3) {
+            final delay = Duration(seconds: 2 * (1 << attempt)); // 2s, 4s, 8s
+            _log.w('LRCLib 503 for $artist - $track, retrying in ${delay.inSeconds}s (attempt ${attempt + 1}/3)');
+            await Future.delayed(Duration(seconds: 2 * (1 << attempt)));
+            continue;
+          }
+          _log.w('LRCLib 503 for $artist - $track, max retries exceeded');
+          return null;
+        } else {
+          _log.i('LRCLib 无法查询 $artist - $track (${resp.statusCode})');
+          return null;
+        }
+      } catch (e) {
+        _log.e('LRCLib 失败: $e');
         return null;
       }
-
-      final data = jsonDecode(resp.body);
-      final result = LyricsResult(
-        artist: data['artistName'] as String? ?? artist,
-        track: data['trackName'] as String? ?? track,
-        album: data['albumName'] as String? ?? album ?? '',
-        syncedLyrics: data['syncedLyrics'] as String?,
-        plainLyrics: data['plainLyrics'] as String?,
-        durationSec: data['duration'] as int? ?? durationSec ?? 0,
-      );
-
-      _cachePut(key, result);
-      _log.i('LRCLib 歌詞: $artist - $track '
-          '(LRC: ${result.syncedLyrics != null ? "${result.syncedLyrics!.length}c" : "無"}'
-          ', plain: ${result.plainLyrics != null ? "${result.plainLyrics!.length}c" : "無"})');
-      return result;
-    } catch (e) {
-      _log.e('LRCLib 失敗: $e');
-      return null;
     }
+    return null;
   }
 
-  /// 搜尋歌詞（模糊搜尋）。
   Future<List<LyricsSearchResult>> search(String query, {int limit = 5}) async {
     try {
       final uri = Uri.https('lrclib.net', '/api/search', {'q': query});

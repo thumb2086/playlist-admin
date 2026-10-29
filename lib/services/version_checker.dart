@@ -145,8 +145,26 @@ class VersionChecker {
                 (name.startsWith('playlist-admin-setup') || name.startsWith('playlistadministrator-setup')) &&
                 name.endsWith('.exe');
             if (ok) {
-              downloadUrl = asset['browser_download_url'] as String?;
-              break;
+              // 解析檔名中的版本號 (playlist-admin-Setup-2.15.93.exe -> 2.15.93)
+              final versionMatch = RegExp(r'(\d+\.\d+\.\d+)').firstMatch(name);
+              final assetVersion = versionMatch?.group(1) ?? '';
+              final expectedVersion = latestTag.replaceFirst('v', '');
+              if (assetVersion == expectedVersion) {
+                downloadUrl = asset['browser_download_url'] as String?;
+                break;
+              }
+              // 備選：若無精確匹配，記錄最高版本
+              if (assetVersion.isNotEmpty) {
+                final currentBestVersion = _parseVersion(downloadUrl ?? '');
+                final assetVer = _parseVersion(assetVersion);
+                final isBetter = assetVer.length >= 3 &&
+                    (assetVer[0] > (currentBestVersion.isNotEmpty ? currentBestVersion[0] : 0) ||
+                     (assetVer[0] == (currentBestVersion.isNotEmpty ? currentBestVersion[0] : 0) && assetVer[1] > (currentBestVersion.length > 1 ? currentBestVersion[1] : 0)) ||
+                     (assetVer[0] == (currentBestVersion.isNotEmpty ? currentBestVersion[0] : 0) && assetVer[1] == (currentBestVersion.length > 1 ? currentBestVersion[1] : 0) && assetVer[2] > (currentBestVersion.length > 2 ? currentBestVersion[2] : 0)));
+                if (downloadUrl == null || isBetter) {
+                  downloadUrl = asset['browser_download_url'] as String?;
+                }
+              }
             }
           }
         }
