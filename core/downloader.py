@@ -299,12 +299,13 @@ def add_metadata_to_file(file_path, info, song_name, log_func, config=None, enri
         # --- NEW: Check for cached Spotify metadata to override yt-dlp ---
         try:
             from utils.config import get_spotify_cache_dir
-            from utils.helpers import sanitize_filename
+            from utils.helpers import sanitize_filename_strict
             import json
             
-            clean_filename = sanitize_filename(song_name)
+            # Use strict sanitization for cache keys (predictable, no spaces)
+            cache_key = sanitize_filename_strict(song_name)
             cache_dir = get_spotify_cache_dir()
-            meta_file = os.path.join(cache_dir, f"{clean_filename}.json")
+            meta_file = os.path.join(cache_dir, f"{cache_key}.json")
             
             if os.path.exists(meta_file):
                 with open(meta_file, 'r', encoding='utf-8') as mf:

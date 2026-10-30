@@ -83,8 +83,14 @@ class FileRenamer:
             self.log_func(f"  ❌ [Metadata Error] {file_path}: {str(e)}")
             return None
     
-    def generate_new_filename(self, metadata: dict, file_ext: str) -> str:
-        """Generate new filename based on metadata with Title-Artist format (no year)"""
+    def generate_new_filename(self, metadata: dict, file_ext: str, original_filename: str = "") -> str:
+        """Generate new filename based on metadata with Title-Artist format (no year)
+        
+        Args:
+            metadata: Extracted metadata dict (title, artist, album, date)
+            file_ext: File extension (e.g., '.m4a')
+            original_filename: Original filename (without extension) as fallback
+        """
         artist = metadata.get('artist', '').strip()
         title = metadata.get('title', '').strip()
         album = metadata.get('album', '').strip()
@@ -104,6 +110,9 @@ class FileRenamer:
         elif album:
             # 只有專輯名，使用專輯名
             base_name = album
+        elif original_filename:
+            # 都沒有元數據，使用原始檔名作為後備
+            base_name = original_filename
         else:
             # 都沒有，使用預設名稱
             base_name = "Unknown_Song"
@@ -136,9 +145,10 @@ class FileRenamer:
             
             result['metadata'] = metadata
             
-# Generate new filename
+# Generate new filename with original filename as fallback
             file_ext = Path(file_path).suffix.lower()
-            new_filename = self.generate_new_filename(metadata, file_ext)
+            original_filename = Path(file_path).stem
+            new_filename = self.generate_new_filename(metadata, file_ext, original_filename)
 
             if not new_filename:
                 result['message'] = "Could not generate new filename"
@@ -250,7 +260,8 @@ class FileRenamer:
             metadata = self.extract_metadata(file_path)
             if metadata:
                 file_ext = Path(file_path).suffix.lower()
-                new_filename = self.generate_new_filename(metadata, file_ext)
+                original_filename = Path(file_path).stem
+                new_filename = self.generate_new_filename(metadata, file_ext, original_filename)
                 
                 if new_filename and new_filename != os.path.basename(file_path):
                     preview.append({

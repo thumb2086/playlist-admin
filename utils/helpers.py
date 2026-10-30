@@ -1,55 +1,93 @@
 import re
 from zhconv import convert
 
-def sanitize_filename(name):
-    """Sanitize string to be a valid filename while preserving important information"""
-    if not name: 
-        return name
+# Windows forbidden characters (same across all sanitizers)
+_WIN_FORBIDDEN_RE = re.compile(r'[<>:"/\\|?*]')
+
+def sanitize_filename(name: str, *, fallback: str = "Unknown") -> str:
+    """Sanitize string to be a valid Windows filename.
     
-    # Remove non-breaking spaces and other weird whitespace
+    Preserves all Unicode characters (including Japanese, Korean, Chinese)
+    while replacing only Windows-forbidden characters.
+    
+    Args:
+        name: Input string to sanitize
+        fallback: Fallback name if result is empty
+        
+    Returns:
+        Sanitized filename safe for Windows
+    """
+    if not name:
+        return fallback
+    
+    # Remove non-breaking spaces and zero-width spaces
     name = name.replace('\xa0', ' ').replace('\u200b', '').strip()
     
-    # Only remove truly unnecessary publisher/label garbage, preserve meaningful content
+    # Remove only truly unnecessary publisher/label garbage
     patterns_to_remove = [
-        # Remove only obvious publisher prefixes at the very start
-        r'^[A-Za-z0-9\s&]+ - (?=[^\-])',  # Publisher prefixes like "Sony Music - "
-        # Remove only generic video suffixes, preserve meaningful identifiers
-        r'\s*Official\s+Video\s*$',  # Only exact "Official Video"
-        r'\s*Music\s+Video\s*$',     # Only exact "Music Video"
-        r'\s*MV\s*$',                 # Only exact "MV"
-        r'\s*官方.*?MV\s*$',          # Chinese official MV only
-        r'\s*Lyrics?\s+Video\s*$',   # Lyrics video variations
-        r'\s*動態歌詞版\s*$',         # Dynamic lyrics version
-        r'\s*歌詞版\s*$',             # Lyrics version
-        # Remove only generic release info, preserve specific identifiers
-        r'\s*發行.*?版\s*$',           # Generic release version
-        # Remove YouTube-specific garbage
-        r'\s*\(Official\)\s*$',       # Official in parentheses
-        r'\s*\[Official\]\s*$',      # Official in brackets
+        # Publisher prefixes at start: "Sony Music - " (ASCII only)
+        r'^[A-Za-z0-9\s&]+ - (?=[^\-])',
+        # Generic video suffixes (exact matches only)
+        r'\s*Official\s+Video\s*$',
+        r'\s*Music\s+Video\s*$',
+        r'\s*MV\s*$',
+        r'\s*官方.*?MV\s*$',
+        r'\s*Lyrics?\s+Video\s*$',
+        r'\s*動態歌詞版\s*$',
+        r'\s*歌詞版\s*$',
+        r'\s*發行.*?版\s*$',
+        r'\s*\(Official\)\s*$',
+        r'\s*\[Official\]\s*$',
     ]
     
-    original_name = name
     for pattern in patterns_to_remove:
         name = re.sub(pattern, '', name, flags=re.IGNORECASE)
     
-    # Windows forbidden characters: < > : " / \ | ? *
-    name = re.sub(r'[<>:"/\\|?*]', '_', name)
+    # Replace ONLY Windows-forbidden characters with underscore
+    # Preserve ALL Unicode characters (Japanese, Korean, Chinese, emojis, etc.)
+    name = _WIN_FORBIDDEN_RE.sub('_', name)
     
-    # Clean up trailing dots, spaces, and hyphens
+    # Clean up trailing/leading dots, spaces, hyphens
     name = name.strip('. -')
     
-    # Clean up extra spaces and hyphens
+    # Collapse whitespace, normalize hyphens
     name = re.sub(r'\s+', ' ', name).strip()
     name = re.sub(r'-+', '-', name).strip()
     
-    # Ensure we don't end up with empty filename
+    # Fallback if empty
     if not name or name.isspace():
-        # Fallback: use first meaningful part of original name
-        fallback = re.sub(r'[<>:"/\\|?*]', '_', original_name).strip('. -')
-        name = fallback[:50] if fallback else "Unknown"
+        # Use original name with only forbidden chars replaced
+        fallback_name = _WIN_FORBIDDEN_RE.sub('_', name if name else fallback)
+        fallback_name = fallback_name.strip('. -')
+        name = fallback_name[:200] if fallback_name else fallback
     
-    # Ensure reasonable length
-    return name[:200]  # Reduced from 250 for safety
+    return name[:200]
+
+
+def sanitize_filename_strict(name: str) -> str:
+    """Stricter sanitization: also replaces spaces and some punctuation.
+    Used for cache keys where stricter normalization is needed."""
+    if not name:
+        return "unknown"
+    name = name.replace('\xa0', ' ').replace('\u200b', '').strip()
+    name = _WIN_FORBIDDEN_RE.sub('_', name)
+    name = re.sub(r'[\s\-&]+', '_', name)  # spaces, hyphens, ampersands -> underscore
+    name = re.sub(r'_+', '_', name).strip('_')
+    return name[:100].lower() if name else "unknown"
+
+
+def normalize_name(name: str) -> str:
+    """Normalize string for fuzzy matching comparison (not for filenames).
+    Converts to Simplified Chinese, removes brackets/punctuation/spaces."""
+    if not name:
+        return ""
+    # Convert to Simplified Chinese for consistent comparison
+    name = convert(name, 'zh-cn')
+    # Replace brackets with space
+    name = re.sub(r"[\(\[【\)\]】]", " ", name)
+    # Remove all punctuation, spaces, underscores, hyphens
+    name = re.sub(r'[\s_\-\.\,\;\:\!\?\'\"]+', '', name)
+    return name.lower().strip()
 
 def normalize_name(name):
     """Normalize string for fuzzy matching comparison"""
