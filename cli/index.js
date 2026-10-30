@@ -19,10 +19,15 @@ Usage:
   playlist-admin update| upgrade             更新 CLI（npm）並提示 GUI 更新方式
   playlist-admin where                      顯示根目錄 / exe / 資料夾位置
   playlist-admin doctor [--fast] [--verbose] [--no-stt]
-                                          音訊庫健康檢查（覆蓋率/損毀/品質/語言/額度）
+                                            音訊庫健康檢查（覆蓋率/損毀/品質/語言/額度）
 
   playlist-admin pipeline [--step N]     Run full pipeline (or from step N)
   playlist-admin podcast                 Run podcast pipeline
+  playlist-admin podcast add <name> <rssUrl>   Add podcast subscription
+  playlist-admin podcast remove <name>   Remove podcast subscription
+  playlist-admin podcast list            List subscriptions
+  playlist-admin podcast refresh-rag     Refresh podcast RAG index
+  playlist-admin podcast dir <name>      Show podcast download directory
   playlist-admin status                  Show status
   playlist-admin play <歌曲名>             播放（本機庫優先，找不到走串流）
   playlist-admin organize                  歌單外歌曲移入「未分類」資料夾
