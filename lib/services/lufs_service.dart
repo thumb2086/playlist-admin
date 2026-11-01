@@ -4,6 +4,46 @@ import 'dart:io';
 import 'config_service.dart';
 import '../services/player_controller.dart';
 
+/// Global semaphore to limit concurrent ffmpeg/ffprobe processes
+class _ProcessSemaphore {
+  static final _ProcessSemaphore _instance = _ProcessSemaphore._internal();
+  factory _ProcessSemaphore() => _instance;
+  _ProcessSemaphore._internal();
+
+  final int maxConcurrent = 4; // Limit concurrent ffmpeg/ffprobe processes
+  int _current = 0;
+  final _waiters = <Completer<void>>[];
+
+  Future<void> acquire() async {
+    if (_current < maxConcurrent) {
+      _current++;
+      return;
+    }
+    final completer = Completer<void>();
+    _waiters.add(completer);
+    await completer.future;
+    _current++;
+  }
+
+  void release() {
+    _current--;
+    if (_waiters.isNotEmpty) {
+      _waiters.removeAt(0).complete();
+    }
+  }
+
+  Future<T> run<T>(Future<T> Function() action) async {
+    await acquire();
+    try {
+      return await action();
+    } finally {
+      release();
+    }
+  }
+}
+
+final _processSemaphore = _ProcessSemaphore();
+
 class LufsService {
   static final LufsService _instance = LufsService._();
   static LufsService get instance => _instance;
@@ -249,6 +289,7 @@ class LufsService {
 
   /// Run loudnorm normalization in one pass and capture input LUFS from stderr.
   /// Uses a per-file lock to prevent concurrent normalization of the same file.
+  /// Uses a process semaphore to limit concurrent ffmpeg processes.
   Future<void> _normalizeOne(String absPath, String ffmpeg, double target,
       Map<String, double> cache, void Function(String) onLog,
       {bool Function()? isCancelled}) async {
@@ -288,52 +329,60 @@ class LufsService {
       final file = File(absPath);
       if (!await file.exists()) return;
 
-    // Skip 0-byte files (corrupt/failed output) instead of failing every run.
-    try {
-      if (await file.length() == 0) {
-        onLog('  ⚠️ 跳過 0-byte 空檔（未計入快取，需重新轉檔）: $absPath');
-        return;
-      }
-    } catch (_) {}
+      // Skip 0-byte files (corrupt/failed output) instead of failing every run.
+      try {
+        if (await file.length() == 0) {
+          onLog('  ⚠️ 跳過 0-byte 空檔（未計入快取，需重新轉檔）: $absPath');
+          return;
+        }
+      } catch (_) {}
 
-    final base = absPath.substring(0, absPath.lastIndexOf('.'));
-    final tmp = '${base}_tmp.mp3';
-    final name = absPath.split(Platform.pathSeparator).last;
+      final base = absPath.substring(0, absPath.lastIndexOf('.'));
+      final tmp = '${base}_tmp.mp3';
+      final name = absPath.split(Platform.pathSeparator).last;
 
-    try {
-      final proc = await Process.start(ffmpeg, [
-        '-y', '-i', absPath,
-        '-vn',
-        '-af', 'loudnorm=I=$target:TP=-1:LRA=7',
-        '-c:a', 'libmp3lame', '-q:a', '2', tmp,
-      ]);
+      try {
+        await _processSemaphore.run(() async {
+          final proc = await Process.start(ffmpeg, [
+            '-y', '-i', absPath,
+            '-vn',
+            '-af', 'loudnorm=I=$target:TP=-1:LRA=7',
+            '-c:a', 'libmp3lame', '-q:a', '2', tmp,
+          ]);
 
-      final result = await _runWithCancel(proc, isCancelled);
-      if (result == null) return; // cancelled
+          final result = await _runWithCancel(proc, isCancelled);
+          if (result == null) return; // cancelled
 
-      if (result.exitCode != 0 || !await File(tmp).exists()) {
-        onLog('  ❌ $name normalize 失敗');
-        return;
-      }
+          if (result.exitCode != 0 || !await File(tmp).exists()) {
+            onLog('  ❌ $name normalize 失敗');
+            return;
+          }
 
-      // Parse input LUFS from stderr: "Input Integrated:    -15.2 LUFS"
-      double inputLufs = target;
-      final stderr = result.stderr as String? ?? '';
-      final inputMatch = RegExp(r'Input Integrated:\s+([-\d.]+)').firstMatch(stderr);
-      if (inputMatch != null) {
-        inputLufs = double.tryParse(inputMatch.group(1)!) ?? target;
-      }
+          // Parse input LUFS from stderr: "Input Integrated:    -15.2 LUFS"
+          double inputLufs = target;
+          final stderr = result.stderr as String? ?? '';
+          final inputMatch = RegExp(r'Input Integrated:\s+([-\d.]+)').firstMatch(stderr);
+          if (inputMatch != null) {
+            inputLufs = double.tryParse(inputMatch.group(1)!) ?? target;
+          }
 
-      await File(tmp).rename(absPath);
-      cache[absPath] = target;
+          await File(tmp).rename(absPath);
+          cache[absPath] = target;
 
-      if ((inputLufs - target).abs() > 0.1) {
-        onLog('  ✅ $name  (${inputLufs.toStringAsFixed(1)} → $target)');
+          if ((inputLufs - target).abs() > 0.1) {
+            onLog('  ✅ $name  (${inputLufs.toStringAsFixed(1)} → $target)');
+          }
+        });
+      } catch (ex) {
+        onLog('  ⚠️ $name: $ex');
+      } finally {
+        // Release the file lock
+        try {
+          await lockFile.delete();
+        } catch (_) {}
       }
     } catch (ex) {
-      onLog('  ⚠️ $name: $ex');
-    }
-    } finally {
+      onLog('  ⚠️ $absPath: $ex');
       // Release the file lock
       try {
         await lockFile.delete();

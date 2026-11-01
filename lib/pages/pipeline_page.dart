@@ -23,7 +23,7 @@ class PipelinePage extends StatefulWidget {
   State<PipelinePage> createState() => _PipelinePageState();
 }
 
-class _PipelinePageState extends State<PipelinePage> {
+class _PipelinePageState extends State<PipelinePage> with AutomaticKeepAliveClientMixin {
   final _musicLogs = <String>[];
   final _podcastLogs = <String>[];
   final _musicScrollCtrl = ScrollController();
@@ -59,6 +59,9 @@ class _PipelinePageState extends State<PipelinePage> {
     _rebuildStepLabels();
     I18N.instance.addListener(_rebuildStepLabels);
   }
+
+  @override
+  bool get wantKeepAlive => true;
 
   @override
   void dispose() {
@@ -357,6 +360,7 @@ class _PipelinePageState extends State<PipelinePage> {
 
   @override
   Widget build(BuildContext context) {
+    super.build(context);
     final hasLogs = _musicLogs.isNotEmpty || _podcastLogs.isNotEmpty;
 
     return Padding(

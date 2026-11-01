@@ -39,7 +39,27 @@ class PodcastPipeline {
 
   Future<void> _saveCacheAsync(Map<String, Map<String, dynamic>> cache) async {
     try {
-      await File(_cachePath).writeAsString(jsonEncode(cache), flush: true);
+      final lockFile = File('${ConfigService.instance.config.cachePath}\\podcast\\podcast_processed_cache.lock');
+      const maxRetries = 50;
+      const retryDelay = Duration(milliseconds: 100);
+
+      for (int i = 0; i < maxRetries; i++) {
+        if (!await lockFile.exists()) {
+          try {
+            await lockFile.create(recursive: true);
+            break;
+          } catch (_) {}
+        }
+        await Future.delayed(retryDelay);
+      }
+
+      try {
+        await File(_cachePath).writeAsString(jsonEncode(cache), flush: true);
+      } finally {
+        try {
+          await lockFile.delete();
+        } catch (_) {}
+      }
     } catch (_) {}
   }
 
