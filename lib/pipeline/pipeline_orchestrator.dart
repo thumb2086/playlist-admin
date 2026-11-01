@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:ffi';
@@ -14,11 +15,17 @@ import '../services/playlist_parser.dart';
 import '../services/artwork_embedder.dart';
 import '../services/lufs_service.dart';
 import '../services/lyrics_service.dart';
+import '../services/metadata_reader.dart';
 import '../services/rag_service.dart';
 import '../services/youtube_service.dart';
+import '../services/player_controller.dart';
 import '../version.dart';
 
 const int maxPath = 260;
+
+// Pipeline lock removed to allow concurrent pipeline execution.
+// File-level locks (in CoverCache, LufsService, StreamServer, SnapshotManager)
+// ensure thread-safe access to shared resources.
 
 class PipelineOrchestrator {
   final AppConfig config;
@@ -29,23 +36,37 @@ class PipelineOrchestrator {
   /// Decode filesystem path from Big5/CP950 to UTF-8
   /// Windows filesystem stores Chinese filenames in Big5/CP950, but Dart reads as UTF-8
   String _decodeFilePath(String path) {
-    // Use win32 API to get the correct long path name
+    // Strategy: Use GetShortPathName to get the 8.3 short path name (always ASCII),
+    // then use GetLongPathName to get the proper Unicode long path name.
+    // This avoids encoding issues entirely.
     try {
       // Convert to wide string for Windows API
       final pathPtr = path.toNativeUtf16();
-      final buffer = calloc<Uint16>(maxPath);
+
+      // Step 1: Get short path name (8.3, always ASCII)
+      final shortBuffer = calloc<Uint16>(maxPath);
       try {
-        // Get the long path name which will be in the correct encoding
-        // Cast buffer to Pointer<Utf16> for the API call
-        final result = GetLongPathName(pathPtr, buffer.cast<Utf16>(), maxPath);
-        if (result > 0 && result < maxPath) {
-          final decoded = buffer.cast<Utf16>().toDartString(length: result.toInt());
-          free(pathPtr);
-          free(buffer);
-          return decoded;
+        final shortResult = GetShortPathName(pathPtr, shortBuffer.cast<Utf16>(), maxPath);
+        if (shortResult > 0 && shortResult < maxPath) {
+          final shortPath = shortBuffer.cast<Utf16>().toDartString(length: shortResult.toInt());
+
+          // Step 2: Get long path name from short path (proper Unicode)
+          final longBuffer = calloc<Uint16>(maxPath);
+          try {
+            final longResult = GetLongPathName(shortPath.toNativeUtf16(), longBuffer.cast<Utf16>(), maxPath);
+            if (longResult > 0 && longResult < maxPath) {
+              final decoded = longBuffer.cast<Utf16>().toDartString(length: longResult.toInt());
+              free(pathPtr);
+              free(shortBuffer);
+              free(longBuffer);
+              return decoded;
+            }
+          } finally {
+            free(longBuffer);
+          }
         }
       } finally {
-        free(buffer);
+        free(shortBuffer);
         free(pathPtr);
       }
     } catch (_) {
@@ -101,6 +122,7 @@ class PipelineOrchestrator {
   }) : state = state ?? PipelineState();
 
   /// Main entry point - runs the pipeline from a given step
+  /// Concurrency-safe: uses file-level locks for shared resources
   Future<void> run({int fromStep = 0, int? toStep}) async {
     // 比照 Podcast Pipeline：時間戳 + 版本號
     final stamp = DateTime.now().toString().substring(0, 19);
@@ -159,7 +181,7 @@ class PipelineOrchestrator {
 
     // Snapshot: save ALL track names from scraper (not just resolved ones from m3u8).
     // processAll 一次 load+save（舊寫法每首 2 load + 1 save）
-    final removedMap = SnapshotManager.processAll(plResults);
+    final removedMap = await SnapshotManager.processAll(plResults);
     int totalRemoved = 0;
     for (final entry in removedMap.entries) {
       if (entry.value > 0) {
@@ -602,15 +624,31 @@ class PipelineOrchestrator {
         continue;
       }
 
-      // Parse artist - track from filename
+      // Parse artist - track: prefer ID3 tags, fallback to filename
       String artist = '', track = '', album = '';
-      final parts = stem.split(' - ');
-      if (parts.length >= 2) {
-        artist = parts[0].trim();
-        track = parts[1].trim();
-      } else {
-        artist = stem;
-        track = '';
+      try {
+        final meta = await MetadataReader.read(file.path);
+        if (meta.artist != null && meta.artist!.isNotEmpty) {
+          artist = meta.artist!;
+        }
+        if (meta.title != null && meta.title!.isNotEmpty) {
+          track = meta.title!;
+        }
+        if (meta.album != null && meta.album!.isNotEmpty) {
+          album = meta.album!;
+        }
+      } catch (_) {}
+      
+      // Fallback to filename parsing if ID3 tags are missing
+      if (artist.isEmpty || track.isEmpty) {
+        final parts = stem.split(' - ');
+        if (parts.length >= 2) {
+          if (artist.isEmpty) artist = parts[0].trim();
+          if (track.isEmpty) track = parts[1].trim();
+        } else if (artist.isEmpty) {
+          artist = stem;
+          track = '';
+        }
       }
 
       try {
@@ -626,7 +664,27 @@ class PipelineOrchestrator {
           await File(lrcPath).writeAsString(result.plainLyrics!, flush: true);
           success++;
         } else {
-          failed++;
+          // Fallback: try search API when direct fetch fails
+          final searchResults = await LyricsService.instance.search('$artist $track', limit: 3);
+          if (searchResults.isNotEmpty) {
+            final best = searchResults.first;
+            final searchResult = await LyricsService.instance.fetch(
+              best.artist, best.track,
+              album: best.album.isNotEmpty ? best.album : null,
+              durationSec: best.durationSec > 0 ? best.durationSec : null,
+            ).timeout(const Duration(seconds: 15));
+            if (searchResult != null && searchResult.hasSynced) {
+              await File(lrcPath).writeAsString(searchResult.syncedLyrics!, flush: true);
+              success++;
+            } else if (searchResult != null && searchResult.hasPlain) {
+              await File(lrcPath).writeAsString(searchResult.plainLyrics!, flush: true);
+              success++;
+            } else {
+              failed++;
+            }
+          } else {
+            failed++;
+          }
         }
       } catch (e) {
         failed++;

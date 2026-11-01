@@ -2,11 +2,11 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import '../app.dart';
+import '../pages/lyrics_page.dart';
 import '../services/config_service.dart';
 import '../services/player_controller.dart';
 import 'dark_theme.dart';
 import 'queue_panel.dart';
-import '../pages/lyrics_page.dart';
 
 /// Spotube-style persistent bottom player bar: cover + title/artist +
 /// seek bar + controls (shuffle/prev/play/next/repeat) + volume + queue.
@@ -251,13 +251,12 @@ class _PlayerBarState extends State<PlayerBar> {
           icon: const Icon(Icons.lyrics_rounded, size: 18),
           onPressed: _ctrl.title.isEmpty
               ? null
-              : () => Navigator.of(context).push(MaterialPageRoute(
-                  builder: (_) => LyricsPage(
+              : () => MainShell.showDetail(LyricsPage(
                     artist: _ctrl.artist,
                     track: _ctrl.title,
                     album: _ctrl.album.isEmpty ? null : _ctrl.album,
                     durationSec: _ctrl.duration.inSeconds,
-                  ))),
+                  )),
           tooltip: '歌詞',
           padding: EdgeInsets.zero,
           constraints: const BoxConstraints(minWidth: 28),
@@ -415,13 +414,11 @@ class _TrackDetailSheetState extends State<_TrackDetailSheet> {
               IconButton(
                 onPressed: () {
                   Navigator.of(context).pop();
-                  Navigator.of(context).push(MaterialPageRoute(
-                    builder: (_) => LyricsPage(
-                      artist: c.artist,
-                      track: c.title,
-                      album: c.album.isEmpty ? null : c.album,
-                      durationSec: c.duration.inSeconds,
-                    ),
+                  MainShell.showDetail(LyricsPage(
+                    artist: c.artist,
+                    track: c.title,
+                    album: c.album.isEmpty ? null : c.album,
+                    durationSec: c.duration.inSeconds,
                   ));
                 },
                 icon: const Icon(Icons.lyrics_rounded, size: 18),

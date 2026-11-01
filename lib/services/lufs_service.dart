@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'config_service.dart';
+import '../services/player_controller.dart';
 
 class LufsService {
   static final LufsService _instance = LufsService._();
@@ -10,20 +12,22 @@ class LufsService {
   String get _cacheDir => ConfigService.instance.config.basePath;
   String _cacheFile(String fmt) => '$_cacheDir\\${fmt}_lufs_cache.json';
 
-  Map<String, double> _load(String fmt) {
-    try {
-      final f = File(_cacheFile(fmt));
-      if (!f.existsSync()) return {};
-      final json = jsonDecode(f.readAsStringSync()) as Map<String, dynamic>;
-      final result = <String, double>{};
-      for (final e in json.entries) {
-        // Normalize cache keys: resolve ../ or ..\\ in paths.
-        final key = e.key.replaceAll('\\', '/').contains('..')
-            ? _normalizeCacheKey(e.key) : e.key;
-        result[key] = (e.value as num).toDouble();
-      }
-      return result;
-    } catch (_) { return {}; }
+  Future<Map<String, double>> _load(String fmt) async {
+    return _withCacheLock(fmt, () async {
+      try {
+        final f = File(_cacheFile(fmt));
+        if (!f.existsSync()) return {};
+        final json = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
+        final result = <String, double>{};
+        for (final e in json.entries) {
+          // Normalize cache keys: resolve ../ or ..\\ in paths.
+          final key = e.key.replaceAll('\\', '/').contains('..')
+              ? _normalizeCacheKey(e.key) : e.key;
+          result[key] = (e.value as num).toDouble();
+        }
+        return result;
+      } catch (_) { return {}; }
+    });
   }
 
   static String _normalizeCacheKey(String path) {
@@ -33,14 +37,41 @@ class LufsService {
     } catch (_) { return path; }
   }
 
-  void _save(String fmt, Map<String, double> cache) {
+  /// Simple file-based lock for cache operations
+  Future<T> _withCacheLock<T>(String fmt, Future<T> Function() action) async {
+    final lockFile = File('$_cacheDir\\${fmt}_lufs_cache.lock');
+    const maxRetries = 50;
+    const retryDelay = Duration(milliseconds: 100);
+
+    for (int i = 0; i < maxRetries; i++) {
+      if (!await lockFile.exists()) {
+        try {
+          await lockFile.create(recursive: true);
+          break;
+        } catch (_) {}
+      }
+      await Future.delayed(retryDelay);
+    }
+
     try {
-      File(_cacheFile(fmt)).writeAsStringSync(
-        jsonEncode(cache), flush: true);
-    } catch (_) {}
+      return await action();
+    } finally {
+      try {
+        await lockFile.delete();
+      } catch (_) {}
+    }
   }
 
-  int cachedCount(String fmt) => _load(fmt).length;
+  Future<void> _save(String fmt, Map<String, double> cache) async {
+    // Use lock for thread-safe cache writes
+    await _withCacheLock(fmt, () async {
+      try {
+        await File(_cacheFile(fmt)).writeAsString(jsonEncode(cache), flush: true);
+      } catch (_) {}
+    });
+  }
+
+  Future<int> cachedCount(String fmt) async => (await _load(fmt)).length;
 
   String? _ffmpegPath;
 
@@ -145,13 +176,30 @@ class LufsService {
     }
     onLog('歌單內共 ${playlistFiles.length} 個 MP3');
 
-    final cache = _load('mp3');
+    final cache = await _load('mp3');
     const target = -14.0;
 
     // Determine which files actually need normalization (uncached or deviating)
     final needsNormalize = <String>[];
     int skipCount = 0;
+
+    // Get currently playing file path to skip it
+    String? playingPath;
+    try {
+      final pc = PlayerController.instance;
+      if (pc.hasTrack && pc.isPlaying) {
+        playingPath = pc.currentPlayingPath;
+      }
+    } catch (_) {}
+
     for (final path in playlistFiles) {
+      // Skip currently playing file to avoid corruption
+      if (playingPath != null && path == playingPath) {
+        onLog('⚠️ 跳過正在播放的檔案: $path');
+        skipCount++;
+        continue;
+      }
+
       final cached = cache[path];
       if (cached != null && (cached - target).abs() <= tolerance) {
         skipCount++;
@@ -185,13 +233,13 @@ class LufsService {
       onProgress?.call(done, total);
 
       if (done - lastSave >= 10) {
-        _save('mp3', cache);
+        await _save('mp3', cache);
         lastSave = done;
         onLog('  進度: $done/$total');
       }
     }
 
-    _save('mp3', cache);
+    await _save('mp3', cache);
     if (isCancelled?.call() ?? false) {
       onLog('LUFS 已取消（已處理 $done 檔）');
     } else {
@@ -200,11 +248,45 @@ class LufsService {
   }
 
   /// Run loudnorm normalization in one pass and capture input LUFS from stderr.
+  /// Uses a per-file lock to prevent concurrent normalization of the same file.
   Future<void> _normalizeOne(String absPath, String ffmpeg, double target,
       Map<String, double> cache, void Function(String) onLog,
       {bool Function()? isCancelled}) async {
-    final file = File(absPath);
-    if (!await file.exists()) return;
+    // Check if file is currently playing
+    final pc = PlayerController.instance;
+    if (pc.hasTrack && pc.isPlaying) {
+      final playingPath = pc.currentPlayingPath;
+      if (playingPath != null && playingPath == absPath) {
+        onLog('  ⚠️ 跳過正在播放的檔案: $absPath');
+        return;
+      }
+    }
+
+    final lockFile = File('$absPath.lock');
+    // Try to acquire file lock
+    const maxRetries = 30;
+    const retryDelay = Duration(milliseconds: 100);
+    for (int i = 0; i < maxRetries; i++) {
+      if (!await lockFile.exists()) {
+        try {
+          await lockFile.create(recursive: true);
+          break;
+        } catch (_) {}
+      }
+      // If file exists, check if it's stale (older than 5 minutes)
+      try {
+        final stat = await lockFile.stat();
+        if (DateTime.now().difference(stat.modified).inMinutes > 5) {
+          await lockFile.delete();
+          continue;
+        }
+      } catch (_) {}
+      await Future.delayed(retryDelay);
+    }
+
+    try {
+      final file = File(absPath);
+      if (!await file.exists()) return;
 
     // Skip 0-byte files (corrupt/failed output) instead of failing every run.
     try {
@@ -251,6 +333,12 @@ class LufsService {
     } catch (ex) {
       onLog('  ⚠️ $name: $ex');
     }
+    } finally {
+      // Release the file lock
+      try {
+        await lockFile.delete();
+      } catch (_) {}
+    }
   }
 
   /// Run a process while polling for cancellation; returns null if cancelled.
@@ -281,7 +369,7 @@ class LufsService {
   /// normalizes playlist MP3s.
   Future<void> cacheConversionLufs(String m4aPath, String mp3Path,
       {bool Function()? isCancelled}) async {
-    final m4aCache = _load('m4a');
+    final m4aCache = await _load('m4a');
     if (!m4aCache.containsKey(m4aPath)) {
       await _measureOne(m4aPath, m4aCache, (v) { m4aCache[m4aPath] = v; },
           isCancelled: isCancelled);
@@ -291,8 +379,8 @@ class LufsService {
 
   /// Cache the M4A LUFS value already measured by loudnorm during conversion.
   /// No extra ffmpeg scan. Falls back to a full measurement if null.
-  void cacheConversionLufsFast(String m4aPath, String mp3Path, double? lufs) {
-    final m4aCache = _load('m4a');
+  void cacheConversionLufsFast(String m4aPath, String mp3Path, double? lufs) async {
+    final m4aCache = await _load('m4a');
     if (!m4aCache.containsKey(m4aPath) && lufs != null) {
       m4aCache[m4aPath] = lufs;
       _save('m4a', m4aCache);
@@ -313,7 +401,7 @@ class LufsService {
     final lib = ConfigService.instance.config.libraryPath;
     if (lib.isEmpty) { onLog('Library path not configured'); return; }
 
-    final cache = _load(fmt);
+    final cache = await _load(fmt);
     final allFiles = <String>[];
     final libDir = Directory(lib);
     if (!await libDir.exists()) { onLog('Library not found: $lib'); return; }
@@ -395,7 +483,7 @@ class LufsService {
     final lib = ConfigService.instance.config.libraryPath;
     if (lib.isEmpty) { onLog('Library path not configured'); return; }
 
-    final cache = _load('mp3');
+    final cache = await _load('mp3');
     if (cache.isEmpty) { onLog('MP3 LUFS 快取為空，跳過 normalize'); return; }
 
     const target = -14.0;

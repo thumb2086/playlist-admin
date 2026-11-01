@@ -1,0 +1,63 @@
+Future<void> _normalizeOne(String absPath, String ffmpeg, double target,
+      Map<String, double> cache, void Function(String) onLog,
+      {bool Function()? isCancelled}) async {
+    // Check if file is currently playing
+    final pc = PlayerController.instance;
+    if (pc.hasTrack && pc.isPlaying) {
+      final playingPath = pc.currentPlayingPath;
+      if (playingPath != null && playingPath == absPath) {
+        onLog('  ⚠️ 跳過正在播放的檔案: $absPath');
+        return;
+      }
+    }
+
+    final lockFile = File('$absPath.lock');
+    // Try to acquire file lock
+    const maxRetries = 30;
+    const retryDelay = Duration(milliseconds: 100);
+    for (int i = 0; i < maxRetries; i++) {
+      if (!await lockFile.exists()) {
+        try {
+          await lockFile.create(recursive: true);
+          break;
+        } catch (_) {}
+      }
+      // If file exists, check if it's stale (older than 5 minutes)
+      try {
+        final stat = await lockFile.stat();
+        if (DateTime.now().difference(stat.modified).inMinutes > 5) {
+          await lockFile.delete();
+          continue;
+        }
+      } catch (_) {}
+      await Future.delayed(retryDelay);
+    }
+
+    try {
+      final file = File(absPath);
+      if (!await file.exists()) return;
+
+    // Skip 0-byte files (corrupt/failed output) instead of failing every run.
+    try {
+      if (await file.length() == 0) {
+        onLog('  ⚠️ 跳過 0-byte 空檔（未計入快取，需重新轉檔）: $absPath');
+        return;
+      }
+    } catch (_) {}
+
+    final base = absPath.substring(0, absPath.lastIndexOf('.'));
+    final tmp = '${base}_tmp.mp3';
+    final name = absPath.split(Platform.pathSeparator).last;
+
+    try {
+      final proc = await Process.start(ffmpeg, [
+        '-y', '-i', absPath,
+        '-vn',
+        '-af', 'loudnorm=I=$target:TP=-1:LRA=7',
+        '-c:a', 'libmp3lame', '-q:a', '2', tmp,
+      ]);
+
+      final result = await _runWithCancel(proc, isCancelled);
+      if (result == null) return; // cancelled
+
+      if (result.exitCode != 0 || !await 

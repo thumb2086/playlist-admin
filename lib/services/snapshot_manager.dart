@@ -8,6 +8,33 @@ class SnapshotManager {
   static String get _cachePath =>
       '${ConfigService.instance.config.basePath}\\$_cacheFile';
 
+  static File _lockFile() {
+    return File('${ConfigService.instance.config.basePath}\\snapshot_cache.lock');
+  }
+
+  static Future<T> _withLock<T>(File lockFile, Future<T> Function() action) async {
+    const maxRetries = 50;
+    const retryDelay = Duration(milliseconds: 100);
+
+    for (int i = 0; i < maxRetries; i++) {
+      if (!await lockFile.exists()) {
+        try {
+          await lockFile.create(recursive: true);
+          break;
+        } catch (_) {}
+      }
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+
+    try {
+      return await action();
+    } finally {
+      try {
+        await lockFile.delete();
+      } catch (_) {}
+    }
+  }
+
   static Map<String, dynamic> _loadCache() {
     try {
       final f = File(_cachePath);
@@ -49,8 +76,6 @@ class SnapshotManager {
   }
 
   static int appendRemovedSongs(List<String> removedTracks) {
-    // Removed songs are tracked in snapshot_cache.json via updateSnapshot.
-    // No separate m3u8 file needed — it would duplicate _Unsorted.m3u8.
     if (removedTracks.isEmpty) return 0;
     return removedTracks.length;
   }
@@ -65,36 +90,38 @@ class SnapshotManager {
     return count;
   }
 
-  /// 批次版：N 個歌單只 load+save 一次。原本每歌單 2 load + 1 save 全檔 IO。
-  /// 回傳 [playlistName] → removed count。
-  static Map<String, int> processAll(Map<String, List<String>> playlists) {
+  static Future<Map<String, int>> processAll(Map<String, List<String>> playlists) async {
     final result = <String, int>{};
     if (playlists.isEmpty) return result;
-    final cache = _loadCache();
-    final all = cache['playlists'] as Map<String, dynamic>;
-    for (final entry in playlists.entries) {
-      final name = entry.key;
-      // 濾掉空白歌名：Spotify 偶爾給沒有標題的項目（實測「Kpop 排行榜
-      // 2026」有 1 首）。留著會一路流到下載階段，讓 yt-dlp 收到
-      // "ytsearch1" 空查詢 → 回 "Unsupported url scheme: ytsearch1"。
-      final raw = entry.value;
-      final current = raw.where((t) => t.trim().isNotEmpty).toSet().toList();
-      int count = 0;
-      try {
-        final old = all[name];
-        if (old != null) {
-          final oldTracks = (old['tracks'] as List<dynamic>?)?.cast<String>() ?? [];
-          final removed = oldTracks.toSet().difference(current.toSet());
-          count = removed.length;
-        }
-        all[name] = {
-          'tracks': current,
-          'last_updated': DateTime.now().toIso8601String(),
-        };
-      } catch (_) {}
-      result[name] = count;
-    }
-    _saveCache(cache);
-    return result;
+
+    return _withLock(File('${ConfigService.instance.config.basePath}\\snapshot_cache.lock'), () async {
+      final result = <String, int>{};
+      if (playlists.isEmpty) return result;
+      final cache = _loadCache();
+      final all = cache['playlists'] as Map<String, dynamic>;
+      for (final entry in playlists.entries) {
+        final name = entry.key;
+        final raw = entry.value;
+        final current = raw.where((t) => t.trim().isNotEmpty).toSet().toList();
+        int count = 0;
+        try {
+          final old = all[name];
+          if (old != null) {
+            final oldTracks = (old['tracks'] as List<dynamic>?)?.cast<String>() ?? [];
+            final removed = oldTracks.toSet().difference(current.toSet());
+            count = removed.length;
+          }
+          all[name] = {
+            'tracks': current,
+            'last_updated': DateTime.now().toIso8601String(),
+          };
+        } catch (_) {}
+        result[name] = count;
+      }
+      _saveCache(cache);
+      return result;
+    });
   }
+
+  
 }

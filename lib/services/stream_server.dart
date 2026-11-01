@@ -11,6 +11,34 @@ class StreamServer {
   static StreamServer get instance => _instance ??= StreamServer._();
   StreamServer._();
 
+  /// Simple file-based lock mechanism
+  static Future<T> _withLock<T>(File lockFile, Future<T> Function() action) async {
+    const maxRetries = 50;
+    const retryDelay = Duration(milliseconds: 100);
+
+    for (int i = 0; i < maxRetries; i++) {
+      if (!await lockFile.exists()) {
+        try {
+          await lockFile.create(recursive: true);
+          break;
+        } catch (_) {}
+      }
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+
+    try {
+      return await action();
+    } finally {
+      try {
+        await lockFile.delete();
+      } catch (_) {}
+    }
+  }
+
+  static File _lockFile() {
+    return File('$_cacheDir\\stream_index.lock');
+  }
+
   HttpServer? _server;
   int _port = 0;
   bool _started = false;
@@ -54,23 +82,27 @@ class StreamServer {
   }
 
   void _loadIndex() {
-    try {
-      final f = File(_indexPath);
-      if (!f.existsSync()) return;
-      final data = jsonDecode(f.readAsStringSync()) as Map<String, dynamic>;
-      for (final e in data.entries) {
-        final p = e.value as String;
-        if (File(p).existsSync()) _cacheIndex[e.key] = p;
-      }
-    } catch (_) {}
+    _withLock(_lockFile(), () async {
+      try {
+        final f = File(_indexPath);
+        if (!f.existsSync()) return;
+        final data = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
+        for (final e in data.entries) {
+          final p = e.value as String;
+          if (File(p).existsSync()) _cacheIndex[e.key] = p;
+        }
+      } catch (_) {}
+    });
   }
 
   void _saveIndex() {
-    try {
-      final f = File(_indexPath);
-      f.createSync(recursive: true);
-      f.writeAsStringSync(jsonEncode(_cacheIndex));
-    } catch (_) {}
+    _withLock(_lockFile(), () async {
+      try {
+        final f = File(_indexPath);
+        f.createSync(recursive: true);
+        await f.writeAsString(jsonEncode(_cacheIndex));
+      } catch (_) {}
+    });
   }
 
   String? cachedPathFor(String query) => _cacheIndex[query];

@@ -5,6 +5,7 @@ import '../services/player_controller.dart';
 import '../widgets/dark_theme.dart';
 
 /// 歌詞頁面：同步 LRC 滾動 + 非同步歌詞。
+/// 設計為側邊欄詳細視圖（Detail Widget），不使用 Scaffold/AppBar。
 class LyricsPage extends StatefulWidget {
   final String artist;
   final String track;
@@ -88,37 +89,63 @@ class _LyricsPageState extends State<LyricsPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.bg,
-      appBar: AppBar(
-        title: Text('${widget.track} - ${widget.artist}',
-            style: const TextStyle(fontSize: 14)),
-        backgroundColor: AppColors.surface,
-        foregroundColor: AppColors.text,
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _buildContent(),
-    );
+    return _buildContent();
   }
 
   Widget _buildContent() {
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
     if (_result == null || !_result!.hasAny) {
-      return const Center(
+      return Center(
         child: Padding(
-          padding: EdgeInsets.all(24),
+          padding: const EdgeInsets.all(24),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             Icon(Icons.lyrics_outlined, size: 48, color: AppColors.textMuted),
-            SizedBox(height: 12),
+            const SizedBox(height: 12),
             Text('找不到歌詞', style: TextStyle(color: AppColors.textMuted, fontSize: 14)),
           ]),
         ),
       );
     }
 
-    if (_syncedLines.isNotEmpty) return _buildSyncedLyrics();
-    return _buildPlainLyrics();
+    return Column(
+      children: [
+        // 標題列（取代 AppBar）
+        Container(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+          decoration: const BoxDecoration(
+            color: AppColors.surface,
+            border: Border(bottom: BorderSide(color: AppColors.border, width: 1)),
+          ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '${widget.track} - ${widget.artist}',
+                  style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (widget.album != null && widget.album!.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(left: 8),
+                  child: Text(
+                    widget.album!,
+                    style: const TextStyle(fontSize: 12, color: AppColors.textMuted),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+            ],
+          ),
+        ),
+        // 歌詞內容
+        Expanded(child: _buildContent()),
+      ],
+    );
   }
+
+  
 
   Widget _buildSyncedLyrics() {
     return ListView.builder(

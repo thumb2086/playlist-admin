@@ -1,6 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:ffi';
 import 'package:media_kit/media_kit.dart';
+import 'package:win32/win32.dart';
+import 'package:ffi/ffi.dart';
 import 'models/config_model.dart';
 import 'version.dart';
 import 'services/config_service.dart';
@@ -17,6 +21,68 @@ import 'services/stream_server.dart';
 import 'pipeline/pipeline_orchestrator.dart';
 import 'pipeline/podcast_pipeline.dart';
 import 'models/pipeline_step.dart';
+
+const int maxPath = 260;
+
+/// Decode filesystem path from Big5/CP950 to UTF-8
+/// Windows filesystem stores Chinese filenames in Big5/CP950, but Dart reads as UTF-8
+String _decodeFilePath(String path) {
+  // Use win32 API to get the correct long path name
+  try {
+    // Convert to wide string for Windows API
+    final pathPtr = path.toNativeUtf16();
+    final buffer = calloc<Uint16>(maxPath);
+    try {
+      // Get the long path name which will be in the correct encoding
+      final result = GetLongPathName(pathPtr, buffer.cast<Utf16>(), maxPath);
+      if (result > 0 && result < maxPath) {
+        final decoded = buffer.cast<Utf16>().toDartString(length: result.toInt());
+        free(pathPtr);
+        free(buffer);
+        return decoded;
+      }
+    } finally {
+      free(buffer);
+      free(pathPtr);
+    }
+  } catch (_) {
+    // Fallback: try to decode as Big5/CP950 manually
+    try {
+      return _decodeBig5(path.codeUnits);
+    } catch (_) {
+      return path;
+    }
+  }
+  return path;
+}
+
+/// Decode bytes as Big5/CP950 encoded text
+String _decodeBig5(List<int> bytes) {
+  final buffer = StringBuffer();
+  for (int i = 0; i < bytes.length; i++) {
+    final byte = bytes[i];
+    if (byte < 0x80) {
+      buffer.writeCharCode(byte);
+    } else if (i + 1 < bytes.length) {
+      final high = byte;
+      final low = bytes[i + 1];
+      final code = (high << 8) | low;
+      try {
+        final bytes2 = [high, low];
+        const Utf8Decoder().convert(latin1.encode(
+          String.fromCharCodes(bytes2)
+        ));
+        buffer.writeCharCode(code > 0x8080 ? code : bytes[i]);
+        i++; // Skip next byte
+      } catch (_) {
+        buffer.writeCharCode(bytes[i]);
+      }
+    } else {
+      buffer.writeCharCode(byte);
+    }
+  }
+  return buffer.toString();
+}
 
 // Shared CLI engine — used by the Flutter app binary itself (main.dart
 // dispatches CLI args here) and by `playlist-admin` (npm wrapper spawning
@@ -247,7 +313,8 @@ Downloaded: ${cfg.lastUpdated.length}''');
       final files = <File>[];
       await for (final e in libDir.list(recursive: true, followLinks: false)) {
         if (e is File && (e.path.toLowerCase().endsWith('.mp3') || e.path.toLowerCase().endsWith('.flac') || e.path.toLowerCase().endsWith('.m4a'))) {
-          files.add(e);
+          // Fix encoding: Windows file system uses Big5/CP950, decode to UTF-8
+          files.add(File(_decodeFilePath(e.path)));
         }
       }
 

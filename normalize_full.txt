@@ -1,0 +1,282 @@
+Future<void> _normalizeOne(String absPath, String ffmpeg, double target,
+      Map<String, double> cache, void Function(String) onLog,
+      {bool Function()? isCancelled}) async {
+    // Check if file is currently playing
+    final pc = PlayerController.instance;
+    if (pc.hasTrack && pc.isPlaying) {
+      final playingPath = pc.currentPlayingPath;
+      if (playingPath != null && playingPath == absPath) {
+        onLog('  ⚠️ 跳過正在播放的檔案: $absPath');
+        return;
+      }
+    }
+
+    final lockFile = File('$absPath.lock');
+    // Try to acquire file lock
+    const maxRetries = 30;
+    const retryDelay = Duration(milliseconds: 100);
+    for (int i = 0; i < maxRetries; i++) {
+      if (!await lockFile.exists()) {
+        try {
+          await lockFile.create(recursive: true);
+          break;
+        } catch (_) {}
+      }
+      // If file exists, check if it's stale (older than 5 minutes)
+      try {
+        final stat = await lockFile.stat();
+        if (DateTime.now().difference(stat.modified).inMinutes > 5) {
+          await lockFile.delete();
+          continue;
+        }
+      } catch (_) {}
+      await Future.delayed(retryDelay);
+    }
+
+    try {
+      final file = File(absPath);
+      if (!await file.exists()) return;
+
+    // Skip 0-byte files (corrupt/failed output) instead of failing every run.
+    try {
+      if (await file.length() == 0) {
+        onLog('  ⚠️ 跳過 0-byte 空檔（未計入快取，需重新轉檔）: $absPath');
+        return;
+      }
+    } catch (_) {}
+
+    final base = absPath.substring(0, absPath.lastIndexOf('.'));
+    final tmp = '${base}_tmp.mp3';
+    final name = absPath.split(Platform.pathSeparator).last;
+
+    try {
+      final proc = await Process.start(ffmpeg, [
+        '-y', '-i', absPath,
+        '-vn',
+        '-af', 'loudnorm=I=$target:TP=-1:LRA=7',
+        '-c:a', 'libmp3lame', '-q:a', '2', tmp,
+      ]);
+
+      final result = await _runWithCancel(proc, isCancelled);
+      if (result == null) return; // cancelled
+
+      if (result.exitCode != 0 || !await File(tmp).exists()) {
+        onLog('  ❌ $name normalize 失敗');
+        return;
+      }
+
+      // Parse input LUFS from stderr: "Input Integrated:    -15.2 LUFS"
+      double inputLufs = target;
+      final stderr = result.stderr as String? ?? '';
+      final inputMatch = RegExp(r'Input Integrated:\s+([-\d.]+)').firstMatch(stderr);
+      if (inputMatch != null) {
+        inputLufs = double.tryParse(inputMatch.group(1)!) ?? target;
+      }
+
+      await File(tmp).rename(absPath);
+      cache[absPath] = target;
+
+      if ((inputLufs - target).abs() > 0.1) {
+        onLog('  ✅ $name  (${inputLufs.toStringAsFixed(1)} → $target)');
+      }
+    } catch (ex) {
+      onLog('  ⚠️ $name: $ex');
+    }
+  }
+
+  /// Run a process while polling for cancellation; returns null if cancelled.
+  Future<ProcessResult?> _runWithCancel(Process proc, bool Function()? isCancelled) async {
+    final stderrBuf = <int>[];
+    final outBuf = <int>[];
+    proc.stderr.listen(stderrBuf.addAll);
+    proc.stdout.listen(outBuf.addAll);
+    while (true) {
+      if (isCancelled?.call() ?? false) {
+        proc.kill(ProcessSignal.sigkill);
+        return null;
+      }
+      final exited = await proc.exitCode.timeout(
+        const Duration(milliseconds: 250),
+        onTimeout: () => -1,
+      );
+      if (exited != -1) {
+        return ProcessResult(proc.pid, exited,
+            String.fromCharCodes(outBuf), String.fromCharCodes(stderrBuf));
+      }
+    }
+  }
+
+  /// Measure and cache an M4A file's LUFS.
+  /// MP3 cache is intentionally NOT written here: conversion already applies
+  /// loudnorm to -14, and Step 6 (Measure LUFS) records real values when it
+  /// normalizes playlist MP3s.
+  Future<void> cacheConversionLufs(String m4aPath, String mp3Path,
+      {bool Function()? isCancelled}) async {
+    final m4aCache = await _load('m4a');
+    if (!m4aCache.containsKey(m4aPath)) {
+      await _measureOne(m4aPath, m4aCache, (v) { m4aCache[m4aPath] = v; },
+          isCancelled: isCancelled);
+      _save('m4a', m4aCache);
+    }
+  }
+
+  /// Cache the M4A LUFS value already measured by loudnorm during conversion.
+  /// No extra ffmpeg scan. Falls back to a full measurement if null.
+  void cacheConversionLufsFast(String m4aPath, String mp3Path, double? lufs) async {
+    final m4aCache = await _load('m4a');
+    if (!m4aCache.containsKey(m4aPath) && lufs != null) {
+      m4aCache[m4aPath] = lufs;
+      _save('m4a', m4aCache);
+    }
+  }
+
+  /// Delete the mp3 LUFS cache to force a fresh measurement.
+  void clearMp3Cache() {
+    try { File(_cacheFile('mp3')).deleteSync(); } catch (_) {}
+  }
+
+  /// Legacy: measure all files of given format (for completeness).
+  Future<void> measureFormat(String fmt, {
+    required void Function(String log) onLog,
+    void Function(int done, int total)? onProgress,
+    int concurrency = 8,
+  }) async {
+    final lib = ConfigService.instance.config.libraryPath;
+    if (lib.isEmpty) { onLog('Library path not configured'); return; }
+
+    final cache = await _load(fmt);
+    final allFiles = <String>[];
+    final libDir = Directory(lib);
+    if (!await libDir.exists()) { onLog('Library not found: $lib'); return; }
+
+    await for (final e in libDir.list(recursive: true, followLinks: false)) {
+      if (e is File && e.path.toLowerCase().endsWith('.$fmt')) {
+        allFiles.add(e.path);
+      }
+    }
+
+    final toMeasure = allFiles.where((f) => !cache.containsKey(f)).toList();
+    if (toMeasure.isEmpty) {
+      onLog('[$fmt] 所有 ${allFiles.length} 個檔案已快取');
+      return;
+    }
+    onLog('[$fmt] ${allFiles.length} 個檔案，${cache.length} 已快取，需測量 ${toMeasure.length}');
+
+    int done = 0;
+    int total = toMeasure.length;
+    int lastSave = 0;
+
+    for (int i = 0; i < total; i += concurrency) {
+      final batch = toMeasure.skip(i).take(concurrency).toList();
+      final futures = <Future<void>>[];
+      for (final path in batch) {
+        futures.add(_measureOne(path, cache, (v) { cache[path] = v; }));
+      }
+      await Future.wait(futures);
+      done += batch.length;
+      onProgress?.call(done, total);
+
+      if (done - lastSave >= 25) {
+        _save(fmt, cache);
+        lastSave = done;
+      }
+    }
+
+    _save(fmt, cache);
+    onLog('[$fmt] 測量完成，共 ${cache.length} 個檔案');
+  }
+
+  Future<void> _measureOne(String path, Map<String, double> cache,
+      void Function(double) onResult, {bool Function()? isCancelled}) async {
+    final ffmpeg = await _resolveFfmpeg();
+    try {
+      final proc = await Process.start(ffmpeg, [
+        '-i', path,
+        '-af', 'loudnorm=print_format=json',
+        '-f', 'null', '-', '-hide_banner', '-y',
+      ]);
+      final result = await _runWithCancel(proc, isCancelled);
+      if (result == null) { onResult(-14.0); return; }
+      if (result.exitCode != 0) { onResult(-14.0); return; }
+
+      final stderr = result.stderr as String? ?? '';
+      final jsonStart = stderr.lastIndexOf('{');
+      if (jsonStart >= 0) {
+        try {
+          final data = jsonDecode(stderr.substring(jsonStart)) as Map<String, dynamic>;
+          final inputI = data['input_i'];
+          if (inputI != null) {
+            onResult((inputI as num).toDouble());
+            return;
+          }
+        } catch (_) {}
+      }
+      onResult(-14.0);
+    } catch (_) {
+      onResult(-14.0);
+    }
+  }
+
+  /// Legacy: normalize all MP3s (for completeness).
+  Future<void> normalizeMp3({
+    required void Function(String log) onLog,
+    void Function(int done, int total)? onProgress,
+    double tolerance = 2.0,
+  }) async {
+    final lib = ConfigService.instance.config.libraryPath;
+    if (lib.isEmpty) { onLog('Library path not configured'); return; }
+
+    final cache = await _load('mp3');
+    if (cache.isEmpty) { onLog('MP3 LUFS 快取為空，跳過 normalize'); return; }
+
+    const target = -14.0;
+    final toNormalize = <String, double>{};
+    for (final e in cache.entries) {
+      if ((e.value - target).abs() > tolerance) {
+        toNormalize[e.key] = e.value;
+      }
+    }
+
+    if (toNormalize.isEmpty) {
+      onLog('所有 MP3 已在 $target±$tolerance LUFS 範圍內');
+      return;
+    }
+
+    onLog('Normalize ${toNormalize.length} 個偏離 $target 的 MP3...');
+    final ffmpeg = await _resolveFfmpeg();
+    int done = 0;
+    int total = toNormalize.length;
+
+    for (final e in toNormalize.entries) {
+      final absPath = e.key;
+      if (!await File(absPath).exists()) continue;
+
+      final base = absPath.substring(0, absPath.lastIndexOf('.'));
+      final tmp = '${base}_tmp.mp3';
+
+      try {
+        final result = await Process.run(ffmpeg, [
+          '-y', '-i', absPath,
+          '-af', 'loudnorm=I=$target:TP=-1:LRA=7',
+          '-c:a', 'libmp3lame', '-q:a', '2', tmp,
+        ]);
+        if (result.exitCode == 0 && await File(tmp).exists()) {
+          await File(tmp).rename(absPath);
+          cache[absPath] = target;
+          onLog('  ✅ ${absPath.split('\\').last}  (${e.value.toStringAsFixed(1)} → $target)');
+        } else {
+          onLog('  ❌ ${absPath.split('\\').last} normalize 失敗');
+        }
+      } catch (ex) {
+        onLog('  ⚠️ ${absPath.split('\\').last}: $ex');
+      }
+
+      done++;
+      onProgress?.call(done, total);
+      if (done % 10 == 0) _save('mp3', cache);
+    }
+
+    _save('mp3', cache);
+    onLog('Normalize 完成，已處理 $done 個檔案');
+  }
+}

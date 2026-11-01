@@ -12,55 +12,88 @@ class CoverCache {
     if (isrc != null && isrc.isNotEmpty) {
       return 'isrc:${isrc.toLowerCase()}';
     }
-    return 't:${norm('$name - $artist')}';
+    return 't:${norm("$name - $artist")}';
   }
 
   /// 正規化：小寫，只留英數 + CJK（檔名 sanitizer 換掉的標點兩邊一起消掉）。
   static String norm(String s) => s.toLowerCase().replaceAll(
       RegExp(r'[^a-z0-9\u4e00-\u9fff\u3400-\u4dbf㐀-䶿豈-﫿]'), '');
 
-  static Future<Map<String, dynamic>> load() async {
-    if (_mem != null) return _mem!;
-    try {
-      final f = File('${ConfigService.instance.config.spotifyCachePath}'
-          '${Platform.pathSeparator}cover_cache.json');
-      if (await f.exists()) {
-        _mem = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
-        // 一次性遷移：舊 key `isrc:大寫` 改小寫（key() 已統一小寫，
-        // 不遷則舊條目永遠 miss、白白重抓一次 GQL）。
-        var dirty = false;
-        for (final k in _mem!.keys.toList()) {
-          if (k.startsWith('isrc:') && k != k.toLowerCase()) {
-            if (!_mem!.containsKey(k.toLowerCase())) {
-              _mem![k.toLowerCase()] = _mem![k];
-            }
-            _mem!.remove(k);
-            dirty = true;
-          }
-        }
-        if (dirty) {
-          try {
-            await f.writeAsString(jsonEncode(_mem));
-          } catch (_) {}
-        }
-        return _mem!;
+  /// 簡單檔案鎖機制
+  static Future<T> _withLock<T>(File lockFile, Future<T> Function() action) async {
+    const maxRetries = 50;
+    const retryDelay = Duration(milliseconds: 100);
+
+    for (int i = 0; i < maxRetries; i++) {
+      if (!await lockFile.exists()) {
+        try {
+          await lockFile.create(recursive: true);
+          break;
+        } catch (_) {}
       }
-    } catch (_) {}
-    _mem = {};
-    return _mem!;
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+
+    try {
+      return await action();
+    } finally {
+      try {
+        await lockFile.delete();
+      } catch (_) {}
+    }
+  }
+
+  static File _lockFile() {
+    return File('${ConfigService.instance.config.spotifyCachePath}'
+        '${Platform.pathSeparator}cover_cache.lock');
+  }
+
+  static Future<Map<String, dynamic>> load() async {
+    return _withLock(_lockFile(), () async {
+      if (_mem != null) return _mem!;
+      try {
+        final f = File('${ConfigService.instance.config.spotifyCachePath}'
+            '${Platform.pathSeparator}cover_cache.json');
+        if (await f.exists()) {
+          _mem = jsonDecode(await f.readAsString()) as Map<String, dynamic>;
+          // 一次性遷移：舊 key `isrc:大寫` 改小寫（key() 已統一小寫，
+          // 不遷則舊條目永遠 miss、白白重抓一次 GQL）。
+          var dirty = false;
+          for (final k in _mem!.keys.toList()) {
+            if (k.startsWith('isrc:') && k != k.toLowerCase()) {
+              if (!_mem!.containsKey(k.toLowerCase())) {
+                _mem![k.toLowerCase()] = _mem![k];
+              }
+              _mem!.remove(k);
+              dirty = true;
+            }
+          }
+          if (dirty) {
+            try {
+              await f.writeAsString(jsonEncode(_mem));
+            } catch (_) {}
+          }
+          return _mem!;
+        }
+      } catch (_) {}
+      _mem = {};
+      return _mem!;
+    });
   }
 
   /// 清掉記憶體快取（不動磁碟）。切換 app 語言時呼叫：
-/// Spotify 回的 artist/專輯名語言跟著變，不清的話沿用舊譯名。
-static void invalidate() => _mem = null;
+  /// Spotify 回的 artist/專輯名語言跟著變，不清的話沿用舊譯名。
+  static void invalidate() => _mem = null;
 
-static Future<void> save(Map<String, dynamic> cache) async {
-    _mem = cache;
-    try {
-      final dir = Directory(ConfigService.instance.config.spotifyCachePath);
-      await dir.create(recursive: true);
-      await File('${dir.path}${Platform.pathSeparator}cover_cache.json')
-          .writeAsString(jsonEncode(cache));
-    } catch (_) {}
+  static Future<void> save(Map<String, dynamic> cache) async {
+    return _withLock(_lockFile(), () async {
+      _mem = cache;
+      try {
+        final dir = Directory(ConfigService.instance.config.spotifyCachePath);
+        await dir.create(recursive: true);
+        await File('${dir.path}${Platform.pathSeparator}cover_cache.json')
+            .writeAsString(jsonEncode(cache));
+      } catch (_) {}
+    });
   }
 }

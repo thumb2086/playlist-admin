@@ -134,6 +134,12 @@ class PlayerController {
   bool get hasTrack => _index >= 0 && _index < _queue.length;
   String get statusText => _statusText;
   DateTime? get sleepEndsAt => _sleepEndsAt;
+
+  /// Get the currently playing file path, or null if none.
+  String? get currentPlayingPath {
+    if (!hasTrack || _index < 0 || _index >= _queue.length) return null;
+    return _queue[_index];
+  }
   String get sleepRemainingText {
     final end = _sleepEndsAt;
     if (end == null) return '';
@@ -782,10 +788,17 @@ class PlayerController {
   Future<String?> _findLocalTrack(String query) async {
     await _ensureStemIndex();
     final lower = query.toLowerCase();
+    // Exact match first
     final hit = _localStemIndex[lower];
     if (hit != null) return hit;
+    // Then try exact stem match (query contains stem or vice versa, but only if both are substantial)
     for (final e in _localStemIndex.entries) {
-      if (e.key.contains(lower) || lower.contains(e.key)) return e.value;
+      if (e.key == lower) return e.value;
+    }
+    // Fallback to contains only if no exact match found
+    for (final e in _localStemIndex.entries) {
+      if (e.key.contains(lower) && e.key.length <= lower.length + 5) return e.value;
+      if (lower.contains(e.key) && lower.length <= e.key.length + 5) return e.value;
     }
     return null;
   }
