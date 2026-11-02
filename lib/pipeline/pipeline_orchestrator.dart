@@ -147,24 +147,49 @@ class PipelineOrchestrator {
     final end = (toStep ?? steps.length - 1).clamp(start, steps.length - 1);
     final selectedSteps = steps.sublist(start, end + 1);
 
-    // 執行選定的步驟
+    // 執行選定的步驟。
+    // onProgress 語意（v2.15.98 曾把三個參數弄反 → GUI 拿到 stepIndex 當
+    // stepIndex 之外的值 → RangeError 灰畫面，這裡改回正確順序）：
+    //   current = 全域進度 0..100, total = 100, stepIndex = 目前步驟索引
+    final totalWeight =
+        selectedSteps.fold<double>(0, (sum, s) => sum + s.$2);
+    double doneWeight = 0;
+    void report(int stepIndex, double progress) {
+      if (totalWeight <= 0) {
+        onProgress(progress.clamp(0, 100).toInt(), 100, stepIndex);
+      } else {
+        onProgress(
+            ((progress / totalWeight) * 100).clamp(0, 100).toInt(), 100, stepIndex);
+      }
+    }
+
     for (int i = 0; i < selectedSteps.length; i++) {
+      if (state.isCancelled) break;
+      await state.waitIfPaused();
       if (state.isCancelled) break;
       final stepIndex = start + i;
       final (name, weight, fn) = selectedSteps[i];
       onLog('=== [$stepIndex] $name ===');
+      report(stepIndex, doneWeight);
       try {
-        await fn((p) => onProgress(
-              stepIndex,
-              steps.length,
-              (p * weight / 100).toInt(),
-            ));
+        await fn((p) {
+          if (state.isCancelled) return;
+          report(stepIndex, doneWeight + p / 100.0 * weight);
+        });
       } catch (e) {
         onLog('Step $stepIndex ($name) failed: $e');
         rethrow;
+      } finally {
+        doneWeight += weight;
       }
+      report(stepIndex, doneWeight);
     }
-    onLog('Pipeline completed.');
+    if (state.isCancelled) {
+      onLog('Pipeline cancelled.');
+    } else {
+      onProgress(100, 100, (start + selectedSteps.length - 1).clamp(0, steps.length - 1));
+      onLog('Pipeline completed.');
+    }
   }
 
   /// 步驟 1：抓取 Spotify 播放清單

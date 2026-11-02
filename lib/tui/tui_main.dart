@@ -418,8 +418,8 @@ class PipelineRunScreen extends TuiScreen {
         _logPanel.scrollToBottom();
         app.screenManager.render();
       },
-      onProgress: (current, total, stepProgress) {
-        _status = 'Step ${current + 1}/$total (${stepProgress}%)';
+      onProgress: (progress, total, stepIndex) {
+        _status = 'Step ${stepIndex + 1} ($progress%)';
         app.screenManager.render();
       },
       state: app.pipelineState,

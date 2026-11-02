@@ -87,6 +87,10 @@ class _PipelinePageState extends State<PipelinePage> with AutomaticKeepAliveClie
     });
   }
 
+  /// 安全取步驟名稱：stepIndex 超出範圍時回退（避免任何來源的越界炸掉整頁）。
+  String _stepLabel(int i) =>
+      (i >= 0 && i < _stepLabels.length) ? _stepLabels[i] : '—';
+
   void _musicLog(String msg) {
     _musicPending.add(msg);
     _scheduleLogFlush();
@@ -469,7 +473,7 @@ _PButton(t('pipeline.run_prune'), Icons.cleaning_services, () => _run(fromStep: 
                       ),
                       const SizedBox(height: 8),
                       Row(children: [
-                        Text('${_stepLabels[_musicStep]}  (${(_musicProgress * 100).toStringAsFixed(0)}%)',
+                        Text('${_stepLabel(_musicStep)}  (${(_musicProgress * 100).toStringAsFixed(0)}%)',
                             style: const TextStyle(color: AppColors.textSecondary, fontSize: 12)),
                         const Spacer(),
                         if (_musicRunning)
