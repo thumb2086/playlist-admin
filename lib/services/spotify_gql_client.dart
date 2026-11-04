@@ -422,7 +422,7 @@ class SpotifyTrackItem {
         final coverArt = item['coverArt'] as Map<String, dynamic>?;
         String? cover;
         if (album != null) {
-          cover = SpotifyTrackItem.coverFromSources(album['coverArt']?['sources']);
+          cover = SpotifyTrackItem.coverFromSources(album['coverArt']['sources']);
         } else if (coverArt != null) {
           cover = SpotifyTrackItem.coverFromSources(coverArt['sources']);
         }
@@ -465,7 +465,7 @@ class SpotifyTrackItem {
         final artists = SpotifyTrackItem.parseArtists(track['artists']);
         final duration = SpotifyTrackItem.trackDurationMs(track);
         final cover = album != null
-            ? SpotifyTrackItem.coverFromSources(album['coverArt']?['sources'])
+            ? SpotifyTrackItem.coverFromSources(album['coverArt']['sources'])
             : null;
         final isrc = (track['isrc'] as String?)?.trim();
         out.add(SpotifyTrackItem(
@@ -557,7 +557,7 @@ class SpotifyAlbumItem {
         if (name.isEmpty) continue;
         final uri = (album['uri'] ?? '') as String;
         final artists = _parseArtists(album['artists']);
-        final cover = _coverFromSources(album['coverArt']?['sources']);
+        final cover = _coverFromSources(album['coverArt']['sources']);
         out.add(SpotifyAlbumItem(
           uri: uri,
           name: name,
@@ -614,6 +614,127 @@ class SpotifyArtistItem {
           cover = pick?['url'] as String?;
         }
         out.add(SpotifyArtistItem(uri: uri, name: name, coverUrl: cover));
+      }
+    } catch (_) {}
+    return out;
+  }
+}
+
+/// Podcast 節?��?show）�??��?（episode）�?尋�??��?
+class SpotifyPodcastShowItem {
+  final String uri;
+  final String name;
+  final String publisher;
+  final String? coverUrl;
+
+  SpotifyPodcastShowItem({
+    required this.uri,
+    required this.name,
+    required this.publisher,
+    this.coverUrl,
+  });
+
+  static String? _cover(dynamic raw) {
+    if (raw is! List || raw.isEmpty) return null;
+    Map<String, dynamic>? pick;
+    for (final s in raw) {
+      if (s is Map<String, dynamic>) {
+        if (pick == null || (s['width'] as int? ?? 0) > (pick['width'] as int? ?? 0)) {
+          pick = s;
+        }
+      }
+    }
+    return pick?['url'] as String?;
+  }
+
+  static List<SpotifyPodcastShowItem> parsePodcastShows(Map<String, dynamic> data) {
+    final out = <SpotifyPodcastShowItem>[];
+    try {
+      final search = (data['data'] as Map?)?['searchV2'] as Map<String, dynamic>?;
+      final p = search?['podcasts'] as Map<String, dynamic>?;
+      final items = p?['items'] as List<dynamic>? ?? [];
+      for (final it in items) {
+        final raw = (it as Map<String, dynamic>)['item'] as Map<String, dynamic>?;
+        if (raw == null) continue;
+        final show = raw['data'] is Map<String, dynamic>
+            ? raw['data'] as Map<String, dynamic>
+            : raw;
+        final name = (show['name'] ?? '').toString().trim();
+        if (name.isEmpty) continue;
+        final uri = (show['uri'] ?? '') as String;
+        final publisher = show['publisher'] is Map ? (show['publisher'] as Map)['name'] ?? '' : '';
+        final cover = _cover(show['coverArt']['sources']);
+        out.add(SpotifyPodcastShowItem(
+          uri: uri,
+          name: name,
+          publisher: publisher.toString(),
+          coverUrl: cover,
+        ));
+      }
+    } catch (_) {}
+    return out;
+  }
+}
+
+class SpotifyPodcastEpisodeItem {
+  final String uri;
+  final String name;
+  final String showName;
+  final int durationMs;
+  final String? coverUrl;
+
+  SpotifyPodcastEpisodeItem({
+    required this.uri,
+    required this.name,
+    required this.showName,
+    required this.durationMs,
+    this.coverUrl,
+  });
+
+  static List<SpotifyPodcastEpisodeItem> parsePodcastEpisodes(Map<String, dynamic> data) {
+    final out = <SpotifyPodcastEpisodeItem>[];
+    try {
+      final search = (data['data'] as Map?)?['searchV2'] as Map<String, dynamic>?;
+      final e = search?['episodes'] as Map<String, dynamic>?;
+      final items = e?['items'] as List<dynamic>? ?? [];
+      for (final it in items) {
+        final raw = (it as Map<String, dynamic>)['item'] as Map<String, dynamic>?;
+        if (raw == null) continue;
+        final ep = raw['data'] is Map<String, dynamic>
+            ? raw['data'] as Map<String, dynamic>
+            : raw;
+        final name = (ep['name'] ?? '').toString().trim();
+        if (name.isEmpty) continue;
+        final uri = (ep['uri'] ?? '') as String;
+        final dur = (ep['duration'] as Map?)?['totalMilliseconds'] as int? ?? 0;
+        final coverSrc = ep['coverArt']['sources'];
+        String? cover;
+        if (coverSrc is List && coverSrc.isNotEmpty) {
+          Map<String, dynamic>? pick;
+          for (final s in coverSrc) {
+            if (s is Map<String, dynamic>) {
+              if (pick == null || (s['width'] as int? ?? 0) > (pick['width'] as int? ?? 0)) {
+                pick = s;
+              }
+            }
+          }
+          cover = pick?['url'] as String?;
+        }
+        String showName = '';
+        final pv2 = ep['podcastV2'];
+        if (pv2 is Map) {
+          final d = pv2['data'];
+          if (d is Map) {
+            showName = (d['name'] ?? '').toString();
+          }
+        }
+        out.add(SpotifyPodcastEpisodeItem(
+          uri: uri,
+          name: name,
+          showName: showName,
+          durationMs: dur,
+          coverUrl: cover,
+        ));
       }
     } catch (_) {}
     return out;

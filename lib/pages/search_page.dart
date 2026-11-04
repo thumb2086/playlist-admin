@@ -24,7 +24,9 @@ class _SearchPageState extends State<SearchPage> {
   List<SpotifyTrackItem> _tracks = [];
   List<SpotifyAlbumItem> _albums = [];
   List<SpotifyArtistItem> _artists = [];
-  String _filter = 'all'; // all / tracks / albums / artists
+  List<SpotifyPodcastShowItem> _podcastShows = [];
+  List<SpotifyPodcastEpisodeItem> _podcastEpisodes = [];
+  String _filter = 'all'; // all / tracks / albums / artists / podcasts
   bool _searching = false;
   String _error = '';
   // 本地索引：stem → 路徑。原本 _findLocal 在 itemBuilder 每列都
@@ -80,7 +82,7 @@ class _SearchPageState extends State<SearchPage> {
     _debounce?.cancel();
     final q = _searchCtrl.text.trim();
     if (q.isEmpty) {
-      setState(() { _tracks = []; _albums = []; _artists = []; });
+      setState(() { _tracks = []; _albums = []; _artists = []; _podcastShows = []; _podcastEpisodes = []; });
       return;
     }
     _debounce = Timer(const Duration(milliseconds: 350), () => _search(q));
@@ -97,10 +99,14 @@ class _SearchPageState extends State<SearchPage> {
       final tracks = SpotifyTrackItem.parseSearchTracks(data);
       final albums = SpotifyAlbumItem.parseSearchAlbums(data);
       final artists = SpotifyArtistItem.parseSearchArtists(data);
+      final podcastShows = SpotifyPodcastShowItem.parsePodcastShows(data);
+      final podcastEpisodes = SpotifyPodcastEpisodeItem.parsePodcastEpisodes(data);
       if (mounted) setState(() {
         _tracks = tracks;
         _albums = albums;
         _artists = artists;
+        _podcastShows = podcastShows;
+        _podcastEpisodes = podcastEpisodes;
         _searching = false;
       });
     } catch (e) {
@@ -245,7 +251,7 @@ class _SearchPageState extends State<SearchPage> {
                 SingleChildScrollView(
                   scrollDirection: Axis.horizontal,
                   child: Row(children: [
-                    for (final f in const [('all', '全部'), ('tracks', '歌曲'), ('albums', '專輯'), ('artists', '藝人')])
+                    for (final f in const [('all', '全部'), ('tracks', '歌曲'), ('albums', '專輯'), ('artists', '藝人'), ('podcasts', 'Podcast')])
                       Padding(
                         padding: const EdgeInsets.only(right: 6),
                         child: ChoiceChip(
@@ -270,6 +276,17 @@ class _SearchPageState extends State<SearchPage> {
             void _searchByName(String name) {
     _searchCtrl.text = name;
     _search(name);
+  }
+
+  void _openSpotify(String uri) {
+    final id = uri.split(':').last;
+    String type = 'track';
+    if (uri.startsWith('spotify:show:')) type = 'show';
+    if (uri.startsWith('spotify:episode:')) type = 'episode';
+    if (uri.startsWith('spotify:album:')) type = 'album';
+    if (uri.startsWith('spotify:artist:')) type = 'artist';
+    final url = 'https://open.spotify.com/$type/$id';
+    try { Process.run('cmd', ['/c', 'start', '', url]); } catch (_) {}
   }
 
   Widget _buildSearchResults() {
@@ -327,6 +344,57 @@ class _SearchPageState extends State<SearchPage> {
             onTap: () => _searchByName(a.name),
           );
         },
+      );
+    }
+    if (_filter == 'podcasts') {
+      if (_podcastShows.isEmpty && _podcastEpisodes.isEmpty) {
+        return const Center(child: Text('無 Podcast 結果', style: TextStyle(color: AppColors.textMuted)));
+      }
+      return ListView(
+        children: [
+          if (_podcastShows.isNotEmpty) ..._podcastShows.map((s) => ListTile(
+            dense: true,
+            leading: ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: s.coverUrl != null
+                  ? CachedNetworkImage(imageUrl: s.coverUrl!, width: 40, height: 40, fit: BoxFit.cover,
+                      placeholder: (_, __) => Container(width: 40, height: 40, color: AppColors.surfaceLight),
+                      errorWidget: (_, __, ___) => Container(width: 40, height: 40, color: AppColors.surfaceLight,
+                          child: const Icon(Icons.podcasts_rounded, size: 18, color: AppColors.textMuted)))
+                  : Container(width: 40, height: 40, color: AppColors.surfaceLight,
+                      child: const Icon(Icons.podcasts_rounded, size: 18, color: AppColors.textMuted)),
+            ),
+            title: Text(s.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)),
+            subtitle: Text(s.publisher, maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 10, color: AppColors.textMuted)),
+            trailing: const Icon(Icons.open_in_new_rounded, size: 16, color: AppColors.textMuted),
+            onTap: () => _openSpotify(s.uri),
+          )),
+          if (_podcastEpisodes.isNotEmpty) ...[
+            const Padding(
+              padding: EdgeInsets.fromLTRB(4, 8, 4, 4),
+              child: Text('單集', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.textMuted)),
+            ),
+            ..._podcastEpisodes.map((e) => ListTile(
+              dense: true,
+              leading: ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: e.coverUrl != null
+                    ? CachedNetworkImage(imageUrl: e.coverUrl!, width: 40, height: 40, fit: BoxFit.cover,
+                        placeholder: (_, __) => Container(width: 40, height: 40, color: AppColors.surfaceLight),
+                        errorWidget: (_, __, ___) => Container(width: 40, height: 40, color: AppColors.surfaceLight,
+                            child: const Icon(Icons.mic_rounded, size: 18, color: AppColors.textMuted)))
+                    : Container(width: 40, height: 40, color: AppColors.surfaceLight,
+                        child: const Icon(Icons.mic_rounded, size: 18, color: AppColors.textMuted)),
+              ),
+              title: Text(e.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)),
+              subtitle: Text('${e.showName}${e.durationMs > 0 ? '  ·  ${(e.durationMs ~/ 60000)} 分鐘' : ''}',
+                  maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 10, color: AppColors.textMuted)),
+              trailing: const Icon(Icons.open_in_new_rounded, size: 16, color: AppColors.textMuted),
+              onTap: () => _openSpotify(e.uri),
+            )),
+          ],
+        ],
       );
     }
     if (_tracks.isEmpty) {
