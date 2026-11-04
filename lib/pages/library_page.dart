@@ -25,6 +25,8 @@ class LibraryPageState extends State<LibraryPage> {
   bool _organizing = false;
   final _urlCtrl = TextEditingController();
   Map<String, _PlStats> _stats = {};
+  List<PlaylistConfig> _playlists = [];
+  String _sourceFilter = 'all'; // all / spotify / local
   bool _loading = false;
   int _refreshVersion = 0;
   Timer? _refreshDebounce;
@@ -154,7 +156,25 @@ class LibraryPageState extends State<LibraryPage> {
       }
     }
     if (version != _refreshVersion) return;
-    if (mounted) setState(() { _stats = stats; _loading = false; });
+    // 合併 Spotify 訂閱（remote）與本機 m3u8（local-only），加來源標記
+    final remoteNames = cfg.urlNames.values.map((n) => n.toLowerCase()).toSet();
+    final combined = <PlaylistConfig>[];
+    for (final e in cfg.urlNames.entries) {
+      combined.add(PlaylistConfig(url: e.key, name: e.value));
+    }
+    final localNames = <String>[];
+    if (await plDir.exists()) {
+      await for (final e in plDir.list()) {
+        if (e is File && e.path.toLowerCase().endsWith('.m3u8')) {
+          final base = File(e.path).uri.pathSegments.last.replaceAll('.m3u8', '');
+          if (PlaylistParser.isInternalPlaylist(base + '.m3u8')) continue;
+          if (!remoteNames.contains(base.toLowerCase())) localNames.add(base);
+        }
+      }
+    }
+    for (final n in localNames) combined.add(PlaylistConfig(url: '', name: n));
+
+    if (mounted) setState(() { _stats = stats; _playlists = combined; _loading = false; });
     HistoryRecorder.record().ignore();
   }
 
@@ -264,7 +284,11 @@ class LibraryPageState extends State<LibraryPage> {
   Widget build(BuildContext context) {
     final isMobile =
         !kIsWeb && (Platform.isAndroid || Platform.isIOS);
-    final playlists = ConfigService.instance.config.playlists;
+    final playlists = _playlists.where((p) {
+      if (_sourceFilter == 'spotify') return p.url.isNotEmpty;
+      if (_sourceFilter == 'local') return p.url.isEmpty;
+      return true;
+    }).toList();
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
       child: Column(
@@ -338,6 +362,22 @@ class LibraryPageState extends State<LibraryPage> {
             ),
           ),
           const SizedBox(height: 16),
+          // 來源篩選：全部 / Spotify / 本機
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(children: [
+              for (final f in const [('all', '全部'), ('spotify', 'Spotify'), ('local', '本機')])
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: ChoiceChip(
+                    label: Text(f.$2, style: const TextStyle(fontSize: 12)),
+                    selected: _sourceFilter == f.$1,
+                    onSelected: (_) => setState(() => _sourceFilter = f.$1),
+                  ),
+                ),
+            ]),
+          ),
+          const SizedBox(height: 12),
           // Stats bar
           _buildStatsBar(playlists),
           const SizedBox(height: 14),
@@ -469,6 +509,21 @@ class _PlaylistCard extends StatelessWidget {
                         size: 20,
                       ),
                     ),
+                     if (playlist.url.isEmpty) ...[
+                       const SizedBox(width: 4),
+                       Container(
+                         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                         decoration: BoxDecoration(color: AppColors.surfaceLight, borderRadius: BorderRadius.circular(6)),
+                         child: const Text('本機', style: TextStyle(fontSize: 9, color: AppColors.textMuted)),
+                       ),
+                     ] else ...[
+                       const SizedBox(width: 4),
+                       Container(
+                         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                         decoration: BoxDecoration(color: AppColors.accent.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(6)),
+                         child: const Text('Spotify', style: TextStyle(fontSize: 9, color: AppColors.accent)),
+                       ),
+                     ],
                     const Spacer(),
                     InkWell(
                       onTap: onRemove,
