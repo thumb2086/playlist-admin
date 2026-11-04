@@ -34,6 +34,11 @@ jobs:
           mkdir -p assets/skills
           cp -r .opencode/skills/* assets/skills/
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
       - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
