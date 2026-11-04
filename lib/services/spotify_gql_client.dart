@@ -304,6 +304,17 @@ class SpotifyTrackItem {
     return item;
   }
 
+  /// 搜尋結果項目可能是 {item: {data}}（tracks）或直接 {data}（albums/artists/podcasts），
+  /// 統一解包成實際 payload map。
+  static Map<String, dynamic>? unwrapSearchItem(dynamic raw) {
+    if (raw is! Map) return null;
+    final data = raw['data'];
+    if (data is Map<String, dynamic>) return data;
+    final item = raw['item'];
+    if (item is Map) return unwrapSearchItem(item);
+    return null;
+  }
+
   /// 時長毫秒：新 key 是 duration，舊是 trackDuration，兩邊都讀。
   static int trackDurationMs(Map<String, dynamic> track) {
     for (final key in const ['trackDuration', 'duration']) {
@@ -548,11 +559,8 @@ class SpotifyAlbumItem {
       final albums = search?['albumsV2'] as Map<String, dynamic>?;
       final items = albums?['items'] as List<dynamic>? ?? [];
       for (final it in items) {
-        final raw = (it as Map<String, dynamic>)['item'] as Map<String, dynamic>?;
-        if (raw == null) continue;
-        final album = raw['data'] is Map<String, dynamic>
-            ? raw['data'] as Map<String, dynamic>
-            : raw;
+        final album = SpotifyTrackItem.unwrapSearchItem(it);
+        if (album == null) continue;
         final name = (album['name'] ?? '').toString().trim();
         if (name.isEmpty) continue;
         final uri = (album['uri'] ?? '') as String;
@@ -589,11 +597,8 @@ class SpotifyArtistItem {
       final artists = search?['artists'] as Map<String, dynamic>?;
       final items = artists?['items'] as List<dynamic>? ?? [];
       for (final it in items) {
-        final raw = (it as Map<String, dynamic>)['item'] as Map<String, dynamic>?;
-        if (raw == null) continue;
-        final ar = raw['data'] is Map<String, dynamic>
-            ? raw['data'] as Map<String, dynamic>
-            : raw;
+        final ar = SpotifyTrackItem.unwrapSearchItem(it);
+        if (ar == null) continue;
         final profile = ar['profile'] is Map ? ar['profile'] as Map<String, dynamic> : null;
         final name = (profile?['name'] ?? ar['name'] ?? '').toString().trim();
         if (name.isEmpty) continue;
@@ -654,11 +659,8 @@ class SpotifyPodcastShowItem {
       final p = search?['podcasts'] as Map<String, dynamic>?;
       final items = p?['items'] as List<dynamic>? ?? [];
       for (final it in items) {
-        final raw = (it as Map<String, dynamic>)['item'] as Map<String, dynamic>?;
-        if (raw == null) continue;
-        final show = raw['data'] is Map<String, dynamic>
-            ? raw['data'] as Map<String, dynamic>
-            : raw;
+        final show = SpotifyTrackItem.unwrapSearchItem(it);
+        if (show == null) continue;
         final name = (show['name'] ?? '').toString().trim();
         if (name.isEmpty) continue;
         final uri = (show['uri'] ?? '') as String;
@@ -698,11 +700,8 @@ class SpotifyPodcastEpisodeItem {
       final e = search?['episodes'] as Map<String, dynamic>?;
       final items = e?['items'] as List<dynamic>? ?? [];
       for (final it in items) {
-        final raw = (it as Map<String, dynamic>)['item'] as Map<String, dynamic>?;
-        if (raw == null) continue;
-        final ep = raw['data'] is Map<String, dynamic>
-            ? raw['data'] as Map<String, dynamic>
-            : raw;
+        final ep = SpotifyTrackItem.unwrapSearchItem(it);
+        if (ep == null) continue;
         final name = (ep['name'] ?? '').toString().trim();
         if (name.isEmpty) continue;
         final uri = (ep['uri'] ?? '') as String;
