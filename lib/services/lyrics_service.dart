@@ -2,6 +2,9 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:logger/logger.dart';
 
+import '../plugins/providers/lyrics_provider.dart';
+import '../plugins/providers/lyrics_provider_registry.dart';
+
 final _log = Logger(printer: PrettyPrinter(methodCount: 0));
 
 /// LRCLib.net 歌詞服務：同步 LRC + 非同步歌詞。
@@ -21,57 +24,24 @@ class LyricsService {
     }
   }
 
-  /// 取得歌詞。優先同步 LRC，再非同步。
-    Future<LyricsResult?> fetch(String artist, String track, {String? album, int? durationSec}) async {
+  /// 取得歌詞。依 LyricsProviderRegistry 註冊的供應商優先順序嘗試，
+  /// 第一個回傳有歌詞的 provider 即返回（Spotube 風格的 lyrics provider chain）。
+  Future<LyricsResult?> fetch(String artist, String track, {String? album, int? durationSec}) async {
     final key = '$artist:$track'.toLowerCase();
     if (_cache.containsKey(key)) return _cache[key];
 
-    for (int attempt = 0; attempt <= 3; attempt++) {
+    final reg = LyricsProviderRegistry.instance;
+    if (reg.all.isEmpty) reg.register(LrclibLyricsProvider());
+
+    for (final provider in reg.enabledSorted) {
       try {
-        final params = {
-          'artist_name': artist,
-          'track_name': track,
-        };
-        if (album != null && album.isNotEmpty) params['album_name'] = album;
-        if (durationSec != null && durationSec > 0) params['duration'] = '$durationSec';
-
-        final uri = Uri.https('lrclib.net', '/api/get', params);
-        final resp = await http.get(uri).timeout(const Duration(seconds: 15));
-
-        if (resp.statusCode == 200) {
-          final data = jsonDecode(resp.body);
-          final result = LyricsResult(
-            artist: data['artistName'] as String? ?? artist,
-            track: data['trackName'] as String? ?? track,
-            album: data['albumName'] as String? ?? album ?? '',
-            syncedLyrics: data['syncedLyrics'] as String?,
-            plainLyrics: data['plainLyrics'] as String?,
-            durationSec: data['duration'] as int? ?? durationSec ?? 0,
-          );
-
+        final result = await provider.fetch(artist, track, album: album, durationSec: durationSec);
+        if (result != null && result.hasAny) {
           _cachePut(key, result);
-          _log.i('LRCLib 歌词: $artist - $track '
-              '(LRC: ${result.syncedLyrics != null ? "${result.syncedLyrics!.length}c" : "??"}'
-              ', plain: ${result.plainLyrics != null ? "${result.plainLyrics!.length}c" : "??"})');
+          _log.i('Lyrics via ${provider.id}: $artist - $track');
           return result;
-        } else if (resp.statusCode == 503) {
-          // Server overloaded, retry with exponential backoff
-          if (attempt < 3) {
-            final delay = Duration(seconds: 2 * (1 << attempt)); // 2s, 4s, 8s
-            _log.w('LRCLib 503 for $artist - $track, retrying in ${delay.inSeconds}s (attempt ${attempt + 1}/3)');
-            await Future.delayed(Duration(seconds: 2 * (1 << attempt)));
-            continue;
-          }
-          _log.w('LRCLib 503 for $artist - $track, max retries exceeded');
-          return null;
-        } else {
-          _log.i('LRCLib 无法查询 $artist - $track (${resp.statusCode})');
-          return null;
         }
-      } catch (e) {
-        _log.e('LRCLib 失败: $e');
-        return null;
-      }
+      } catch (_) {}
     }
     return null;
   }
