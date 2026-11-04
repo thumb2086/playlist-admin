@@ -70,7 +70,7 @@ class SpotifyGqlClient {
       'includeArtistHasConcertsField': false,
       'includePreReleases': true,
       'includeLocalConcertsField': false,
-      'includeAuthors': false,
+      'includeAuthors': true,
     });
   }
 
@@ -85,7 +85,7 @@ class SpotifyGqlClient {
       'includePreReleases': false,
       'numberOfTopResults': 20,
       'includeAudiobooks': true,
-      'includeAuthors': false,
+      'includeAuthors': true,
     });
   }
 
@@ -498,5 +498,124 @@ class SpotifyTrackItem {
       }
     } catch (_) {}
     return null;
+  }
+}
+/// 專輯命中：搜尋回應 albumsV2 區的包裝。
+class SpotifyAlbumItem {
+  final String uri;
+  final String name;
+  final List<String> artists;
+  final String? coverUrl;
+
+  SpotifyAlbumItem({
+    required this.uri,
+    required this.name,
+    required this.artists,
+    this.coverUrl,
+  });
+
+  static String? _coverFromSources(dynamic srcs) {
+    if (srcs is! List || srcs.isEmpty) return null;
+    Map<String, dynamic>? pick;
+    for (final s in srcs) {
+      if (s is Map<String, dynamic>) {
+        if (pick == null || (s['width'] as int? ?? 0) > (pick['width'] as int? ?? 0)) {
+          pick = s;
+        }
+      }
+    }
+    return pick?['url'] as String?;
+  }
+
+  static List<String> _parseArtists(dynamic raw) {
+    if (raw is List) {
+      return raw
+          .map((a) => (a is Map ? ((a['profile'] as Map?)?['name'] ?? '') : '').toString())
+          .where((s) => s.trim().isNotEmpty)
+          .toList();
+    }
+    if (raw is Map) {
+      final nested = raw['items'];
+      if (nested is List) return _parseArtists(nested);
+    }
+    return [];
+  }
+
+  static List<SpotifyAlbumItem> parseSearchAlbums(Map<String, dynamic> data) {
+    final out = <SpotifyAlbumItem>[];
+    try {
+      final search = (data['data'] as Map?)?['searchV2'] as Map<String, dynamic>?;
+      final albums = search?['albumsV2'] as Map<String, dynamic>?;
+      final items = albums?['items'] as List<dynamic>? ?? [];
+      for (final it in items) {
+        final raw = (it as Map<String, dynamic>)['item'] as Map<String, dynamic>?;
+        if (raw == null) continue;
+        final album = raw['data'] is Map<String, dynamic>
+            ? raw['data'] as Map<String, dynamic>
+            : raw;
+        final name = (album['name'] ?? '').toString().trim();
+        if (name.isEmpty) continue;
+        final uri = (album['uri'] ?? '') as String;
+        final artists = _parseArtists(album['artists']);
+        final cover = _coverFromSources(album['coverArt']?['sources']);
+        out.add(SpotifyAlbumItem(
+          uri: uri,
+          name: name,
+          artists: artists,
+          coverUrl: cover,
+        ));
+      }
+    } catch (_) {}
+    return out;
+  }
+}
+
+/// 藝人命中：搜尋回應 artists 區的包裝。
+class SpotifyArtistItem {
+  final String uri;
+  final String name;
+  final String? coverUrl;
+
+  SpotifyArtistItem({
+    required this.uri,
+    required this.name,
+    this.coverUrl,
+  });
+
+  static List<SpotifyArtistItem> parseSearchArtists(Map<String, dynamic> data) {
+    final out = <SpotifyArtistItem>[];
+    try {
+      final search = (data['data'] as Map?)?['searchV2'] as Map<String, dynamic>?;
+      final artists = search?['artists'] as Map<String, dynamic>?;
+      final items = artists?['items'] as List<dynamic>? ?? [];
+      for (final it in items) {
+        final raw = (it as Map<String, dynamic>)['item'] as Map<String, dynamic>?;
+        if (raw == null) continue;
+        final ar = raw['data'] is Map<String, dynamic>
+            ? raw['data'] as Map<String, dynamic>
+            : raw;
+        final profile = ar['profile'] is Map ? ar['profile'] as Map<String, dynamic> : null;
+        final name = (profile?['name'] ?? ar['name'] ?? '').toString().trim();
+        if (name.isEmpty) continue;
+        final uri = (ar['uri'] ?? '') as String;
+        String? cover;
+        final visuals = ar['visuals'] is Map ? ar['visuals'] as Map<String, dynamic> : null;
+        final avatar = visuals?['avatarImage'] as Map<String, dynamic>?;
+        final sources = avatar?['sources'] as List<dynamic>?;
+        if (sources != null && sources.isNotEmpty) {
+          Map<String, dynamic>? pick;
+          for (final s in sources) {
+            if (s is Map<String, dynamic>) {
+              if (pick == null || (s['width'] as int? ?? 0) > (pick['width'] as int? ?? 0)) {
+                pick = s;
+              }
+            }
+          }
+          cover = pick?['url'] as String?;
+        }
+        out.add(SpotifyArtistItem(uri: uri, name: name, coverUrl: cover));
+      }
+    } catch (_) {}
+    return out;
   }
 }

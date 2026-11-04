@@ -22,6 +22,9 @@ class _SearchPageState extends State<SearchPage> {
   Timer? _debounce;
   int _searchGen = 0;
   List<SpotifyTrackItem> _tracks = [];
+  List<SpotifyAlbumItem> _albums = [];
+  List<SpotifyArtistItem> _artists = [];
+  String _filter = 'all'; // all / tracks / albums / artists
   bool _searching = false;
   String _error = '';
   // 本地索引：stem → 路徑。原本 _findLocal 在 itemBuilder 每列都
@@ -77,7 +80,7 @@ class _SearchPageState extends State<SearchPage> {
     _debounce?.cancel();
     final q = _searchCtrl.text.trim();
     if (q.isEmpty) {
-      setState(() => _tracks = []);
+      setState(() { _tracks = []; _albums = []; _artists = []; });
       return;
     }
     _debounce = Timer(const Duration(milliseconds: 350), () => _search(q));
@@ -91,16 +94,18 @@ class _SearchPageState extends State<SearchPage> {
       final data = await _gql.searchTracks(query, limit: 25);
       // 慢回應先到會覆蓋新結果：世代不符直接丟棄。
       if (!mounted || gen != _searchGen) return;
-      final tracks = _parseTracks(data);
-      if (mounted) setState(() { _tracks = tracks; _searching = false; });
+      final tracks = SpotifyTrackItem.parseSearchTracks(data);
+      final albums = SpotifyAlbumItem.parseSearchAlbums(data);
+      final artists = SpotifyArtistItem.parseSearchArtists(data);
+      if (mounted) setState(() {
+        _tracks = tracks;
+        _albums = albums;
+        _artists = artists;
+        _searching = false;
+      });
     } catch (e) {
       if (mounted && gen == _searchGen) setState(() { _searching = false; _error = '$e'; });
     }
-  }
-
-  List<SpotifyTrackItem> _parseTracks(Map<String, dynamic> data) {
-    // 實作已收攏至 SpotifyTrackItem.parseSearchTracks（單一真相源）。
-    return SpotifyTrackItem.parseSearchTracks(data);
   }
 
   /// Rebuild the local stem→path index (async, once per search/page open).
@@ -230,60 +235,146 @@ class _SearchPageState extends State<SearchPage> {
             const Expanded(child: Center(child: CircularProgressIndicator()))
           else if (_error.isNotEmpty)
             Expanded(child: Center(child: Text('搜尋失敗: $_error', style: const TextStyle(color: AppColors.error))))
-          else if (_tracks.isEmpty)
+          else if (_tracks.isEmpty && _albums.isEmpty && _artists.isEmpty)
             const Expanded(
               child: Center(child: Text('輸入關鍵字開始搜尋', style: TextStyle(color: AppColors.textMuted))),
             )
           else
             Expanded(
-              child: ListView.builder(
-                itemCount: _tracks.length,
-                itemBuilder: (ctx, i) {
-                  final t = _tracks[i];
-                  final local = _findLocal(t);
-                  return ListTile(
-                    dense: true,
-                    leading: ClipRRect(
-                      borderRadius: BorderRadius.circular(4),
-                      child: t.coverUrl != null
-                          // CachedNetworkImage：裸 Image.network 捲動時重複抓圖。
-                          ? CachedNetworkImage(imageUrl: t.coverUrl!, width: 40, height: 40, fit: BoxFit.cover,
-                              placeholder: (_, __) => Container(
-                                  width: 40, height: 40, color: AppColors.surfaceLight),
-                              errorWidget: (_, __, ___) => Container(
-                                  width: 40, height: 40, color: AppColors.surfaceLight,
-                                  child: const Icon(Icons.music_note_rounded, size: 18, color: AppColors.textMuted)))
-                          : Container(width: 40, height: 40, color: AppColors.surfaceLight,
-                              child: const Icon(Icons.music_note_rounded, size: 18, color: AppColors.textMuted)),
-                    ),
-                    title: Text(t.name, maxLines: 1, overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontSize: 12)),
-                    subtitle: Text(
-                      '${t.artists.join(', ')}${local != null ? '  ● 已在本機' : ''}',
-                      maxLines: 1, overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 10,
-                          color: local != null ? AppColors.accent : AppColors.textMuted),
-                    ),
-                    trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-                      if (local != null)
-                        IconButton(
-                          icon: const Icon(Icons.play_arrow_rounded, color: AppColors.accent, size: 20),
-                          onPressed: () => _play(t),
-                          tooltip: '播放',
-                        )
-                      else
-                        IconButton(
-                          icon: const Icon(Icons.cloud_upload_outlined, color: AppColors.textMuted, size: 18),
-                          onPressed: () => _play(t),
-                          tooltip: '串流播放',
+              child: Column(children: [
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(children: [
+                    for (final f in const [('all', '全部'), ('tracks', '歌曲'), ('albums', '專輯'), ('artists', '藝人')])
+                      Padding(
+                        padding: const EdgeInsets.only(right: 6),
+                        child: ChoiceChip(
+                          label: Text(f.$2, style: const TextStyle(fontSize: 12)),
+                          selected: _filter == f.$1,
+                          onSelected: (_) => setState(() => _filter = f.$1),
                         ),
-                    ]),
-                  );
-                },
-              ),
+                      ),
+                  ]),
+                ),
+                const SizedBox(height: 6),
+                Expanded(child: _buildSearchResults()),
+              ]),
             ),
-        ],
-      ]),
+           ],
+       ]),
+     );
+   }
+
+
+  // placeholder removed
+            void _searchByName(String name) {
+    _searchCtrl.text = name;
+    _search(name);
+  }
+
+  Widget _buildSearchResults() {
+    if (_filter == 'albums') {
+      if (_albums.isEmpty) {
+        return const Center(child: Text('無專輯結果', style: TextStyle(color: AppColors.textMuted)));
+      }
+      return ListView.builder(
+        itemCount: _albums.length,
+        itemBuilder: (ctx, i) {
+          final a = _albums[i];
+          return ListTile(
+            dense: true,
+            leading: ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: a.coverUrl != null
+                  ? CachedNetworkImage(imageUrl: a.coverUrl!, width: 40, height: 40, fit: BoxFit.cover,
+                      placeholder: (_, __) => Container(width: 40, height: 40, color: AppColors.surfaceLight),
+                      errorWidget: (_, __, ___) => Container(width: 40, height: 40, color: AppColors.surfaceLight,
+                          child: const Icon(Icons.album_rounded, size: 18, color: AppColors.textMuted)))
+                  : Container(width: 40, height: 40, color: AppColors.surfaceLight,
+                      child: const Icon(Icons.album_rounded, size: 18, color: AppColors.textMuted)),
+            ),
+            title: Text(a.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)),
+            subtitle: Text(a.artists.join(', '), maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 10, color: AppColors.textMuted)),
+            trailing: const Icon(Icons.search_rounded, size: 16, color: AppColors.textMuted),
+            onTap: () => _searchByName(a.name),
+          );
+        },
+      );
+    }
+    if (_filter == 'artists') {
+      if (_artists.isEmpty) {
+        return const Center(child: Text('無藝人結果', style: TextStyle(color: AppColors.textMuted)));
+      }
+      return ListView.builder(
+        itemCount: _artists.length,
+        itemBuilder: (ctx, i) {
+          final a = _artists[i];
+          return ListTile(
+            dense: true,
+            leading: ClipRRect(
+              borderRadius: BorderRadius.circular(20),
+              child: a.coverUrl != null
+                  ? CachedNetworkImage(imageUrl: a.coverUrl!, width: 40, height: 40, fit: BoxFit.cover,
+                      placeholder: (_, __) => Container(width: 40, height: 40, color: AppColors.surfaceLight),
+                      errorWidget: (_, __, ___) => Container(width: 40, height: 40, color: AppColors.surfaceLight,
+                          child: const Icon(Icons.person_rounded, size: 18, color: AppColors.textMuted)))
+                  : Container(width: 40, height: 40, color: AppColors.surfaceLight,
+                      child: const Icon(Icons.person_rounded, size: 18, color: AppColors.textMuted)),
+            ),
+            title: Text(a.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)),
+            trailing: const Icon(Icons.search_rounded, size: 16, color: AppColors.textMuted),
+            onTap: () => _searchByName(a.name),
+          );
+        },
+      );
+    }
+    if (_tracks.isEmpty) {
+      return const Center(child: Text('無歌曲結果', style: TextStyle(color: AppColors.textMuted)));
+    }
+    return ListView.builder(
+      itemCount: _tracks.length,
+      itemBuilder: (ctx, i) {
+        final t = _tracks[i];
+        final local = _findLocal(t);
+        return ListTile(
+          dense: true,
+          leading: ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: t.coverUrl != null
+                ? CachedNetworkImage(imageUrl: t.coverUrl!, width: 40, height: 40, fit: BoxFit.cover,
+                    placeholder: (_, __) => Container(width: 40, height: 40, color: AppColors.surfaceLight),
+                    errorWidget: (_, __, ___) => Container(width: 40, height: 40, color: AppColors.surfaceLight,
+                        child: const Icon(Icons.music_note_rounded, size: 18, color: AppColors.textMuted)))
+                : Container(width: 40, height: 40, color: AppColors.surfaceLight,
+                    child: const Icon(Icons.music_note_rounded, size: 18, color: AppColors.textMuted)),
+          ),
+          title: Text(t.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)),
+          subtitle: Text(
+            '${t.artists.join(', ')}${local != null ? '  ● 已在本機' : ''}',
+            maxLines: 1, overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 10, color: local != null ? AppColors.accent : AppColors.textMuted),
+          ),
+          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+            if (local != null)
+              IconButton(
+                icon: const Icon(Icons.play_arrow_rounded, color: AppColors.accent, size: 20),
+                onPressed: () => _play(t),
+                tooltip: '播放',
+              )
+            else
+              IconButton(
+                icon: const Icon(Icons.cloud_upload_outlined, color: AppColors.textMuted, size: 18),
+                onPressed: () => _play(t),
+                tooltip: '串流播放',
+              ),
+          ]),
+        );
+      },
     );
+  }
+
+  List<SpotifyTrackItem> _parseTracks(Map<String, dynamic> data) {
+    return SpotifyTrackItem.parseSearchTracks(data);
   }
 }
