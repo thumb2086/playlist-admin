@@ -9,6 +9,7 @@ import '../services/usb_exporter.dart';
 import '../services/fs_paths.dart';
 import '../models/playlist.dart';
 import 'playlist_detail_page.dart';
+import 'spotify_library_page.dart';
 import 'sync_page.dart';
 import '../services/history_recorder.dart';
 import '../services/library_organizer.dart';
@@ -319,6 +320,13 @@ class LibraryPageState extends State<LibraryPage> {
                 const SizedBox(width: 10),
                 _GradientBtn(t('library.add_btn'), Icons.add, _addUrl),
                 const SizedBox(width: 8),
+                IconButton(
+                  onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SpotifyLibraryPage())),
+                  icon: const Icon(Icons.spa_rounded),
+                  tooltip: 'Spotify 官方音樂庫（登入 PKCE）',
+                  style: IconButton.styleFrom(backgroundColor: AppColors.surfaceLight),
+                ),
+                const SizedBox(width: 4),
                 IconButton(
                   onPressed: () => _refresh(cleanOrphans: true),
                   icon: _loading
