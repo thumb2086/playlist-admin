@@ -374,7 +374,4 @@ class _SearchPageState extends State<SearchPage> {
     );
   }
 
-  List<SpotifyTrackItem> _parseTracks(Map<String, dynamic> data) {
-    return SpotifyTrackItem.parseSearchTracks(data);
-  }
 }
