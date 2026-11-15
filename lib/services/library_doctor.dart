@@ -203,7 +203,9 @@ class LibraryDoctor {
     final svc = GroqService.instance;
     try {
       await svc.loadFromEnv();
-      if (ConfigService.instance.config.groqApiKey.isNotEmpty) {
+      // 與 podcast pipeline 一致：.env 的 gsk_ 優先；只有 .env 空才回退到 config 的 ak_
+      if ((svc.apiKey == null || svc.apiKey!.isEmpty) &&
+          ConfigService.instance.config.groqApiKey.isNotEmpty) {
         svc.setApiKey(ConfigService.instance.config.groqApiKey);
       }
       final f = File('${Directory.systemTemp.path}\\doctor_probe.mp3');

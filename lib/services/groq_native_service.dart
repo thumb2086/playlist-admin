@@ -24,6 +24,16 @@ class _GroqFatalException implements Exception {
 ///
 /// 單獨一個型別，是為了讓呼叫端能區分「永久性失敗」與「下輪重試就好」：
 /// 整集要留到下一輪，**不能把半截內容寫進檔案**。
+/// 上游整體故障（429/5xx/連線中止/逾時）—— 全部 key 與重試耗盡後拋出。
+/// status == 0 代表沒收到 HTTP 回應（SocketException/ClientException/TimeoutException）。
+class _GroqUpstreamException implements Exception {
+  final int status;
+  final String body;
+  _GroqUpstreamException(this.status, this.body);
+  @override
+  String toString() => 'Groq 上游故障 (HTTP $status): $body';
+}
+
 class _PartialChunkFailure implements Exception {
   final String message;
   _PartialChunkFailure(this.message);
@@ -339,17 +349,38 @@ class GroqNativeService {
   /// 目前統一打 STT 專用端點：認證 header 是 `X-API-Key`（不是 Bearer）。
   /// 模型名、multipart 格式、回應格式、計費皆與原本相同。
   /// 覆寫方式：環境變數 `PA_STT_BASE_URL`。
-  static const defaultSttBaseUrl = 'https://stt.twonline.dpdns.org';
-
+  // 預設直連 api.groq.com（不經自架 STT 伺服器）。
+  // 背景：自架 STT（stt.twonline.dpdns.org）是繞過 Vercel 4.3MB body 限制
+  // 而架設的 byte 代理（lease/report 計費）。全面改 CF 後該限制不存在了，
+  // 而且 2026-11-15 該服務整體掛掉（530/1033），整批轉錄失敗。
+  // 需要自架 STT 時才用 PA_STT_BASE_URL 顯式指定（例如內網測試）。
   static String sttBaseUrl() {
     final v = Platform.environment['PA_STT_BASE_URL']?.trim() ?? '';
-    if (v.isNotEmpty) return v.replaceAll(RegExp(r'/+$'), '');
-    return defaultSttBaseUrl;
+    return v.replaceAll(RegExp(r'/+$'), '');
   }
 
-  /// STT 轉錄路徑。實測：`/v1/audio/transcriptions` 回 405（GET 不允許＝路徑存在），
-/// 其他候選都 404 → 確認要帶 `/v1` 前綴（與原 apiUrl 一致）。
-static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
+  /// 轉錄端點：有設 PA_STT_BASE_URL → 自架 STT；否則 → 直連 api.groq.com。
+static String transcribeUrl() {
+  final b = sttBaseUrl();
+  if (b.isEmpty) return directSttUrl;
+  return '$b/v1/audio/transcriptions';
+}
+
+  /// 直連 api.groq.com 的音訊轉錄端點（STT 服務整體掛掉時的回退）。
+  static const directSttUrl = 'https://api.groq.com/openai/v1/audio/transcriptions';
+
+  // ── STT 斷路器 ─────────────────────────────────────────────
+  /// STT 服務整體故障（連線中止/5xx）時，10 分鐘內全部分段直接走
+  /// api.groq.com 直連，不再把時間浪費在連線中止的端點上。
+  /// （2026-11-15 事故：STT 整體掛掉，整批分段轉錄 0 成功。）
+  /// 設 `PA_TRANSCRIBE_FALLBACK_GROQ=0` 可關閉此回退。
+  static DateTime? _sttDownUntil;
+  static const Duration _sttCooldown = Duration(minutes: 10);
+  static bool get _sttFallbackEnabled => (Platform.environment['PA_TRANSCRIBE_FALLBACK_GROQ'] ?? '1').trim() != '0';
+  static bool _sttUnavailable() =>
+      _sttDownUntil != null && DateTime.now().isBefore(_sttDownUntil!);
+  static void _markSttDown() =>
+      _sttDownUntil = DateTime.now().add(_sttCooldown);
 
   /// Groq 端點：groqBaseUrl 有值 → 自建 router（OpenAI 相容 /v1/*，
   /// 上游 key 由 router 輪替、本端 key 退居驗證）；留空 → 官方。
@@ -362,13 +393,49 @@ static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
 
   // ── 單檔轉錄（含重試 + key 輪替） ───────────────────
   /// Whisper 語音轉文字。遇到 429/5xx 時自動換 key 重試。
+  /// STT 端點整體故障時自動回退直連 api.groq.com（`PA_TRANSCRIBE_FALLBACK_GROQ=0` 關閉）。
   Future<String> transcribe(
     String filePath, {
     String model = 'whisper-large-v3-turbo',
     String? language,
   }) async {
     if (_keys.isEmpty) throw Exception('未設定 Groq API Key');
+    // 預設模式（未設 PA_STT_BASE_URL）：直接 api.groq.com，沒有 STT 這一層可救
+    final sttConfigured = sttBaseUrl().isNotEmpty;
+    if (!sttConfigured || (_sttFallbackEnabled && _sttUnavailable())) {
+      return _transcribeAgainst(directSttUrl,
+          filePath: filePath, model: model, language: language);
+    }
+    try {
+      return await _transcribeAgainst(transcribeUrl(),
+          filePath: filePath, model: model, language: language);
+    } on _GroqFatalException {
+      rethrow; // 決定性錯誤（4xx）——直連也會失敗，不回退
+    } catch (e) {
+      final infra =
+          e is _GroqUpstreamException && (e.status == 0 || e.status >= 500);
+      if (!_sttFallbackEnabled || !infra) rethrow;
+      _log.w('[Groq] STT 端點整體故障 ($e)，改走 api.groq.com 直連');
+      try {
+        final text = await _transcribeAgainst(directSttUrl,
+            filePath: filePath, model: model, language: language);
+        _markSttDown();
+        return text;
+      } catch (_) {
+        rethrow;
+      }
+    }
+  }
 
+  /// 實際對某個端點 POST multipart（key 輪替 + 重試）。
+  /// [endpointUrl] 可以是 STT（X-API-Key）或直連 api.groq.com（Bearer）——
+  /// 表單欄位與回應格式都是 OpenAI 相容，兩個 header 都送即可。
+  Future<String> _transcribeAgainst(
+    String endpointUrl, {
+    required String filePath,
+    required String model,
+    String? language,
+  }) async {
     final totalAttempts = _keys.length + _maxRetries;
     Exception? lastError;
     String lastBody = '';
@@ -386,9 +453,10 @@ static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
         // 模型名 / multipart 欄位 / 回應格式都不變。
         final request = http.MultipartRequest(
           'POST',
-          Uri.parse(transcribeUrl()),
+          Uri.parse(endpointUrl),
         )
           ..headers['X-API-Key'] = key
+          ..headers['Authorization'] = 'Bearer $key'
           ..fields['model'] = model
           ..fields['response_format'] = 'verbose_json'
           ..files.add(file);
@@ -474,7 +542,11 @@ static String transcribeUrl() => '${sttBaseUrl()}/v1/audio/transcriptions';
       keysTried: totalAttempts,
     );
 
-    throw lastError ?? Exception('Groq 轉錄失敗：所有 key 和重試已用盡');
+    if (lastStatus == 429) {
+      // 429 代表額度／RPM 上限，直連也會一樣失敗 → 不該觸發回退
+      throw _GroqUpstreamException(429, lastError?.toString() ?? lastBody);
+    }
+    throw _GroqUpstreamException(lastStatus, lastError?.toString() ?? lastBody);
   }
 
   // ── 自動分段轉錄 ────────────────────────────────────

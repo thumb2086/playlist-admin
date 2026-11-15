@@ -18,6 +18,7 @@ import '../services/lyrics_service.dart';
 import '../services/metadata_reader.dart';
 import '../services/rag_service.dart';
 import '../services/youtube_service.dart';
+import '../services/cookie_export.dart';
 import '../services/player_controller.dart';
 import '../version.dart';
 
@@ -248,11 +249,26 @@ class PipelineOrchestrator {
     }
     onLog('播放清單共 ${allSongs.length} 首歌曲');
     // 診斷：cookies / yt-dlp 狀態先印，失敗時不用猜。
+    final cookieDiag = CookieExport.inspect();
     final cookiesPath = YoutubeService.cookiesPathForDiag;
+    final hasValidCookies =
+        cookiesPath != null && cookieDiag.auth >= 3;
     if (cookiesPath == null) {
       onLog('  ⚠️ 找不到 yt_cookies.txt（桌面/文件/APPDATA），YouTube 極可能擋 bot');
+    } else if (!hasValidCookies) {
+      onLog('  ⚠️ yt_cookies.txt 登入 cookie 不足（${cookieDiag.auth}/${CookieExport.authCookieCount}），YouTube 會擋 bot');
     } else {
-      onLog('  🍪 cookies: $cookiesPath');
+      onLog('  🍪 cookies: $cookiesPath（登入 cookie ${cookieDiag.auth}/${CookieExport.authCookieCount}）');
+    }
+    if (!hasValidCookies) {
+      onLog('');
+      onLog('  ┌──────────────────────────────────────────────────────────');
+      onLog('  │ YouTube 下載需要登入 cookie，本次跳過下載以免浪費重試');
+      onLog('  │ 修復方法（擇一，程式化自動取得）：');
+      onLog('  │   1) playlist-admin cookie export  ← 開專用 Chrome 登入一次即自動抓取');
+      onLog('  │   2) 把有效的 yt_cookies.txt 放到 桌面');
+      onLog('  │ 之後重新跑 playlist-admin podcast 即可');
+      onLog('  └──────────────────────────────────────────────────────────');
     }
     try {
       final ver = await Process.run('yt-dlp', ['--version'], runInShell: false);
@@ -277,6 +293,13 @@ class PipelineOrchestrator {
 
     if (missing.isEmpty) {
       onLog('所有歌曲已下載');
+      progress(100); return;
+    }
+
+    // 沒有有效 cookie 時不硬跑（全部會被 bot-blocked）：跳過下載階段，
+    // 修復指令已在上面印出，補好 cookie 重跑即可。
+    if (!hasValidCookies) {
+      onLog('  已跳過下載（${missing.length} 首缺少；補好 cookies 後重跑 podcast 即可）');
       progress(100); return;
     }
 

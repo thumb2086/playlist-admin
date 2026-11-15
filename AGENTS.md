@@ -148,3 +148,12 @@ python tools\wait_process.py $p.Id
 
 - 不要用 shell 寫檔案（Set-Content / echo 重定向會毀掉中文編碼）：讀用 Read，改用 Edit，驗證用 `python -c` 只印 ASCII。
 - tool 輸出偶爾把中文顯示成 `?`（顯示假象）：拿不準時用 Python 比 bytes/hash，不要憑顯示下結論。
+
+## 2026-11-15 轉錄來源改為 api.groq.com 直連（不再經自架 STT 伺服器）
+
+**原因**：`stt.twonline.dpdns.org` 是繞過 Vercel 4.3MB body 限制而架設的 byte 代理（lease/report 計費）。全面遷移 CF 後該限制不存在；且 2026-11-15 該服務整體掛掉（CF 530 / error code 1033），整批分段轉錄 0 成功。
+
+**現行為**：預設直接 `https://api.groq.com/openai/v1/audio/transcriptions`（Bearer + gsk_ 金鑰），與 STT 格式完全一致、欄位不變。設 `PA_STT_BASE_URL` 才會走自架 STT（含 10 分鐘斷路器回退）；`PA_TRANSCRIBE_FALLBACK_GROQ=0` 可關閉回退。pipeline 找不到有效 cookie 時會直接跳過下載並印出修復指令（`playlist-admin cookie export`），不再白跑 80 次重試。
+
+**驗證**：2 秒靜音檔直連兩把 gsk_ 金鑰皆 HTTP 200；Cookie 預檢確認 13/13 登入 cookie 有效。
+

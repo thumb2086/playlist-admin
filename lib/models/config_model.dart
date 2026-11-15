@@ -23,7 +23,7 @@ class AppConfig {
   String groqApiKey;
   /// Groq 端點基底：預設 = 推薦的自建 router（OpenAI 相容 /v1/*，轉錄與
   /// RAG 問答都走它）；手動清空存 '' = 改回官方 api.groq.com。
-  static const String defaultGroqBaseUrl = 'https://vercel-router-khaki.vercel.app';
+  static const String defaultGroqBaseUrl = 'https://groq.zixilive.dpdns.org';
   String groqBaseUrl;
   int groqConcurrency;
   bool discordPresenceEnabled;
