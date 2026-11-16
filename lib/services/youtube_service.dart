@@ -654,57 +654,52 @@ class YoutubeService {
   /// 就一定失敗（2026-10-15 實測 43 首全部下載失敗）。
   ///
   /// 現在依序嘗試：裸名 → shell → 常見安裝路徑 → `python -m yt_dlp`。
+  /// Start yt-dlp process with proper argument handling on Windows.
+  /// Avoids shell mode to prevent argument mangling (e.g., User-Agent parentheses).
   static Future<Process> _startYtDlp(List<String> args) async {
-    // 1) 裸名，runInShell:false（歌名含 & | ; 不會被 cmd 切斷/注入）
+    // 1) Try direct execution (no shell) - avoids argument mangling
     try {
       return await Process.start('yt-dlp', args, runInShell: false);
     } catch (_) {}
 
-    // 2) 走 shell（能撈到 .bat shim 與 PATHEXT 關聯）
-    try {
-      return await Process.start('yt-dlp', args, runInShell: true);
-    } catch (_) {
-      _log.w('yt-dlp 裸名啟動失敗（PATH 找不到）');
-    }
-
-    // 3) 常見安裝路徑（python -m pip 預設位置）
+    // 2) Try explicit .exe paths (no shell) - common install locations
     final localAppData =
         Platform.environment['LOCALAPPDATA'] ?? r'C:\Users\$USERNAME\AppData\Local';
-    final candidates = [
-      r'$localAppData\Programs\Python\Python311\Scripts\yt-dlp.exe',
-      r'$localAppData\Programs\Python\Python312\Scripts\yt-dlp.exe',
-      r'$localAppData\Programs\Python\Python313\Scripts\yt-dlp.exe',
+    final candidates = <String>[
+      r'\$localAppData\Programs\Python\Python311\Scripts\yt-dlp.exe',
+      r'\$localAppData\Programs\Python\Python312\Scripts\yt-dlp.exe',
+      r'\$localAppData\Programs\Python\Python313\Scripts\yt-dlp.exe',
       r'C:\Python311\Scripts\yt-dlp.exe',
       r'C:\Python312\Scripts\yt-dlp.exe',
+      // Also check pipx, scoop, chocolatey, winget common paths
+      r'\$localAppData\Microsoft\WinGet\Links\yt-dlp.exe',
+      r'C:\ProgramData\chocolatey\bin\yt-dlp.exe',
+      r'C:\ProgramData\scoop\shims\yt-dlp.exe',
     ];
     for (final raw in candidates) {
       final p = raw
-          .replaceAll(r'$localAppData', localAppData)
-          .replaceAll(r'$USERNAME', Platform.environment['USERNAME'] ?? '');
+          .replaceAll(r'\$localAppData', localAppData)
+          .replaceAll(r'\$USERNAME', Platform.environment['USERNAME'] ?? '');
       if (File(p).existsSync()) {
         try {
-          _log.i('yt-dlp 用絕對路徑啟動: $p');
+          _log.i('yt-dlp �ε�����|�Ұ�: $p');
           return await Process.start(p, args, runInShell: false);
         } catch (_) {}
       }
     }
 
-    // 4) 最後手段：python -m yt_dlp
+    // 3) Try python -m yt_dlp (no shell) - works if python in PATH
     for (final py in ['python', 'py']) {
       try {
-        _log.i('yt-dlp 改用 $py -m yt_dlp');
+        _log.i('yt-dlp ��� $py -m yt_dlp');
         return await Process.start(py, ['-m', 'yt_dlp', ...args],
             runInShell: false);
       } catch (_) {}
     }
 
-    throw ProcessException('yt-dlp', args, 'yt-dlp 找不到（PATH、安裝路徑、'
-        'python -m yt_dlp 都試過）', 127);
-  }
-
-  // ── 底層下載 ─────────────────────────────────────────
-  /// 搜尋餅乾檔案。
-  static String? _cookiesPath;
+    throw ProcessException('yt-dlp', args, 'yt-dlp �䤣��]PATH�B�w�˸��|�B'
+        'python -m yt_dlp ���չL�^', 127);
+  }static String? _cookiesPath;
   static String? _findCookies() {
     if (_cookiesPath != null) return _cookiesPath;
     final home = Platform.environment['USERPROFILE'] ?? '';
