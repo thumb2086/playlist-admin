@@ -665,20 +665,46 @@ class YoutubeService {
     // 2) Try explicit .exe paths (no shell) - common install locations
     final localAppData =
         Platform.environment['LOCALAPPDATA'] ?? r'C:\Users\$USERNAME\AppData\Local';
+    final userProfile = Platform.environment['USERPROFILE'] ?? '';
+    final programFiles = Platform.environment['PROGRAMFILES'] ?? r'C:\Program Files';
+    final programFilesX86 = Platform.environment['PROGRAMFILES(X86)'] ?? r'C:\Program Files (x86)';
     final candidates = <String>[
+      // Python Scripts (most common)
       r'\$localAppData\Programs\Python\Python311\Scripts\yt-dlp.exe',
       r'\$localAppData\Programs\Python\Python312\Scripts\yt-dlp.exe',
       r'\$localAppData\Programs\Python\Python313\Scripts\yt-dlp.exe',
+      r'\$localAppData\Programs\Python\Python310\Scripts\yt-dlp.exe',
+      r'\$localAppData\Programs\Python\Python310\Scripts\yt-dlp.exe',
+      r'\$localAppData\Programs\Python\Python39\Scripts\yt-dlp.exe',
       r'C:\Python311\Scripts\yt-dlp.exe',
       r'C:\Python312\Scripts\yt-dlp.exe',
-      // Also check pipx, scoop, chocolatey, winget common paths
+      r'C:\Python310\Scripts\yt-dlp.exe',
+      r'C:\Python39\Scripts\yt-dlp.exe',
+      // Package managers
       r'\$localAppData\Microsoft\WinGet\Links\yt-dlp.exe',
       r'C:\ProgramData\chocolatey\bin\yt-dlp.exe',
       r'C:\ProgramData\scoop\shims\yt-dlp.exe',
+      r'\$localAppData\scoop\shims\yt-dlp.exe',
+      r'\$userProfile\scoop\shims\yt-dlp.exe',
+      // pipx
+      r'\$localAppData\pipx\venvs\yt-dlp\Scripts\yt-dlp.exe',
+      r'\$userProfile\.pipx\venvs\yt-dlp\Scripts\yt-dlp.exe',
+      // System paths
+      r'C:\Windows\yt-dlp.exe',
+      r'C:\Windows\System32\yt-dlp.exe',
+      // Program Files
+      r'\$programFiles\yt-dlp\yt-dlp.exe',
+      r'\$programFilesX86\yt-dlp\yt-dlp.exe',
+      // User profile local bin
+      r'\$userProfile\.local\bin\yt-dlp.exe',
+      r'\$localAppData\bin\yt-dlp.exe',
     ];
     for (final raw in candidates) {
       final p = raw
           .replaceAll(r'\$localAppData', localAppData)
+          .replaceAll(r'\$userProfile', userProfile)
+          .replaceAll(r'\$programFiles', programFiles)
+          .replaceAll(r'\$programFilesX86', programFilesX86)
           .replaceAll(r'\$USERNAME', Platform.environment['USERNAME'] ?? '');
       if (File(p).existsSync()) {
         try {
@@ -696,6 +722,24 @@ class YoutubeService {
             runInShell: false);
       } catch (_) {}
     }
+
+    // 4) Last resort: use `where` command to find yt-dlp
+    try {
+      final whereProc = await Process.start('where', ['yt-dlp'], runInShell: false);
+      final out = StringBuffer();
+      whereProc.stdout.transform(const SystemEncoding().decoder).transform(const LineSplitter()).listen(out.write);
+      final code = await whereProc.exitCode;
+      if (code == 0) {
+        final lines = out.toString().split('\n');
+        for (final line in lines) {
+          final trimmed = line.trim();
+          if (trimmed.isNotEmpty && trimmed.endsWith('.exe')) {
+            _log.i('yt-dlp �ε�����|�Ұ� (via where): $trimmed');
+            return await Process.start(trimmed, args, runInShell: false);
+          }
+        }
+      }
+    } catch (_) {}
 
     throw ProcessException('yt-dlp', args, 'yt-dlp �䤣��]PATH�B�w�˸��|�B'
         'python -m yt_dlp ���չL�^', 127);

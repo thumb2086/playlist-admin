@@ -1,0 +1,12 @@
+ {
+    print('CLI fail: $e');
+    exit(1);
+  }
+}
+
+int _getFlag(List<String> args, String flag) {
+  final idx = args.indexOf(flag);
+  if (idx >= 0 && idx + 1 < args.length) {
+    return int.tryParse(args[idx + 1]) ?? 0;
+  }
+  return 0;
