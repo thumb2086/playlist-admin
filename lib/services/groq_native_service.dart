@@ -359,6 +359,15 @@ class GroqNativeService {
     return v.replaceAll(RegExp(r'/+$'), '');
   }
 
+  /// 自架中轉（groq.zixilive.dpdns.org）的 STT 認證 token。
+  /// 中轉的 /v1/audio/transcriptions 只吃 ak_ 或 ROUTER_TOKEN，
+  /// 不吃 Groq 原生 gsk_ key，所以走中轉時必須另外給這支。
+  /// 未設 → 沿用 Groq 原生 key（直連 api.groq.com 時的正確行為）。
+  static String? sttToken() {
+    final v = Platform.environment['PA_STT_TOKEN']?.trim() ?? '';
+    return v.isEmpty ? null : v;
+  }
+
   /// 轉錄端點：有設 PA_STT_BASE_URL → 自架 STT；否則 → 直連 api.groq.com。
 static String transcribeUrl() {
   final b = sttBaseUrl();
@@ -449,14 +458,16 @@ static String transcribeUrl() {
         await _acquireSlot();
         client = _createClient();
         final file = await http.MultipartFile.fromPath('file', filePath);
-        // STT 端點認證用 X-API-Key（不是 Bearer）。
-        // 模型名 / multipart 欄位 / 回應格式都不變。
+        // STT 端點認證：自架中轉（groq.zixilive.dpdns.org）只吃 ak_/ROUTER_TOKEN，
+        // 不吃 Groq 原生 gsk_ key → 有 PA_STT_TOKEN 時改用它。
+        final sttTok = sttToken();
+        final authKey = (sttTok != null && endpointUrl != directSttUrl) ? sttTok : key;
         final request = http.MultipartRequest(
           'POST',
           Uri.parse(endpointUrl),
         )
-          ..headers['X-API-Key'] = key
-          ..headers['Authorization'] = 'Bearer $key'
+          ..headers['X-API-Key'] = authKey
+          ..headers['Authorization'] = 'Bearer $authKey'
           ..fields['model'] = model
           ..fields['response_format'] = 'verbose_json'
           ..files.add(file);
