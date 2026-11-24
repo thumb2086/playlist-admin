@@ -1,0 +1,18 @@
+{
+  "name": "playlist-admin-tui",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run index.ts",
+    "typecheck": "bun check"
+  },
+  "dependencies": {
+    "@opentui/core": "^0.9.9",
+    "@opentui/react": "^0.9.9",
+    "react": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}

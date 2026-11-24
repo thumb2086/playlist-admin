@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/config_service.dart';
@@ -184,15 +183,6 @@ class _PipelinePageState extends State<PipelinePage> with AutomaticKeepAliveClie
     }
   }
 
-  /// 用 opencode 問 podcast 內容（RAG skill 已安裝）。
-  void _openOpencode() {
-    try {
-      Process.run('cmd', ['/c', 'start', 'opencode'], runInShell: false).ignore();
-    } catch (e) {
-      _musicLog('⚠️ 無法啟動 opencode: $e');
-    }
-  }
-
   void _openExtractor() {
     Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => const AudioExtractorPage(),
@@ -372,75 +362,95 @@ class _PipelinePageState extends State<PipelinePage> with AutomaticKeepAliveClie
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Wrap(spacing: 8, runSpacing: 8, children: [
-            _PButton(t('pipeline.run_all'), Icons.play_arrow_rounded, () => _run(), _musicRunning, isPrimary: true),
-            _PButton(t('pipeline.run_convert'), Icons.transform, () => _run(fromStep: 0, toStep: 1), _musicRunning),
-            _PButton(t('pipeline.run_scrape'), Icons.cloud_download, () => _run(fromStep: 1, toStep: 2), _musicRunning),
-_PButton(t('pipeline.run_prune'), Icons.cleaning_services, () => _run(fromStep: 2, toStep: 3), _musicRunning),
-        _PButton(t('pipeline.run_podcast'), Icons.podcasts, _runPodcast, _podcastRunning, color: const Color(0xFFCE93D8)),
-        _PButton(t('pipeline.run_rag'), Icons.auto_awesome, _runRagOnly, _ragRunning || _musicRunning, color: const Color(0xFF4DB6AC)),
-        _PButton(t('pipeline.run_opencode'), Icons.forum_outlined, _openOpencode, false, color: const Color(0xFF9575CD)),
-        _PButton('音軌抽取', Icons.audio_file_outlined, _openExtractor, false, color: const Color(0xFFFFB74D)),
-        _PButton('下載與訂閱', Icons.download_outlined, _openDownload, false, color: const Color(0xFF26C6DA)),
-        _PButton('補嵌封面', Icons.image_rounded, _runArtwork, _artworkRunning || _musicRunning, color: const Color(0xFF80CBC4)),
-            if (_artworkRunning)
-              _PButton(t('pipeline.cancel'), Icons.stop_rounded, () {
-                _artworkState.cancel();
-                _musicLog('正在取消補嵌封面…');
-                setState(() {});
-              }, false, color: AppColors.error),
-            if (_musicRunning) ...[
-              _PButton(t('pipeline.pause'), Icons.pause_rounded, () {
-                _musicState.pause();
-                _musicLog('Pipeline 已暫停');
-                setState(() {});
-              }, false, color: Colors.orange),
-              _PButton(t('pipeline.cancel'), Icons.stop_rounded, () {
-                _musicState.cancel();
-                _musicLog('正在取消 Pipeline…');
-                setState(() {});
-              }, false, color: AppColors.error),
-            ],
-            if (_podcastRunning) ...[
-              _PButton(t('pipeline.pause'), Icons.pause_rounded, () {
-                _podcastState.pause();
-                _podcastLog('Podcast Pipeline 已暫停');
-                setState(() {});
-              }, false, color: Colors.orange),
-              _PButton(t('pipeline.cancel'), Icons.stop_rounded, () {
-                _podcastState.cancel();
-                _podcastLog('正在取消 Podcast Pipeline…');
-                setState(() {});
-              }, false, color: AppColors.error),
-            ],
-            if (hasLogs) ...[
+          // 按鈕分三組（主要 / 逐步 / 工具），避免 10+ 顆平鋪看不出主次。
+          _BtnGroup('主要', children: [
+            _PButton(t('pipeline.run_all'), Icons.play_arrow_rounded, () => _run(),
+                _musicRunning, isPrimary: true),
+            _PButton(t('pipeline.run_podcast'), Icons.podcasts, _runPodcast,
+                _podcastRunning, color: const Color(0xFFCE93D8)),
+            _PButton(t('pipeline.run_rag'), Icons.auto_awesome, _runRagOnly,
+                _ragRunning || _musicRunning, color: const Color(0xFF4DB6AC)),
+          ]),
+          const SizedBox(height: 10),
+          _BtnGroup('逐步執行', children: [
+            _PButton(t('pipeline.run_convert'), Icons.transform,
+                () => _run(fromStep: 0, toStep: 1), _musicRunning),
+            _PButton(t('pipeline.run_scrape'), Icons.cloud_download,
+                () => _run(fromStep: 1, toStep: 2), _musicRunning),
+            _PButton(t('pipeline.run_prune'), Icons.cleaning_services,
+                () => _run(fromStep: 2, toStep: 3), _musicRunning),
+          ]),
+          const SizedBox(height: 10),
+          _BtnGroup('工具', children: [
+            _PButton('補嵌封面', Icons.image_rounded, _runArtwork,
+                _artworkRunning || _musicRunning, color: const Color(0xFF80CBC4)),
+            _PButton('音軌抽取', Icons.audio_file_outlined, _openExtractor, false,
+                color: const Color(0xFFFFB74D)),
+            _PButton('下載與訂閱', Icons.download_outlined, _openDownload, false,
+                color: const Color(0xFF26C6DA)),
+            if (hasLogs)
               _PButton(t('pipeline.clear_log'), Icons.delete_outline_rounded, () {
                 _musicLogs.clear();
                 _podcastLogs.clear();
                 setState(() {});
               }, false, color: AppColors.textMuted),
-              if (_musicLogs.isNotEmpty)
-                _PButton('複製音樂', Icons.copy_rounded, () {
-                  Clipboard.setData(ClipboardData(text: _musicLogs.join('\n')));
-                  if (mounted) {
-                    setState(() {});
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('已複製'), duration: Duration(seconds: 1)),
-                    );
-                  }
-                }, false, color: AppColors.textSecondary),
-              if (_podcastLogs.isNotEmpty)
-                _PButton('複製 Podcast', Icons.copy_rounded, () {
-                  Clipboard.setData(ClipboardData(text: _podcastLogs.join('\n')));
-                  if (mounted) {
-                    setState(() {});
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('已複製'), duration: Duration(seconds: 1)),
-                    );
-                  }
-                }, false, color: AppColors.textSecondary),
-            ],
           ]),
+          if (_artworkRunning || _musicRunning || _podcastRunning) ...[
+            const SizedBox(height: 10),
+            _BtnGroup('控制', children: [
+              if (_artworkRunning)
+                _PButton('取消補嵌封面', Icons.stop_rounded, () {
+                  _artworkState.cancel();
+                  _musicLog('正在取消補嵌封面…');
+                  setState(() {});
+                }, false, color: AppColors.error),
+              if (_musicRunning) ...[
+                _PButton(t('pipeline.pause'), Icons.pause_rounded, () {
+                  _musicState.pause();
+                  _musicLog('Pipeline 已暫停');
+                  setState(() {});
+                }, false, color: Colors.orange),
+                _PButton(t('pipeline.cancel'), Icons.stop_rounded, () {
+                  _musicState.cancel();
+                  _musicLog('正在取消 Pipeline…');
+                  setState(() {});
+                }, false, color: AppColors.error),
+              ],
+              if (_podcastRunning) ...[
+                _PButton('暫停 Podcast', Icons.pause_rounded, () {
+                  _podcastState.pause();
+                  _podcastLog('Podcast Pipeline 已暫停');
+                  setState(() {});
+                }, false, color: Colors.orange),
+                _PButton('取消 Podcast', Icons.stop_rounded, () {
+                  _podcastState.cancel();
+                  _podcastLog('正在取消 Podcast Pipeline…');
+                  setState(() {});
+                }, false, color: AppColors.error),
+              ],
+            ]),
+          ],
+          if (hasLogs && _musicLogs.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            _BtnGroup('日誌', children: [
+              _PButton('複製音樂日誌', Icons.copy_rounded, () {
+                Clipboard.setData(ClipboardData(text: _musicLogs.join('\n')));
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                      content: Text('已複製'), duration: Duration(seconds: 1)));
+                }
+              }, false, color: AppColors.textSecondary),
+              if (_podcastLogs.isNotEmpty)
+                _PButton('複製 Podcast 日誌', Icons.copy_rounded, () {
+                  Clipboard.setData(
+                      ClipboardData(text: _podcastLogs.join('\n')));
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                        content: Text('已複製'), duration: Duration(seconds: 1)));
+                  }
+                }, false, color: AppColors.textSecondary),
+            ]),
+          ],
           const SizedBox(height: 20),
           AnimatedSize(duration: const Duration(milliseconds: 300), curve: Curves.easeOut,
             child: (_musicRunning || _musicProgress > 0 || _podcastRunning || _podcastProgress > 0 || _ragRunning || _ragProgress > 0 || _artworkRunning || _artworkProgress > 0)
@@ -573,6 +583,29 @@ _PButton(t('pipeline.run_prune'), Icons.cleaning_services, () => _run(fromStep: 
           const SizedBox(height: 16),
         ],
       ),
+    );
+  }
+}
+
+/// 按鈕分組：小標題 + 一列 Wrap。讓 10+ 顆按鈕有主次，而不是全部平鋪。
+class _BtnGroup extends StatelessWidget {
+  final String title;
+  final List<Widget> children;
+  const _BtnGroup(this.title, {required this.children});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title,
+            style: const TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: AppColors.textMuted)),
+        const SizedBox(height: 6),
+        Wrap(spacing: 8, runSpacing: 8, children: children),
+      ],
     );
   }
 }

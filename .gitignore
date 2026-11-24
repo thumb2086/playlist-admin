@@ -37,3 +37,7 @@ vendor/webview_windows/build/
 
 # RAG build logs
 rag/*.log
+
+# OpenTUI (bun) - 依賴不進版控
+tui-opentui/node_modules/
+tui-opentui/bun.lock
