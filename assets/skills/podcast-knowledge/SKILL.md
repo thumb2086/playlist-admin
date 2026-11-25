@@ -11,7 +11,10 @@ description: Use when the user asks a question about podcast transcripts, study 
 
 ## 流程
 
-1. 確認 Ollama 在跑：`Test-NetConnection localhost -Port 11434`
+1. 檢查 Ollama 在跑（`Test-NetConnection localhost -Port 11434`），
+   且 **embedding 模型 `bge-m3` 已 pull**（`ollama list | findstr bge-m3`）。
+   缺 bge-m3 會 ConnectionRefused / 維度不符 —— 那不是 RAG 壞了，是模型沒下載：
+   `ollama pull bge-m3`（約 1.2 GB，只需一次）。
 2. 判斷查詢類型：
    - **Podcast 相關**（「某集講什麼」「節目有沒有提到」）→ 用 `rag/query.py`
    - **試題/課程相關**（「某題怎麼解」「齒輪有哪些」「機件原理」）→ 用 `rag/study_query.py`
