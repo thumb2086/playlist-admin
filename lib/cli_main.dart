@@ -27,19 +27,16 @@ const int maxPath = 260;
 /// Decode filesystem path from Big5/CP950 to UTF-8
 /// Windows filesystem stores Chinese filenames in Big5/CP950, but Dart reads as UTF-8
 String _decodeFilePath(String path) {
-  // Use win32 API to get the correct long path name
+  // ⚠ 每個 calloc 只能 free 一次。原本成功路徑 free 完又在 finally 再 free
+  // → double free → STATUS_HEAP_CORRUPTION (0xC0000374)，Dart 層無錯誤訊息。
+  // 現在只有 finally 負責釋放。
   try {
-    // Convert to wide string for Windows API
     final pathPtr = path.toNativeUtf16();
     final buffer = calloc<Uint16>(maxPath);
     try {
-      // Get the long path name which will be in the correct encoding
       final result = GetLongPathName(pathPtr, buffer.cast<Utf16>(), maxPath);
       if (result > 0 && result < maxPath) {
-        final decoded = buffer.cast<Utf16>().toDartString(length: result.toInt());
-        free(pathPtr);
-        free(buffer);
-        return decoded;
+        return buffer.cast<Utf16>().toDartString(length: result.toInt());
       }
     } finally {
       free(buffer);

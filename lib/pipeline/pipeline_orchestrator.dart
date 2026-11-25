@@ -36,34 +36,36 @@ class PipelineOrchestrator {
 
   /// Decode filesystem path from Big5/CP950 to UTF-8
   /// Windows filesystem stores Chinese filenames in Big5/CP950, but Dart reads as UTF-8
+    /// 用 Win32 API 取得「真正的 Unicode 長路徑」。
+  ///
+  /// ⚠ 每個 `calloc` 只能 free 一次。2026-11 的 bug：成功路徑裡 free 完
+  /// 又在 `finally` 再 free 一次 → **double free → STATUS_HEAP_CORRUPTION
+  /// (0xC0000374 / exit -1073740940)**，而且 Dart 層完全沒有錯誤訊息，
+  /// 只在歌詞步驟（每檔都呼叫一次）靜默中止。現在只有 finally 負責釋放。
   String _decodeFilePath(String path) {
-    // Strategy: Use GetShortPathName to get the 8.3 short path name (always ASCII),
-    // then use GetLongPathName to get the proper Unicode long path name.
-    // This avoids encoding issues entirely.
     try {
-      // Convert to wide string for Windows API
       final pathPtr = path.toNativeUtf16();
-
-      // Step 1: Get short path name (8.3, always ASCII)
       final shortBuffer = calloc<Uint16>(maxPath);
       try {
-        final shortResult = GetShortPathName(pathPtr, shortBuffer.cast<Utf16>(), maxPath);
+        final shortResult =
+            GetShortPathName(pathPtr, shortBuffer.cast<Utf16>(), maxPath);
         if (shortResult > 0 && shortResult < maxPath) {
-          final shortPath = shortBuffer.cast<Utf16>().toDartString(length: shortResult.toInt());
-
-          // Step 2: Get long path name from short path (proper Unicode)
+          final shortPath =
+              shortBuffer.cast<Utf16>().toDartString(length: shortResult.toInt());
+          // 短名 → 長名（真正的 Unicode）。第二個 toNativeUtf16 也要釋放。
+          final shortPtr = shortPath.toNativeUtf16();
           final longBuffer = calloc<Uint16>(maxPath);
           try {
-            final longResult = GetLongPathName(shortPath.toNativeUtf16(), longBuffer.cast<Utf16>(), maxPath);
+            final longResult =
+                GetLongPathName(shortPtr, longBuffer.cast<Utf16>(), maxPath);
             if (longResult > 0 && longResult < maxPath) {
-              final decoded = longBuffer.cast<Utf16>().toDartString(length: longResult.toInt());
-              free(pathPtr);
-              free(shortBuffer);
-              free(longBuffer);
-              return decoded;
+              return longBuffer
+                  .cast<Utf16>()
+                  .toDartString(length: longResult.toInt());
             }
           } finally {
             free(longBuffer);
+            free(shortPtr);
           }
         }
       } finally {
