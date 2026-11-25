@@ -25,6 +25,11 @@ class AppConfig {
   /// RAG 問答都走它）；手動清空存 '' = 改回官方 api.groq.com。
   static const String defaultGroqBaseUrl = 'https://groq.zixilive.dpdns.org';
   String groqBaseUrl;
+  /// 逐字稿（STT）端點。預設走 CF 中轉（Worker 上限 100 MB，
+  /// 不像 Vercel 卡在 4.5 MB）。設空字串 = 直連 api.groq.com。
+  String sttBaseUrl;
+  /// 走中轉時的 STT 認證 token（中轉只吃 ak_/ROUTER_TOKEN，不吃 gsk_）。
+  String sttToken;
   int groqConcurrency;
   bool discordPresenceEnabled;
   String discordApplicationId;
@@ -66,6 +71,8 @@ class AppConfig {
     this.podcastRagInMusic = false,
     this.groqApiKey = '',
     this.groqBaseUrl = defaultGroqBaseUrl,
+    this.sttBaseUrl = defaultGroqBaseUrl,
+    this.sttToken = '',
     this.groqConcurrency = 3,
     this.discordPresenceEnabled = true,
     this.discordApplicationId = defaultDiscordAppId,
@@ -186,6 +193,8 @@ class AppConfig {
         groqApiKey: json['groq_api_key'] as String? ?? '',
         // key 缺席（舊設定檔）→ 吃推薦 router 預設；手動清空存的 '' 會保留。
         groqBaseUrl: json['groq_base_url'] as String? ?? defaultGroqBaseUrl,
+        sttBaseUrl: json['stt_base_url'] as String? ?? defaultGroqBaseUrl,
+        sttToken: json['stt_token'] as String? ?? '',
         groqConcurrency: json['groq_concurrency'] as int? ?? 3,
         discordPresenceEnabled: json['discord_presence_enabled'] as bool? ?? true,
         discordApplicationId: (json['discord_application_id'] as String?)
@@ -230,6 +239,8 @@ class AppConfig {
         'podcast_rag_in_music': podcastRagInMusic,
         'groq_api_key': groqApiKey,
         'groq_base_url': groqBaseUrl,
+        'stt_base_url': sttBaseUrl,
+        'stt_token': sttToken,
         'groq_concurrency': groqConcurrency,
         'discord_presence_enabled': discordPresenceEnabled,
         'discord_application_id': discordApplicationId,

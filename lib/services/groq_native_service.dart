@@ -355,8 +355,11 @@ class GroqNativeService {
   // 而且 2026-11-15 該服務整體掛掉（530/1033），整批轉錄失敗。
   // 需要自架 STT 時才用 PA_STT_BASE_URL 顯式指定（例如內網測試）。
   static String sttBaseUrl() {
-    final v = Platform.environment['PA_STT_BASE_URL']?.trim() ?? '';
-    return v.replaceAll(RegExp(r'/+$'), '');
+    final env = Platform.environment['PA_STT_BASE_URL']?.trim() ?? '';
+    if (env.isNotEmpty) return env.replaceAll(RegExp(r'/+$'), '');
+    // 預設走 CF 中轉（config 可改；空字串 = 直連 api.groq.com）
+    final cfg = ConfigService.instance.config.sttBaseUrl.trim();
+    return cfg.replaceAll(RegExp(r'/+$'), '');
   }
 
   /// 自架中轉（groq.zixilive.dpdns.org）的 STT 認證 token。
@@ -364,14 +367,21 @@ class GroqNativeService {
   /// 不吃 Groq 原生 gsk_ key，所以走中轉時必須另外給這支。
   /// 未設 → 沿用 Groq 原生 key（直連 api.groq.com 時的正確行為）。
   static String? sttToken() {
-    final v = Platform.environment['PA_STT_TOKEN']?.trim() ?? '';
-    return v.isEmpty ? null : v;
+    final env = Platform.environment['PA_STT_TOKEN']?.trim() ?? '';
+    if (env.isNotEmpty) return env;
+    final cfg = ConfigService.instance.config.sttToken.trim();
+    return cfg.isEmpty ? null : cfg;
   }
+
+  /// 走中轉但沒 token 時，中轉只吃 ak_/ROUTER_TOKEN，gsk_ 會被 401。
+  /// 這種情況退回直連 api.groq.com（用原生 key），不要讓 STT 整條死掉。
+  static bool sttNeedsDirectFallback() =>
+      sttBaseUrl().isNotEmpty && sttToken() == null;
 
   /// 轉錄端點：有設 PA_STT_BASE_URL → 自架 STT；否則 → 直連 api.groq.com。
 static String transcribeUrl() {
   final b = sttBaseUrl();
-  if (b.isEmpty) return directSttUrl;
+  if (b.isEmpty || sttNeedsDirectFallback()) return directSttUrl;
   return '$b/v1/audio/transcriptions';
 }
 
