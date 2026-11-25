@@ -102,7 +102,7 @@ class _QueueListState extends State<QueueList> {
     return ReorderableListView.builder(
       padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
       itemCount: queue.length,
-      onReorderItem: (oldIndex, newIndex) {
+      onReorder: (oldIndex, newIndex) {
         _ctrl.moveInQueue(oldIndex, newIndex);
       },
       itemBuilder: (ctx, i) {
