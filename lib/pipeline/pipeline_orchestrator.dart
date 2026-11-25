@@ -742,6 +742,11 @@ class PipelineOrchestrator {
 
       // Polite delay to avoid LRCLib rate limit
       await Future.delayed(const Duration(milliseconds: 200));
+      // 進度日誌：每 50 檔一行。沒有這個，5520 檔的迴圈在 429 時
+      // 會「0 個 lrc 又完全沒有輸出」，看起來跟卡死一模一樣。
+      if ((i + 1) % 50 == 0 || i == 0 || i + 1 == files.length) {
+        onLog('  [$i+1/${files.length}] 成功 $success / 跳過 $skipped / 失敗 $failed');
+      }
       progress((i / files.length * 100).toDouble());
     }
 

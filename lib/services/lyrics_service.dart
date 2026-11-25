@@ -4,6 +4,7 @@ import 'package:logger/logger.dart';
 
 import '../plugins/providers/lyrics_provider.dart';
 import '../plugins/providers/lyrics_provider_registry.dart';
+import '../plugins/providers/netease_lyrics_provider.dart';
 
 final _log = Logger(printer: PrettyPrinter(methodCount: 0));
 
@@ -31,7 +32,12 @@ class LyricsService {
     if (_cache.containsKey(key)) return _cache[key];
 
     final reg = LyricsProviderRegistry.instance;
-    if (reg.all.isEmpty) reg.register(LrclibLyricsProvider());
+    if (reg.all.isEmpty) {
+      // 預設兩層：lrclib（優先 10）→ 網易雲（優先 20）。
+      // lrclib 的 /api/get 被 429 時，chain 會自動落到網易雲。
+      reg.register(LrclibLyricsProvider());
+      reg.register(NeteaseLyricsProvider());
+    }
 
     for (final provider in reg.enabledSorted) {
       try {
@@ -50,6 +56,12 @@ class LyricsService {
     try {
       final uri = Uri.https('lrclib.net', '/api/search', {'q': query});
       final resp = await http.get(uri).timeout(const Duration(seconds: 10));
+      // 429 也要冷卻，否則 search 會變成另一個 hammer 來源
+      if (resp.statusCode == 429) {
+        final ra = int.tryParse(resp.headers['retry-after'] ?? '') ?? 60;
+        LrclibLyricsProvider.markBlocked(ra);
+        return [];
+      }
       if (resp.statusCode != 200) return [];
 
       final data = jsonDecode(resp.body) as List;
