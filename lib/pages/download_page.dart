@@ -261,7 +261,7 @@ class _PodcastTabState extends State<_PodcastTab> {
   List<PodcastEpisode> get _displayEpisodes => _episodes.take(_maxEpisodes).toList();
 
   /// 當前節目錄磁碟檔名快取：每列每 rebuild 都打 disk 太傷，
-  /// 载入清單/下載完成時刷一次，列內純記憶體比對 + 慢速 fallback。
+  /// 載入清單/下載完成時刷一次，列內純記憶體比對 + 慢速 fallback。
   /// EP 號也建成常駐 map（舊寫法 miss 時全目錄 listSync）。
   Set<String> _diskNames = {};
   Map<int, String> _epNumIndex = {};

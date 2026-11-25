@@ -95,7 +95,7 @@ class GroqNativeService {
     if (defineKey.isNotEmpty) _keys = [defineKey];
   }
 
-  /// 啟動時 async 查 proxy（不堵塞第一次请求）。
+  /// 啟動時 async 查 proxy（不阻塞第一次請求）。
   Future<void> preloadProxy() async {
     if (_proxyResolved) return;
     // 只從環境變數讀 proxy（不讀 Windows Registry，因為不可靠）

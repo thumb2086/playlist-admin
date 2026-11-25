@@ -21,13 +21,36 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 OLLAMA_URL = "http://localhost:11434"
+# 多 Ollama 端點（逗號分隔）。embedding 是記憶體頻寬受限而非算力受限，
+# 單一 llama-server 餵不滿 GPU（實測 util 7~13%）；開第二個 instance 分流
+# 可近線性加成。用法：OLLAMA_URLS=http://localhost:11434,http://localhost:11435
+OLLAMA_URLS = [
+    u.strip().rstrip("/")
+    for u in os.environ.get("OLLAMA_URLS", "").split(",")
+    if u.strip()
+] or [OLLAMA_URL]
+_rr = {"i": 0}
+
+
+def _next_url() -> str:
+    u = OLLAMA_URLS[_rr["i"] % len(OLLAMA_URLS)]
+    _rr["i"] += 1
+    return u
 
 
 def embed_one_batch(model: str, texts: list[str]) -> tuple[list[str], list[list[float]]]:
     """單批 embedding；400 時逐個重試，回傳 (成功文字, 對應向量)"""
+    # GPU 利用率低（實測 7~13%、SM 只 660 MHz）不是算力不足，而是每次只餵
+    # 512 token 進 GPU，中文短 chunk 時 GPU 大半時間在等下一批。
+    # num_batch 拉到 8192；keep_alive 30m 避免模型被卸載重載。
     resp = requests.post(
-        f"{OLLAMA_URL}/api/embed",
-        json={"model": model, "input": texts},
+        f"{_next_url()}/api/embed",
+        json={
+            "model": model,
+            "input": texts,
+            "keep_alive": "30m",
+            "options": {"num_batch": 8192, "num_ctx": 8192},
+        },
         timeout=600,
     )
     if resp.status_code == 400:
@@ -35,8 +58,10 @@ def embed_one_batch(model: str, texts: list[str]) -> tuple[list[str], list[list[
         vectors: list[list[float]] = []
         for t in texts:
             r2 = requests.post(
-                f"{OLLAMA_URL}/api/embed",
-                json={"model": model, "input": [t]},
+                f"{_next_url()}/api/embed",
+                json={"model": model, "input": [t],
+                      "keep_alive": "30m",
+                      "options": {"num_batch": 8192, "num_ctx": 8192}},
                 timeout=600,
             )
             if r2.status_code == 400:
@@ -133,8 +158,8 @@ def main() -> None:
     ap.add_argument("--model", default="bge-m3")
     ap.add_argument("--reset", action="store_true", help="重建資料庫")
     ap.add_argument("--limit", type=int, default=0, help="只索引前 N 篇 (測試用)")
-    ap.add_argument("--workers", type=int, default=6, help="併發 embedding 數")
-    ap.add_argument("--batch", type=int, default=64, help="每批 embedding 數量")
+    ap.add_argument("--workers", type=int, default=8, help="併發 embedding 數")
+    ap.add_argument("--batch", type=int, default=192, help="每批 embedding 數量")
     args = ap.parse_args()
 
     # 先拿鎖再開 PersistentClient：反過來雙進程仍會同時開 SQLite。
@@ -320,6 +345,17 @@ def _main_build(client, args) -> None:
     ]
     if args.limit:
         files = files[: args.limit]
+    # 中斷續跑：done_sigs 來自 ChromaDB（已入庫的檔案會被 file_sig 過濾），
+    # 再寫一份 checkpoint 讓「上次停在哪」明確可查，不靠推測。
+    progress_file = Path(args.db) / "_progress.json"
+    if progress_file.exists():
+        try:
+            prev = json.loads(progress_file.read_text(encoding="utf-8"))
+            print(f"↻ 續跑：上次完成 {prev.get('done_files', '?')} 篇，"
+                  f"停在 {str(prev.get('last_file', '?'))[:60]}")
+        except Exception:
+            pass
+    print(f"Ollama 端點：{', '.join(OLLAMA_URLS)}")
     print(f"待索引 {len(files)} 篇 (已嵌入 {len(done_sigs)} 篇, 無內容跳過 {len(skipped)} 篇)")
 
     total_chunks = 0
@@ -380,6 +416,20 @@ def _main_build(client, args) -> None:
             continue
         done_sigs.add(sig)
         total_chunks += len(kept_chunks)
+        if i % 5 == 0 or i == len(files):
+            try:
+                progress_file.write_text(
+                    json.dumps({
+                        "done_files": i,
+                        "total_files": len(files),
+                        "last_file": str(f),
+                        "chunks": total_chunks,
+                        "ts": int(time.time()),
+                    }, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
         if i % 5 == 0 or i == len(files):
             elapsed = time.time() - t_start
             speed = i / elapsed

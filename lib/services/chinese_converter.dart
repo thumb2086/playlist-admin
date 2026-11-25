@@ -30,7 +30,7 @@ class ChineseConverter {
       }
     }
     // 扁平 { 簡: 繁 }（由 tools/gen_s2t.py 以 OpenCC s2tw 產生：
-    // 2772 單字 + 1522 詞組，詞組層處理 头发→頭髮 這類逐字轉會錯的個案）。
+    // 2772 單字 + 1522 詞組，詞組層處理「頭髮」這類逐字轉會錯的個案）。
     // 舊版讀 zhcdict.json 只撈到 SIMPONLY/TRADONLY 兩個字串，等於沒轉。
     final map = jsonDecode(data) as Map<String, dynamic>;
 

@@ -527,7 +527,7 @@ class _Toggle extends StatelessWidget {
 }
 
 /// 手動檢查更新（自動檢查之外的按鈕）：
-/// 有新版 → UpdateDialog（用戶主動按的，不理会 skippedVersion）；
+/// 有新版 → UpdateDialog（用戶主動按的，不理會 skippedVersion）；
 /// 已最新 / 連線失敗 → snackbar 回報。
 class _ExportLogRow extends StatefulWidget {
   const _ExportLogRow();
@@ -585,7 +585,7 @@ class _ExportLogRowState extends State<_ExportLogRow> {
 }
 
 /// 手動檢查更新（自動檢查之外的按鈕）：
-/// 有新版 → UpdateDialog（用戶主動按的，不理会 skippedVersion）；
+/// 有新版 → UpdateDialog（用戶主動按的，不理會 skippedVersion）；
 /// 已最新 / 連線失敗 → snackbar 回報。
 class _UpdateCheckRow extends StatefulWidget {
   const _UpdateCheckRow();

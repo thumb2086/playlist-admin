@@ -318,7 +318,7 @@ Downloaded: ${cfg.lastUpdated.length}''');
         return;
       }
       final limit = _getFlag(args, '--limit');
-      print('批次下载全庫歌詞〈LRCLib〉 → 存 .lrc 到 lyrics/ 资料夾');
+      print('批次下載全庫歌詞（LRCLib）→ 存 .lrc 到 lyrics/ 資料夾');
       if (limit > 0) print('限制: $limit 首');
       final lyricsDir = Directory('${cfg.basePath}${Platform.pathSeparator}${cfg.lyricsFolderName ?? 'Lyrics'}');
       if (!lyricsDir.existsSync()) lyricsDir.createSync(recursive: true);
