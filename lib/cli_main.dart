@@ -89,6 +89,13 @@ Future<void> runCli(List<String> args) async {
   await ConfigService.instance.load();
   final cfg = ConfigService.instance.config;
 
+  // CLI 也要初始化 media_kit：LUFS 步驟會透過 PlayerController 檢查「正在播放的檔案」，
+  // 未初始化會丟 "MediaKit.ensureInitialized must be called before using any API"
+  // → 4000+ 首全部跳過（GUI 在 main.dart 有呼叫，CLI 之前漏了）。
+  try {
+    MediaKit.ensureInitialized();
+  } catch (_) {}
+
   if (args.isEmpty) {
     print('''playlist-admin CLI
 Usage:

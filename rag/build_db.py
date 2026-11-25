@@ -360,6 +360,36 @@ def _main_build(client, args) -> None:
 
     total_chunks = 0
     t_start = time.time()
+
+    # 寫入批次化：原本每篇一次 col.delete + col.add（各一個 SQLite 交易），
+    # 686 篇 = 1372 次交易，這才是真正的瓶頸（GPU util 低不是算力問題）。
+    FLUSH_CHUNKS = 2000
+    FLUSH_FILES = 10
+    pend_ids: list[str] = []
+    pend_docs: list[str] = []
+    pend_metas: list[dict] = []
+    pend_embeds: list = []
+    pend_paths: list[str] = []
+
+    def _flush(force: bool = False) -> None:
+        if not pend_ids:
+            return
+        if not force and len(pend_docs) < FLUSH_CHUNKS and len(pend_paths) < FLUSH_FILES:
+            return
+        try:
+            if len(pend_paths) == 1:
+                col.delete(where={"path": pend_paths[0]})
+            elif pend_paths:
+                col.delete(where={"path": {"$in": pend_paths}})
+        except Exception as e:
+            print(f"!! 批次刪除失敗: {e}")
+        try:
+            col.add(ids=pend_ids, documents=pend_docs,
+                    metadatas=pend_metas, embeddings=pend_embeds)
+        except Exception as e:
+            print(f"!! 批次寫入失敗（整批跳過）: {e}")
+        pend_ids.clear(); pend_docs.clear(); pend_metas.clear()
+        pend_embeds.clear(); pend_paths.clear()
     for i, f in enumerate(files, 1):
         text = read_text_file(f)
         chunks = make_chunks(split_sentences(text))
@@ -396,24 +426,16 @@ def _main_build(client, args) -> None:
             continue
         # ID 混入 show+sig+檔名：同節目同內容不同檔也互不相撞；
         # 寫入成功立刻登記 done_sigs（批次內第二檔直接跳過，不等下次 run）。
-        try:
-            col.delete(where={"path": str(f)})
-        except Exception as e:
-            print(f"!! 清舊 chunks 失敗 {meta['file']}: {e}")
-        ids = [
-            hashlib.md5(f"{meta['show']}|{meta['file']}|{sig}|{j}".encode()).hexdigest()
-            for j in range(len(kept_chunks))
-        ]
-        metadatas = [
-            {**meta, "sig": sig, "chunk": j, "chars": len(c), "path": str(f)}
-            for j, c in enumerate(kept_chunks)
-        ]
-        try:
-            col.add(ids=ids, documents=kept_chunks, metadatas=metadatas, embeddings=vectors)
-        except Exception as e:
-            # DuplicateID 等單檔失敗不可崩整個 build：下次增量補上。
-            print(f"!! 寫入失敗跳過 {meta['file']}: {e}")
-            continue
+        pend_paths.append(str(f))
+        for j, ch in enumerate(kept_chunks):
+            pend_ids.append(
+                hashlib.md5(f"{meta['show']}|{meta['file']}|{sig}|{j}".encode()).hexdigest()
+            )
+            pend_docs.append(ch)
+            pend_metas.append({**meta, "sig": sig, "chunk": j,
+                               "chars": len(ch), "path": str(f)})
+            pend_embeds.append(vectors[j])
+        _flush()
         done_sigs.add(sig)
         total_chunks += len(kept_chunks)
         if i % 5 == 0 or i == len(files):
@@ -441,6 +463,7 @@ def _main_build(client, args) -> None:
                 flush=True,
             )
 
+    _flush(force=True)
     print(f"完成! 共 {len(files)} 篇, {total_chunks} 個 chunk")
 
 

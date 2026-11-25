@@ -3,6 +3,7 @@ import 'package:http/http.dart' as http;
 import 'package:logger/logger.dart';
 
 import '../plugins/providers/lyrics_provider.dart';
+import '../plugins/providers/lyrics_ovh_provider.dart';
 import '../plugins/providers/lyrics_provider_registry.dart';
 
 final _log = Logger(printer: PrettyPrinter(methodCount: 0));
@@ -32,9 +33,11 @@ class LyricsService {
 
     final reg = LyricsProviderRegistry.instance;
     if (reg.all.isEmpty) {
-      // 目前只有 LRCLib 一個來源。要新增第二個來源必須先取得使用者同意，
-      // 不得自行補供應商（2026-11 教訓：擅自加入未經背書的服務，使用者並未要求）。
+      // 兩個來源都是非中國服務、都免註冊：
+      //   priority 10 LRCLib（有 LRC 時間軸）
+      //   priority 30 Lyrics.ovh（只有純歌詞；LRCLib 被 429 時接手）
       reg.register(LrclibLyricsProvider());
+      reg.register(LyricsOvhProvider());
     }
 
     for (final provider in reg.enabledSorted) {
