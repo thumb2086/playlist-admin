@@ -6,6 +6,7 @@ import 'package:media_kit/media_kit.dart';
 import '../models/config_model.dart';
 import '../version.dart';
 import '../services/config_service.dart';
+import '../services/traffic_estimator.dart';
 import '../services/favorites_service.dart';
 import '../services/library_organizer.dart';
 import '../services/library_doctor.dart';
@@ -129,6 +130,7 @@ class MainMenuScreen extends TuiScreen {
         MenuItem(label: 'Lyrics Download', shortcut: 'L', onSelect: () => app.pushScreen(LyricsScreen(app: app))),
         MenuItem(label: 'Favorites', shortcut: 'F', onSelect: () => app.pushScreen(FavoritesScreen(app: app))),
         MenuItem(label: 'Budget', shortcut: 'B', onSelect: () => app.pushScreen(BudgetScreen(app: app))),
+        MenuItem(label: 'Usage Estimate', shortcut: 'E', onSelect: () => _runEstimate()),
         MenuItem(label: 'Quit', shortcut: 'Q', onSelect: () => app._requestExit()),
       ],
     );
@@ -166,6 +168,42 @@ class MainMenuScreen extends TuiScreen {
       default:
         break;
     }
+  }
+
+  /// 下載網路用量預估（音樂缺幾首 / Podcast 幾集 / 磁碟剩餘）。
+  void _runEstimate() {
+    final lines = <String>['=== 下載用量預估 ==='];
+    app.pushScreen(ActionScreen(
+      screenTitle: 'Usage Estimate',
+      message: '估算中…',
+      action: () async {
+        final m = await TrafficEstimator.estimateMusic();
+        lines.add('音樂：缺 ${m.missing} 首，約 ${TrafficEstimator.fmt(m.bytes)}');
+        final pod = await TrafficEstimator.estimatePodcasts();
+        lines.add('Podcast：${pod.episodes} 集，約 ${TrafficEstimator.fmt(pod.bytes)}');
+        final total = m.bytes + pod.bytes;
+        lines.add('合計：約 ${TrafficEstimator.fmt(total)}');
+        final free = await TrafficEstimator.freeDiskBytes(
+            ConfigService.instance.config.basePath);
+        if (free >= 0) {
+          final after = free - total;
+          lines.add('磁碟：剩 ${TrafficEstimator.fmt(free)} → 下載後約 '
+              '${TrafficEstimator.fmt(after < 0 ? 0 : after)}'
+              '${after < 0 ? '  ⚠ 空間不足' : ''}');
+        }
+      },
+      onComplete: () {
+        app.popScreen();
+        app.pushScreen(ActionScreen(
+          screenTitle: 'Usage Estimate',
+          message: lines.join('\n'),
+          action: () async {},
+          onComplete: () => app.popScreen(),
+          onPop: () => app.popScreen(),
+        ));
+      },
+      onPop: () => app.popScreen(),
+    ));
   }
 
   int _charToIndex(String c) {

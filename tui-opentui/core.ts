@@ -80,6 +80,7 @@ export const COMMANDS: Cmd[] = [
   { id: "artwork", label: "補嵌封面", hint: "artwork backfill", args: ["artwork"] },
   { id: "favorite", label: "我的最愛", hint: "favorite list", args: ["favorite", "list"] },
   { id: "doctor", label: "環境健檢", hint: "doctor --fast", args: ["doctor", "--fast"] },
+  { id: "estimate", label: "用量預估", hint: "下載前先看流量/磁碟", args: ["estimate"] },
 ];
 
 // ---------------------------------------------------------------- 狀態
