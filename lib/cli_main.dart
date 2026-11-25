@@ -18,6 +18,7 @@ import 'services/metadata_enricher.dart';
 import 'services/upload_budget.dart';
 import 'services/spotify_session.dart';
 import 'services/stream_server.dart';
+import 'services/traffic_estimator.dart';
 import 'pipeline/pipeline_orchestrator.dart';
 import 'pipeline/podcast_pipeline.dart';
 import 'models/pipeline_step.dart';
@@ -143,6 +144,27 @@ Usage:
       );
       await pipeline.run();
       break;
+
+    case 'estimate': {
+      // 下載前先看要花多少網路量 / 磁碟
+      final music = await TrafficEstimator.estimateMusic();
+      final pod = await TrafficEstimator.estimatePodcasts();
+      final free = await TrafficEstimator.freeDiskBytes(cfg.basePath.isNotEmpty ? cfg.basePath : '.');
+      int total = music.bytes + pod.bytes;
+      print('=== 下載用量預估 ===');
+      print('音樂：缺 ${music.missing} 首，約 ${TrafficEstimator.fmt(music.bytes)}'
+          '（平均 ${TrafficEstimator.fmt(TrafficEstimator.defaultMusicBytesPerTrack)}/首）');
+      print('Podcast：${pod.episodes} 集，約 ${TrafficEstimator.fmt(pod.bytes)}');
+      print('合計：約 ${TrafficEstimator.fmt(total)}');
+      if (free >= 0) {
+        final after = free - total;
+        print('磁碟：剩 ${TrafficEstimator.fmt(free)} → 下載後約 ${TrafficEstimator.fmt(after < 0 ? 0 : after)}'
+            '${after < 0 ? '  ⚠ 空間不足' : ''}');
+      } else {
+        print('磁碟：無法取得剩餘空間');
+      }
+      break;
+    }
 
     case 'status':
       print('''Library: ${cfg.libraryPath}

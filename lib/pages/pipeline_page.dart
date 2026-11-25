@@ -8,6 +8,7 @@ import '../services/rag_service.dart';
 import '../services/artwork_embedder.dart';
 import '../services/history_recorder.dart';
 import '../services/log_manager.dart';
+import '../services/traffic_estimator.dart';
 import '../version.dart';
 import '../pipeline/pipeline_orchestrator.dart';
 import '../pipeline/podcast_pipeline.dart';
@@ -39,6 +40,7 @@ class _PipelinePageState extends State<PipelinePage> with AutomaticKeepAliveClie
   double _ragProgress = 0;
   double _artworkProgress = 0;
   int _musicStep = 0;
+  String _traffic = '';
 
   // ── Log 節流：pipeline 每秒幾十行 log，若每行都 setState + animateTo，
   // 兩條一起跑會直接塞爆主 thread。改為 300ms 批量 flush 一次。
@@ -57,6 +59,8 @@ class _PipelinePageState extends State<PipelinePage> with AutomaticKeepAliveClie
     super.initState();
     _rebuildStepLabels();
     I18N.instance.addListener(_rebuildStepLabels);
+    _loadTraffic();
+    _loadTraffic();
   }
 
   @override
@@ -69,6 +73,26 @@ class _PipelinePageState extends State<PipelinePage> with AutomaticKeepAliveClie
     _musicScrollCtrl.dispose();
     _podcastScrollCtrl.dispose();
     super.dispose();
+  }
+
+  /// 估算本次下載要用的網路量 / 磁碟（非同步，失敗就不顯示）。
+  Future<void> _loadTraffic() async {
+    try {
+      final m = await TrafficEstimator.estimateMusic();
+      final p = await TrafficEstimator.estimatePodcasts();
+      final free = await TrafficEstimator.freeDiskBytes(
+          ConfigService.instance.config.basePath);
+      final total = m.bytes + p.bytes;
+      var s = '預估下載：音樂缺 ${m.missing} 首 ${TrafficEstimator.fmt(m.bytes)}'
+          ' · Podcast ${p.episodes} 集 ${TrafficEstimator.fmt(p.bytes)}'
+          ' · 合計 ${TrafficEstimator.fmt(total)}';
+      if (free >= 0) {
+        final after = free - total;
+        s += ' · 磁碟 ${TrafficEstimator.fmt(free)}'
+            '${after < 0 ? '（⚠ 空間不足）' : ''}';
+      }
+      if (mounted) setState(() => _traffic = s);
+    } catch (_) {}
   }
 
   void _rebuildStepLabels() {
@@ -362,6 +386,26 @@ class _PipelinePageState extends State<PipelinePage> with AutomaticKeepAliveClie
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // 下載用量預估（執行前先給數字，免得跑完才知道吃了多少流量）
+          if (_traffic.isNotEmpty)
+            Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: AppColors.surfaceLight,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppColors.border),
+              ),
+              child: Row(children: [
+                const Icon(Icons.data_usage_rounded, size: 16, color: AppColors.textMuted),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(_traffic,
+                      style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+                ),
+              ]),
+            ),
           // 按鈕分三組（主要 / 逐步 / 工具），避免 10+ 顆平鋪看不出主次。
           _BtnGroup('主要', children: [
             _PButton(t('pipeline.run_all'), Icons.play_arrow_rounded, () => _run(),
