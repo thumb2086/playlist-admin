@@ -10,7 +10,15 @@ class _ProcessSemaphore {
   factory _ProcessSemaphore() => _instance;
   _ProcessSemaphore._internal();
 
-  final int maxConcurrent = 4; // Limit concurrent ffmpeg/ffprobe processes
+  /// 並發數：預設 = CPU 核心數（上限 8），可用 PA_LUFS_CONCURRENCY 覆寫。
+  /// 原本固定 4，在 8 核以上機器等於自縛；太低又會讓 ffmpeg 互相搶 I/O。
+  late final int maxConcurrent = () {
+    final env = Platform.environment['PA_LUFS_CONCURRENCY'];
+    final n = int.tryParse(env ?? '') ?? 0;
+    if (n > 0) return n.clamp(1, 16);
+    final cores = Platform.numberOfProcessors;
+    return (cores * 2).clamp(2, 8);
+  }();
   int _current = 0;
   final _waiters = <Completer<void>>[];
 
@@ -287,6 +295,31 @@ class LufsService {
     }
   }
 
+  /// 只用 ebur128 量測整合 LUFS（**只解碼、不重新編碼**）。
+  /// 這是最後的加速關鍵：原本每個檔都直接 loudnorm 重編，
+  /// 4000+ 檔等於把整庫 mp3 重編一次（慢 + 有損）。
+  /// 改成先量，已在目標 ±1 dB 內就完全不動這個檔案。
+  Future<double?> _measureLufs(String ffmpeg, String absPath) async {
+    try {
+      final proc = await Process.start(ffmpeg, [
+        '-hide_banner', '-nostats', '-i', absPath,
+        '-vn', '-af', 'ebur128=peak=true', '-f', 'null', '-',
+      ]);
+      final err = StringBuffer();
+      proc.stderr.transform(const SystemEncoding().decoder).listen(err.write);
+      final code = await proc.exitCode.timeout(const Duration(seconds: 120));
+      if (code != 0) return null;
+      // 抓最後一個 "I:  -15.2 LUFS"（summary 段）
+      final all = RegExp(r'I:\s+(-?\d+(?:\.\d+)?)\s+LUFS')
+          .allMatches(err.toString()).toList();
+      if (all.isEmpty) return null;
+      final v = double.tryParse(all.last.group(1)!);
+      return v;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Run loudnorm normalization in one pass and capture input LUFS from stderr.
   /// Uses a per-file lock to prevent concurrent normalization of the same file.
   /// Uses a process semaphore to limit concurrent ffmpeg processes.
@@ -340,6 +373,16 @@ class LufsService {
       final base = absPath.substring(0, absPath.lastIndexOf('.'));
       final tmp = '${base}_tmp.mp3';
       final name = absPath.split(Platform.pathSeparator).last;
+
+      // ★ 先量再決定要不要重編：已在目標 ±1 dB 內就跳過（不重新編碼）。
+      //   實測 686 檔裡多數已在目標附近，這一步省掉大部分 ffmpeg 重編。
+      final measured = await _processSemaphore.run(
+          () => _measureLufs(ffmpeg, absPath));
+      if (measured != null && (measured - target).abs() <= 1.0) {
+        cache[absPath] = target;
+        onLog('  ⏭️ $name  (${measured.toStringAsFixed(1)} LUFS 已達標，跳過重編)');
+        return;
+      }
 
       try {
         await _processSemaphore.run(() async {
