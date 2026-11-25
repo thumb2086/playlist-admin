@@ -1,0 +1,40 @@
+Android APK	Build APK (release, universal single package)	嚜?026-11-25T05:11:54.6969557Z ##[group]Run flutter build apk --release --dart-define=APP_VERSION=$APP_VERSION --build-number=$BUILD_NUMBER
+Android APK	Build APK (release, universal single package)	2026-11-25T05:11:54.6970405Z ^[[36;1mflutter build apk --release --dart-define=APP_VERSION=$APP_VERSION --build-number=$BUILD_NUMBER^[[0m
+Android APK	Build APK (release, universal single package)	2026-11-25T05:11:54.7003729Z shell: /usr/bin/bash --noprofile --norc -e -o pipefail {0}
+Android APK	Build APK (release, universal single package)	2026-11-25T05:11:54.7004088Z env:
+Android APK	Build APK (release, universal single package)	2026-11-25T05:11:54.7004408Z   JAVA_HOME: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/17.0.21-9/x64
+Android APK	Build APK (release, universal single package)	2026-11-25T05:11:54.7004924Z   JAVA_HOME_17_X64: /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk/17.0.21-9/x64
+Android APK	Build APK (release, universal single package)	2026-11-25T05:11:54.7005424Z   FLUTTER_ROOT: /opt/hostedtoolcache/flutter/stable-3.50.1-x64/flutter
+Android APK	Build APK (release, universal single package)	2026-11-25T05:11:54.7005837Z   PUB_CACHE: /home/runner/.pub-cache
+Android APK	Build APK (release, universal single package)	2026-11-25T05:11:54.7006103Z   CHANNEL: stable
+Android APK	Build APK (release, universal single package)	2026-11-25T05:11:54.7006317Z   PRERELEASE: false
+Android APK	Build APK (release, universal single package)	2026-11-25T05:11:54.7006549Z   APP_VERSION: 2.16.4
+Android APK	Build APK (release, universal single package)	2026-11-25T05:11:54.7006774Z   BUILD_NUMBER: 2016004
+Android APK	Build APK (release, universal single package)	2026-11-25T05:11:54.7006992Z ##[endgroup]
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4803105Z Running Gradle task 'assembleRelease'...                        
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4812808Z 
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4826784Z FAILURE: Build failed with an exception.
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4827181Z 
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4828023Z * Where:
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4828745Z Build file '/home/runner/work/playlist-admin/playlist-admin/android/app/build.gradle.kts' line: 1
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4829393Z 
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4829530Z * What went wrong:
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4830168Z An exception occurred applying plugin request [id: 'dev.flutter.flutter-gradle-plugin']
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4831112Z > Failed to apply plugin 'dev.flutter.flutter-gradle-plugin'.
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4832955Z    > Error: Your project's Gradle version (8.14.2) is lower than Flutter's minimum supported version of 9.3.1. Please upgrade your Gradle version. 
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4834440Z      Alternatively, use the flag "--android-skip-build-dependency-validation" to bypass this check.
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4835123Z 
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4836372Z      Potential fix: Your project's gradle version is typically defined in the gradle wrapper file. By default, this can be found at /home/runner/work/playlist-admin/playlist-admin/android/gradle/wrapper/gradle-wrapper.properties. 
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4838453Z      For more information, see https://docs.gradle.org/current/userguide/gradle_wrapper.html.
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4840725Z 
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4841538Z 
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4841719Z * Try:
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4842381Z > Run with --stacktrace option to get the stack trace.
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4843076Z > Run with --info or --debug option to get more log output.
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4843692Z > Run with --scan to get full insights.
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4844257Z > Get more help at https://help.gradle.org.
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4844629Z 
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:22.4844776Z BUILD FAILED in 1m 26s
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:23.0322346Z Running Gradle task 'assembleRelease'...                           87.7s
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:23.0796579Z Gradle task assembleRelease failed with exit code 1
+Android APK	Build APK (release, universal single package)	2026-11-25T05:13:23.0866798Z ##[error]Process completed with exit code 1.
