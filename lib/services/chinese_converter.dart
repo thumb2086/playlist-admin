@@ -19,16 +19,19 @@ class ChineseConverter {
     if (_s2t != null) return;
     String data;
     try {
-      data = await rootBundle.loadString('assets/zhcdict.json');
+      data = await rootBundle.loadString('assets/s2t_opencc.json');
     } catch (_) {
       try {
-        final file = File('assets/zhcdict.json');
+        final file = File('assets/s2t_opencc.json');
         data = await file.readAsString();
       } catch (_) {
-        final file = File('${Directory.current.path}\\assets\\zhcdict.json');
+        final file = File('${Directory.current.path}\\assets\\s2t_opencc.json');
         data = await file.readAsString();
       }
     }
+    // 扁平 { 簡: 繁 }（由 tools/gen_s2t.py 以 OpenCC s2tw 產生：
+    // 2772 單字 + 1522 詞組，詞組層處理 头发→頭髮 這類逐字轉會錯的個案）。
+    // 舊版讀 zhcdict.json 只撈到 SIMPONLY/TRADONLY 兩個字串，等於沒轉。
     final map = jsonDecode(data) as Map<String, dynamic>;
 
     _s2t = {};

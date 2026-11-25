@@ -13,6 +13,16 @@ import '../services/rag_service.dart';
 import '../version.dart';
 
 class PodcastPipeline {
+  static bool _s2tWarned = false;
+
+  /// 字典沒載入時只警告一次（避免每集都洗版），但一定要講。
+  void _warnOnceS2t() {
+    if (_s2tWarned) return;
+    _s2tWarned = true;
+    onLog('⚠ 繁簡字典未載入（assets/s2t_opencc.json）：逐字稿會是簡體，'
+        'RAG 內容也會是簡體。請確認 assets 有打包進 build。');
+  }
+
   final void Function(String) onLog;
   final void Function(int current, int total, int stepIndex) onProgress;
   final PipelineState state;
@@ -664,6 +674,11 @@ class PodcastPipeline {
       }
       final text = textLines.join('\n');
       // Convert simplified Chinese to traditional.
+      // 未載入字典時必須大聲警告：2026-11 之前靜默寫簡體，
+      // 1958 個逐字稿因此全庫簡體（RAG 也要重建）。
+      if (!ChineseConverter.instance.isLoaded) {
+        _warnOnceS2t();
+      }
       final converted = ChineseConverter.instance.isLoaded
           ? ChineseConverter.instance.toTraditional(text) : text;
 
@@ -890,6 +905,14 @@ static String? _firstAudio(String podDir, String stem) {
         return;
       }
       // Convert simplified Chinese to traditional.
+      // 未載入字典時必須大聲警告：2026-11 之前靜默寫簡體，
+      // 1958 個逐字稿因此全庫簡體（RAG 也要重建）。
+      if (!ChineseConverter.instance.isLoaded) {
+        _warnOnceS2t();
+      }
+      if (!ChineseConverter.instance.isLoaded) {
+        _warnOnceS2t();
+      }
       final converted = ChineseConverter.instance.isLoaded
           ? ChineseConverter.instance.toTraditional(text) : text;
       await File(txtPath).writeAsString(converted, flush: true);

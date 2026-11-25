@@ -4,7 +4,6 @@ import 'package:logger/logger.dart';
 
 import '../plugins/providers/lyrics_provider.dart';
 import '../plugins/providers/lyrics_provider_registry.dart';
-import '../plugins/providers/netease_lyrics_provider.dart';
 
 final _log = Logger(printer: PrettyPrinter(methodCount: 0));
 
@@ -33,10 +32,9 @@ class LyricsService {
 
     final reg = LyricsProviderRegistry.instance;
     if (reg.all.isEmpty) {
-      // 預設兩層：lrclib（優先 10）→ 網易雲（優先 20）。
-      // lrclib 的 /api/get 被 429 時，chain 會自動落到網易雲。
+      // 目前只有 LRCLib 一個來源。要新增第二個來源必須先取得使用者同意，
+      // 不得自行補供應商（2026-11 教訓：擅自加入未經背書的服務，使用者並未要求）。
       reg.register(LrclibLyricsProvider());
-      reg.register(NeteaseLyricsProvider());
     }
 
     for (final provider in reg.enabledSorted) {

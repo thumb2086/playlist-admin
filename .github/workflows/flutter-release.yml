@@ -39,9 +39,14 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      # Flutter 版本必須鎖定：channel: stable 會自動抓最新版，
+      # 而新版 Flutter 的 Gradle plugin 要求 Gradle 9.3.1 + AGP 9.x，
+      # 我們是 Gradle 8.14.2 + AGP 8.11.1 → 會 getDefaultConfig() 失敗。
+      # 3.35.x 是對應 Gradle 8.14 / AGP 8.11 的最後一代。
       - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
+          flutter-version: '3.35.7'
           cache: true
 
       - name: Get version & channel
@@ -80,12 +85,6 @@ jobs:
       - name: Build APK (release, universal single package)
         # 只打一包 universal（app-release.apk）：手機直接裝、in-app 更新鏈也吃它。
         # split-per-abi 三包已砍（舊機型本來就沒人用，多包只會讓人裝錯）。
-        # --android-skip-build-dependency-validation：
-        # CI 的 Flutter stable 會自動更新，新版要求 Gradle >= 9.3.1，但我們的
-        # wrapper 是 8.14.2 + AGP 8.11.1（這組合本身是對的，只是新版 Flutter 的
-        # 版本門檻檢查變嚴）。跳過這個「檢查」而非升 Gradle，是因為升 Gradle 9
-        # 會連帶要求 AGP 9，風險遠大於跳過一項版本門檻驗證。
-        run: flutter build apk --release --android-skip-build-dependency-validation --dart-define=APP_VERSION=$APP_VERSION --build-number=$BUILD_NUMBER
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
@@ -125,9 +124,11 @@ jobs:
           New-Item -ItemType Directory -Force -Path assets/skills | Out-Null
           Copy-Item .opencode/skills/* assets/skills/ -Recurse -Force
 
+      # 與 Android job 同一個版本（見上方註解：stable 會飄到需要 Gradle 9 的新版）
       - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
+          flutter-version: '3.35.7'
           architecture: x64
           cache: true
 

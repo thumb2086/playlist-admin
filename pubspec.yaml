@@ -46,6 +46,7 @@ flutter:
   uses-material-design: true
   assets:
     - assets/zhcdict.json
+    - assets/s2t_opencc.json
     - assets/tools/
     - assets/tools/rag/
     - assets/skills/podcast-knowledge/SKILL.md

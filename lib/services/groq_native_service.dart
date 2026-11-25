@@ -95,7 +95,7 @@ class GroqNativeService {
     if (defineKey.isNotEmpty) _keys = [defineKey];
   }
 
-  /// 启动时 async 查 proxy（不堵塞第一次请求）。
+  /// 啟動時 async 查 proxy（不堵塞第一次请求）。
   Future<void> preloadProxy() async {
     if (_proxyResolved) return;
     // 只從環境變數讀 proxy（不讀 Windows Registry，因為不可靠）
@@ -749,7 +749,7 @@ static String transcribeUrl() {
       // 某段 ffmpeg 失敗時 `continue` 不會讓 chunks.length 增加，
       // 下一段就會寫進**同一個檔名**把前一段覆蓋掉，最後整份音訊
       // 只剩最後一段的內容（2026-10-15 實測：45 分鐘的集數只轉出
-      // 「最後祝大家有个愉快的一周 拜拜」這種結尾語，150 bytes）。
+      // 「最後祝大家有個愉快的一週 拜拜」這種結尾語，150 bytes）。
       final segIdx = s ~/ _chunkDurationSec;
       final outPath = '${tempDir.path}\\chunk_${prefix}_$segIdx.mp3';
       final result = await Process.run(_ffmpeg, [

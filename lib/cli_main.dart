@@ -303,7 +303,7 @@ Downloaded: ${cfg.lastUpdated.length}''');
 
       final libDir = Directory(cfg.libraryPath);
       if (!libDir.existsSync()) {
-        print('庫路径不存在: ${cfg.libraryPath}');
+        print('庫路徑不存在: ${cfg.libraryPath}');
         return;
       }
 
@@ -316,11 +316,11 @@ Downloaded: ${cfg.lastUpdated.length}''');
       }
 
       if (files.isEmpty) {
-        print('庫中无音乐案');
+        print('庫中無音樂檔');
         return;
       }
 
-      print('全庫 ${files.length} 首音乐案。开始下载歌詞...');
+      print('全庫 ${files.length} 首音樂檔。開始下載歌詞…');
       if (limit > 0) print('限制: $limit 首');
 
       int success = 0, skipped = 0, failed = 0;
@@ -368,7 +368,7 @@ Downloaded: ${cfg.lastUpdated.length}''');
         await Future.delayed(const Duration(milliseconds: 200));
       }
 
-      print('完成: 成功 $success, 跳过 $skipped, 失败 $failed');
+      print('完成：成功 $success，跳過 $skipped，失敗 $failed');
       print('歌詞存放: ${lyricsDir.path}');
       break;
 
