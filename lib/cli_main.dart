@@ -152,6 +152,31 @@ Usage:
       await pipeline.run();
       break;
 
+    case 'check': {
+      // 只檢查、不下載：音樂缺幾首 / Podcast 缺幾集 / 磁碟够不夠
+      final what = args.length > 1 ? args[1] : 'all';
+      final music = (what == 'all' || what == 'music')
+          ? await TrafficEstimator.estimateMusic() : (missing: 0, bytes: 0);
+      final pod = (what == 'all' || what == 'podcast')
+          ? await TrafficEstimator.estimatePodcasts() : (episodes: 0, bytes: 0);
+      final free = await TrafficEstimator.freeDiskBytes(cfg.basePath);
+      print('=== 檢查（不下載）===');
+      if (what == 'all' || what == 'music') {
+        print('音樂：缺 ${music.missing} 首，約 ${TrafficEstimator.fmt(music.bytes)}');
+      }
+      if (what == 'all' || what == 'podcast') {
+        print('Podcast：缺 ${pod.episodes} 集，約 ${TrafficEstimator.fmt(pod.bytes)}');
+      }
+      final total = music.bytes + pod.bytes;
+      print('合計：約 ${TrafficEstimator.fmt(total)}');
+      if (free >= 0) {
+        final after = free - total;
+        print('磁碟：剩 ${TrafficEstimator.fmt(free)} → 下載後約 ${TrafficEstimator.fmt(after < 0 ? 0 : after)}'
+            '${after < 0 ? '  ⚠ 空間不足' : ''}');
+      }
+      break;
+    }
+
     case 'estimate': {
       // 下載前先看要花多少網路量 / 磁碟
       final music = await TrafficEstimator.estimateMusic();

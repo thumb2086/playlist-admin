@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 
@@ -57,62 +58,55 @@ class TrafficEstimator {
   }
 
   /// 音樂：回 (缺幾首, 估計位元組)。
+  ///
+  /// ★ 來源必須與 pipeline 的 download 步驟**完全一致**，否則數字對不上。
+  ///   2026-11 實測：這裡讀 .m3u8 說缺 528 首，pipeline 讀 snapshot_cache.json
+  ///   只缺 38 首 —— m3u8 是 step 2 產物、會過時；snapshot 才是 scrape 的真相。
+  ///   現在改成讀 snapshot_cache.json 的 playlists[].tracks，並用同一套
+  ///   _normSong（非法字元→_、小寫）比對 musicPath 全遞迴掃描。
   static Future<({int missing, int bytes})> estimateMusic({int? avgBytesPerTrack}) async {
     final cfg = ConfigService.instance.config;
     final avg = avgBytesPerTrack ?? defaultMusicBytesPerTrack;
 
-    final stems = <String>{};
-    Future<void> scan(Directory d) async {
-      if (!await d.exists()) return;
-      await for (final e in d.list(recursive: true, followLinks: false)) {
-        if (e is File) {
-          final low = e.path.toLowerCase();
-          if (low.endsWith('.mp3') || low.endsWith('.flac')) {
-            stems.add(_norm(File(e.path).uri.pathSegments.last));
+    final allSongs = <String>{};
+    final snapFile = File('${cfg.basePath}${Platform.pathSeparator}snapshot_cache.json');
+    try {
+      if (await snapFile.exists()) {
+        final snap = jsonDecode(await snapFile.readAsString()) as Map<String, dynamic>;
+        final playlists = snap['playlists'] as Map<String, dynamic>? ?? {};
+        for (final pl in playlists.values) {
+          final tracks = (pl as Map<String, dynamic>)['tracks'] as List<dynamic>? ?? [];
+          for (final t in tracks) {
+            final s = t.toString().trim();
+            if (s.isNotEmpty) allSongs.add(s);
           }
         }
       }
-    }
+    } catch (_) {}
 
-    await scan(Directory(cfg.libraryPath));
-    // 有些安裝把音樂放在 basePath/mp3|m4a|flac（library_page 也是這樣掃）
-    final base = Directory(cfg.basePath);
-    if (await base.exists() &&
-        base.path.toLowerCase() != cfg.libraryPath.toLowerCase()) {
-      for (final sub in ['mp3', 'm4a', 'flac']) {
-        await scan(Directory('${cfg.basePath}${Platform.pathSeparator}$sub'));
+    // 本機：musicPath 全遞迴（與 pipeline 同一個 _normSong）
+    final existing = <String>{};
+    final musicDir = Directory(cfg.musicPath);
+    if (await musicDir.exists()) {
+      await for (final e in musicDir.list(recursive: true, followLinks: false)) {
+        if (e is File) {
+          // 先去副檔名再比（_normSong 只處理非法字元，不含去副檔名）
+          final base = File(e.path).uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), '');
+          existing.add(_normSong(base));
+        }
       }
     }
 
     var missing = 0;
-    final plDir = Directory(cfg.playlistsPath);
-    if (await plDir.exists()) {
-      await for (final e in plDir.list()) {
-        if (e is File && e.path.toLowerCase().endsWith('.m3u8')) {
-          final lines = await e.readAsLines();
-          for (final line in lines) {
-            if (line.startsWith('#') || line.trim().isEmpty) continue;
-            var raw = line;
-            try {
-              raw = Uri.decodeComponent(raw);
-            } catch (_) {}
-            final name = raw.contains('/') || raw.contains('\\')
-                ? raw.split(RegExp(r'[\\/]')).last
-                : raw;
-            if (!stems.contains(_norm(name))) missing++;
-          }
-        }
-      }
+    for (final s in allSongs) {
+      if (!existing.contains(_normSong(s))) missing++;
     }
     return (missing: missing, bytes: missing * avg);
   }
 
-  /// 與 pipeline / 下載落檔一致：去掉副檔名、Windows 非法字元→_、小寫。
-  /// 少了這個，估計會把「已存在」誤判成缺失（實測 11033 首，實際只缺個位數）。
-  static String _norm(String pathOrName) {
-    final n = pathOrName.replaceAll(RegExp(r'\.\w+$'), '');
-    return n.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim().toLowerCase();
-  }
+  /// 與 pipeline 完全相同：去副檔名、Windows 非法字元→_、小寫。
+  static String _normSong(String s) =>
+      s.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim().toLowerCase();
 
   /// Podcast：回 (缺幾集, 估計位元組)。
   ///
@@ -125,7 +119,8 @@ class TrafficEstimator {
     final subs = ConfigService.instance.config.podcastSubscriptions;
     var missing = 0;
     var bytes = 0;
-    for (final url in subs.values) {
+    for (final entry in subs.entries) {
+      final url = entry.value;
       if (url.isEmpty) continue;
       // 本機路徑型「訂閱」（補習班音檔）不是 RSS，直接跳過
       final u = url.toLowerCase();
@@ -133,12 +128,19 @@ class TrafficEstimator {
 
       // 本機該節目的檔名（正規化後）
       final local = <String>{};
-      final showDir = _showDirFromUrl(url);
-      final dir = Directory(showDir);
+      // 直接用訂閱名稱當資料夾（不需 url 反查，避免名稱正規化不一致）
+      final dir = Directory('${ConfigService.instance.config.podcastsPath}'
+          '${Platform.pathSeparator}${entry.key}');
       if (await dir.exists()) {
         await for (final e in dir.list(followLinks: false)) {
           if (e is File) {
-            final n = _normText(e.uri.pathSegments.last.replaceAll(RegExp(r'\.\w+$'), ''));
+            // 用 e.path 取檔名，不可用 e.uri.pathSegments（uri 會把中文/空白
+            // 百分號編碼，正規化後永遠對不上標題 → 全部誤判成缺）
+            final base = e.path
+                .split(Platform.pathSeparator)
+                .last
+                .replaceAll(RegExp(r'\.\w+$'), '');
+            final n = _normText(base);
             if (n.isNotEmpty) local.add(n);
           }
         }
@@ -154,18 +156,23 @@ class TrafficEstimator {
         for (final m in RegExp(r'<item>(.*?)</item>', dotAll: true).allMatches(xml)) {
           final item = m.group(1) ?? '';
           final t = RegExp(r'<title>(.*?)</title>', dotAll: true).firstMatch(item);
-          final title = (t?.group(1) ?? '').trim();
-          final key = _normText(title);
+          // RSS 常見 <title><![CDATA[...]]></title>：不先去 CDATA 包裝，
+          // 正規化後會多一截 "cdata" 前綴 → 跟本機檔名永遠對不上（實測 490 誤判）
+          final rawTitle = (t?.group(1) ?? '')
+              .replaceAll('<![CDATA[', '')
+              .replaceAll(']]>', '')
+              .trim();
+          final key = _normText(rawTitle);
+          // 沒有標題（或正規化後空）的項目不計入，否則會虛增缺集數
+          if (key.isEmpty) continue;
           // 命中本機就跳過（不算網路量）
-          if (key.isNotEmpty) {
-            var hit = local.contains(key);
-            if (!hit && key.length > 12) {
-              for (final n in local) {
-                if (n.contains(key) || key.contains(n)) { hit = true; break; }
-              }
+          var hit = local.contains(key);
+          if (!hit && key.length > 12) {
+            for (final n in local) {
+              if (n.contains(key) || key.contains(n)) { hit = true; break; }
             }
-            if (hit) continue;
           }
+          if (hit) continue;
           missing++;
           final len = RegExp(r'length="(\d+)"').firstMatch(item);
           if (len != null) {
@@ -189,30 +196,20 @@ class TrafficEstimator {
     return (episodes: missing, bytes: bytes);
   }
 
-  /// 從 RSS URL 推回本機節目資料夾（podcasts/<名稱>/）。
-  /// 訂閱的 key 就是節目名，這裡用 url 反查；找不到就回空字串（= 不比對）。
-  static String _showDirFromUrl(String url) {
-    try {
-      final subs = ConfigService.instance.config.podcastSubscriptions;
-      for (final e in subs.entries) {
-        if (e.value == url) {
-          return '${ConfigService.instance.config.podcastsPath}'
-              '${Platform.pathSeparator}${e.key}';
-        }
-      }
-    } catch (_) {}
-    return '';
-  }
-
   /// 正規化：小寫、`/` 與 `\` 視為底線、去掉所有非字母數字（空白/標點/底線）。
   /// 本機檔名會把標題裡的 `/` 換成 `_`，不統一就都對不上（實測只認到 3/500）。
+  static final _keepChar = RegExp(r'[\p{L}\p{N}]', unicode: true);
+
   static String _normText(String s) {
     final t = s.toLowerCase().replaceAll('/', '_').replaceAll('\\', '_');
     final sb = StringBuffer();
     for (final r in t.runes) {
       final ch = String.fromCharCode(r);
-      if (RegExp(r'[a-z0-9\u4e00-\u9fff]').hasMatch(ch)) sb.write(ch);
+      if (_keepChar.hasMatch(ch)) sb.write(ch);
     }
-    return sb.toString();
+    var out = sb.toString();
+    // RSS 的 CDATA 包裝正規化後會殘留 cdata 前綴（實測導致 486 集誤判成缺）
+    if (out.startsWith('cdata')) out = out.substring(5);
+    return out;
   }
 }

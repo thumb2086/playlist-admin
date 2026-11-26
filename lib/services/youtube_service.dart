@@ -821,6 +821,7 @@ class YoutubeService {
         _log.w('yt-dlp 格式不可用，嘗試 fallback');
         final fallbackArgs = [...baseArgs];
         final fIdx = fallbackArgs.indexOf('-f');
+        // 第一層：最差的分離影音；第二層（若仍失敗）：worst 合成流
         fallbackArgs[fIdx + 1] = 'worstvideo[ext=mp4]+worstaudio/best';
         proc = await _startYtDlp([...fallbackArgs, ytUrl]);
         errBuf = StringBuffer();
@@ -834,6 +835,26 @@ class YoutubeService {
           const Duration(seconds: 180),
           onTimeout: () { proc.kill(); return -1; },
         );
+
+        // 第二層 fallback：只有 muxed 格式的影片（無獨立 audio stream）
+        if (code != 0) {
+          _log.w('yt-dlp 分離格式仍不可用，改用 worst 合成流');
+          final muxedArgs = [...baseArgs];
+          final mi = muxedArgs.indexOf('-f');
+          muxedArgs[mi + 1] = 'worst';
+          proc = await _startYtDlp([...muxedArgs, ytUrl]);
+          errBuf = StringBuffer();
+          proc.stderr.transform(const SystemEncoding().decoder).transform(const LineSplitter()).listen((line) {
+            errBuf.writeln(line);
+            if (errBuf.length > 4000) {
+              errBuf = StringBuffer(errBuf.toString().substring(errBuf.length - 4000));
+            }
+          });
+          code = await proc.exitCode.timeout(
+            const Duration(seconds: 180),
+            onTimeout: () { proc.kill(); return -1; },
+          );
+        }
       }
 
       onProgress?.call(0.9);
