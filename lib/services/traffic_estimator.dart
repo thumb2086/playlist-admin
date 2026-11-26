@@ -133,7 +133,7 @@ class TrafficEstimator {
           '${Platform.pathSeparator}${entry.key}');
       if (await dir.exists()) {
         await for (final e in dir.list(followLinks: false)) {
-          if (e is File) {
+          if (e is File && _isAudio(e.path)) {
             // 用 e.path 取檔名，不可用 e.uri.pathSegments（uri 會把中文/空白
             // 百分號編碼，正規化後永遠對不上標題 → 全部誤判成缺）
             final base = e.path
@@ -146,6 +146,7 @@ class TrafficEstimator {
         }
       }
 
+      var showBytes = 0;
       try {
         final r = await http
             .get(Uri.parse(url),
@@ -153,6 +154,7 @@ class TrafficEstimator {
             .timeout(const Duration(seconds: 20));
         if (r.statusCode != 200) continue;
         final xml = r.body;
+        _lastItemCount = RegExp(r'<item>').allMatches(xml).length;
         for (final m in RegExp(r'<item>(.*?)</item>', dotAll: true).allMatches(xml)) {
           final item = m.group(1) ?? '';
           final t = RegExp(r'<title>(.*?)</title>', dotAll: true).firstMatch(item);
@@ -176,7 +178,7 @@ class TrafficEstimator {
           missing++;
           final len = RegExp(r'length="(\d+)"').firstMatch(item);
           if (len != null) {
-            bytes += int.tryParse(len.group(1)!) ?? 0;
+            showBytes += int.tryParse(len.group(1)!) ?? 0;
           } else {
             final dur = RegExp(
                     r'<itunes:duration>(\d+):(\d+):(\d+)</itunes:duration>')
@@ -185,19 +187,34 @@ class TrafficEstimator {
               final secs = int.parse(dur.group(1)!) * 3600 +
                   int.parse(dur.group(2)!) * 60 +
                   int.parse(dur.group(3)!);
-              bytes += secs ~/ 60 * podcastBytesPerMinute;
+              showBytes += secs ~/ 60 * podcastBytesPerMinute;
             } else {
-              bytes += 30 * podcastBytesPerMinute; // 未知長度，當 30 分鐘
+              showBytes += 30 * podcastBytesPerMinute; // 未知長度，當 30 分鐘
             }
           }
         }
       } catch (_) {}
+      bytes += showBytes;
+      // 標題比對在本機檔名有前綴/中文日期時不可靠 → 用數量判定：
+      // 本機音檔數 >= RSS 集數 視為全數已下載（0 缺）。
+      if (local.length >= _lastItemCount && _lastItemCount > 0) {
+        missing = 0;
+        bytes -= showBytes; // 全數已下載 → 這台的量不算
+      }
     }
     return (episodes: missing, bytes: bytes);
   }
 
   /// 正規化：小寫、`/` 與 `\` 視為底線、去掉所有非字母數字（空白/標點/底線）。
   /// 本機檔名會把標題裡的 `/` 換成 `_`，不統一就都對不上（實測只認到 3/500）。
+  static int _lastItemCount = 0;
+
+  static bool _isAudio(String p) {
+    final l = p.toLowerCase();
+    return l.endsWith('.mp3') || l.endsWith('.wav') || l.endsWith('.m4a') ||
+        l.endsWith('.flac') || l.endsWith('.aac') || l.endsWith('.opus');
+  }
+
   static final _keepChar = RegExp(r'[\p{L}\p{N}]', unicode: true);
 
   static String _normText(String s) {

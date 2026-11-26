@@ -75,7 +75,7 @@ def embed_one_batch(model: str, texts: list[str]) -> tuple[list[str], list[list[
     return texts, resp.json()["embeddings"]
 
 
-def embed_texts(model: str, texts: list[str], batch: int = 32, workers: int = 6) -> tuple[list[str], list[list[float]]]:
+def embed_texts(model: str, texts: list[str], batch: int = 512, workers: int = 8) -> tuple[list[str], list[list[float]]]:
     """併發呼叫 Ollama /api/embed；回傳 (成功文字, 對應向量)"""
     batches = [texts[i:i + batch] for i in range(0, len(texts), batch)]
     if len(batches) <= 1:
@@ -159,7 +159,7 @@ def main() -> None:
     ap.add_argument("--reset", action="store_true", help="重建資料庫")
     ap.add_argument("--limit", type=int, default=0, help="只索引前 N 篇 (測試用)")
     ap.add_argument("--workers", type=int, default=8, help="併發 embedding 數")
-    ap.add_argument("--batch", type=int, default=192, help="每批 embedding 數量")
+    ap.add_argument("--batch", type=int, default=512, help="每批 embedding 數量")
     args = ap.parse_args()
 
     # 先拿鎖再開 PersistentClient：反過來雙進程仍會同時開 SQLite。
