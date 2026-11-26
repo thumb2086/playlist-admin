@@ -166,14 +166,13 @@ class TrafficEstimator {
           final key = _normText(rawTitle);
           // 沒有標題（或正規化後空）的項目不計入，否則會虛增缺集數
           if (key.isEmpty) continue;
-          // 命中本機就跳過（不算網路量）。
-          // 不做長度門檻：本機檔名可能被加前綴（例如「寡人」），
-          // 標題會是它的子字串 → 必須雙向 contains 才撈得到。
-          var hit = local.contains(key);
-          if (!hit) {
-            for (final n in local) {
-              if (n.contains(key) || key.contains(n)) { hit = true; break; }
-            }
+          // 完全相等優先，再退回雙向 contains（本機檔名可能帶前綴）。
+          // 注意：contains 只在同一個節目的 local 集合內比，且要求 key 非空，
+          // 避免先前 Python 版那種「不相關也配成命中」的假陽性。
+          if (local.contains(key)) continue;
+          var hit = false;
+          for (final n in local) {
+            if (n.contains(key) || key.contains(n)) { hit = true; break; }
           }
           if (hit) continue;
           missing++;
@@ -202,7 +201,9 @@ class TrafficEstimator {
 
   /// 正規化：小寫、`/` 與 `\` 視為底線、去掉所有非字母數字（空白/標點/底線）。
   /// 本機檔名會把標題裡的 `/` 換成 `_`，不統一就都對不上（實測只認到 3/500）。
-  static final _keepChar = RegExp(r'[\p{L}\p{N}]', unicode: true);
+  // 與 Python 參照的 ch.isalnum() 等價：拉丁字母數字 + CJK + 日文假名 + 韓文
+  static final _keepChar = RegExp(
+      r'[0-9A-Za-z\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af\u3400-\u4dbf]');
 
   static String _normText(String s) {
     final t = s.toLowerCase().replaceAll('/', '_').replaceAll('\\', '_');
